@@ -1,0 +1,7 @@
+email,first_name,last_name,phone,status,notes
+john.doe@example.com,John,Doe,+1234567890,active,Marketing team member
+jane.smith@example.com,Jane,Smith,+0987654321,active,Sales representative
+bob.johnson@example.com,Bob,Johnson,+1122334455,pending,Needs verification
+alice.williams@example.com,Alice,Williams,+5544332211,active,Engineering team
+charlie.brown@example.com,Charlie,Brown,+9988776655,inactive,On leave
+
