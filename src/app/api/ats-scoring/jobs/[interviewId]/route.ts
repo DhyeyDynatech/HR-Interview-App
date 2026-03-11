@@ -3,6 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { verifyToken, getUserById } from "@/lib/auth";
 import { ATSScoreResult } from "@/types/ats-scoring";
 
+export const dynamic = "force-dynamic";
+
 function getSupabaseClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

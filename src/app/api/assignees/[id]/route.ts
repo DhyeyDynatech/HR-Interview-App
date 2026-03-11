@@ -8,6 +8,8 @@ import { logger } from '@/lib/logger';
 import { logActivityFromRequest } from '@/lib/user-activity-log';
 import { verifyToken } from '@/lib/auth';
 
+export const dynamic = "force-dynamic";
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }

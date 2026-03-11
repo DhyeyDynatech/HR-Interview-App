@@ -4,6 +4,8 @@ import { NextResponse, NextRequest } from "next/server";
 import Retell from "retell-sdk";
 import { INTERVIEWERS, RETELL_AGENT_GENERAL_PROMPT } from "@/lib/constants";
 
+export const dynamic = "force-dynamic";
+
 const retellClient = new Retell({
   apiKey: process.env.RETELL_API_KEY || "",
 });
