@@ -86,6 +86,7 @@
     "@types/react-dom": "^18",
     "@types/word-extractor": "^1.0.6",
     "autoprefixer": "^10.0.1",
+    "docx": "^9.6.1",
     "eslint": "^8",
     "eslint-config-next": "^14.2.20",
     "eslint-config-prettier": "^10.0.1",

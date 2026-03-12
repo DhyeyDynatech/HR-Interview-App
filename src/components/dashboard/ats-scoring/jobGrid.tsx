@@ -36,9 +36,9 @@ export default function JobGrid({
     : jobs;
 
   return (
-    <div className="space-y-6">
+    <main className="p-8 pt-0 ml-12 mr-auto space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mt-8">
         <div>
           <div className="flex items-center gap-2">
             <ScanSearch className="h-6 w-6 text-indigo-500" />
@@ -118,6 +118,6 @@ export default function JobGrid({
         selectedJobIds={selectedJobIds}
         onAddJobs={onAddJobs}
       />
-    </div>
+    </main>
   );
 }

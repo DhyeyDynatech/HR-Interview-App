@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { flushSync } from "react-dom";
 import { useAuth } from "@/contexts/auth.context";
 import { useAssignees } from "@/contexts/users.context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,6 +52,38 @@ import {
 const BATCH_SIZE = 5;
 const PARSE_CONCURRENCY = 5;
 const API_CONCURRENCY = 3;
+const CF_BATCH_SIZE = 10;
+const MAX_RETRIES = 4;
+const INITIAL_BACKOFF_MS = 2_000;
+
+/** Fetch with exponential backoff on 429 (rate limit) and 5xx errors. */
+async function fetchWithRetry(url: string, init: RequestInit, retries = MAX_RETRIES): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      if (response.status === 429 || (response.status >= 500 && attempt < retries)) {
+        // Use Retry-After header if present, otherwise exponential backoff with jitter
+        const retryAfter = response.headers.get("Retry-After");
+        const delay = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : INITIAL_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
+        console.warn(`[fetchWithRetry] ${url} returned ${response.status}, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries})`);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      return response;
+    } catch (err) {
+      lastError = err as Error;
+      if (attempt < retries) {
+        const delay = INITIAL_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
+        console.warn(`[fetchWithRetry] ${url} network error, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries}):`, err);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastError || new Error(`Failed after ${retries} retries`);
+}
 
 // ---------- Company Finder helpers ----------
 function extractResumeNamesFromContext(contexts: string[]): string[] {
@@ -228,6 +261,12 @@ export default function ScoringView({
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const analyzingCountRef = useRef(0);
+  const isAnalyzingRef = useRef(false);
+  const isRunningCFRef = useRef(false);
+  // Tracks in-flight / completed blob upload promises keyed by resume name.
+  // Shared between uploadFilesForPreview (file-drop) and handleAnalyze so we
+  // never upload the same file twice and handleAnalyze can await them all.
+  const uploadPromisesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const [skippedInfo, setSkippedInfo] = useState<{ count: number; names: string[] } | null>(null);
 
   // Company Finder state
@@ -251,6 +290,7 @@ export default function ScoringView({
   const [activeTab, setActiveTab] = useState<"ats" | "companies">("ats");
   // Persisted CF results (loaded from DB on mount; updated after analysis / resume delete)
   const [persistedCompanyResults, setPersistedCompanyResults] = useState<AggregatedCompany[] | null>(null);
+  const [cfScannedResumeNames, setCfScannedResumeNames] = useState<string[]>([]);
   const [cfScanId, setCfScanId] = useState<string | null>(null);
 
   // CF filter / selection state
@@ -259,13 +299,16 @@ export default function ScoringView({
   const [cfSortBy, setCfSortBy] = useState<"frequency" | "name">("frequency");
   const [selectedCFCompanies, setSelectedCFCompanies] = useState<Set<string>>(new Set());
 
-  // Build resume URL lookup from scored results
-  const resumeUrlMap: Record<string, string> = {};
-  if (results) {
-    for (const r of results) {
-      if (r.resumeUrl) resumeUrlMap[r.resumeName] = r.resumeUrl;
+  // Build resume URL lookup from scored results (memoized to avoid re-computation on every render)
+  const resumeUrlMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    if (results) {
+      for (const r of results) {
+        if (r.resumeUrl) map[r.resumeName] = r.resumeUrl;
+      }
     }
-  }
+    return map;
+  }, [results]);
 
   // Load JD and results from Supabase on mount
   useEffect(() => {
@@ -318,6 +361,7 @@ export default function ScoringView({
 
               setPersistedCompanyResults(reconciled);
               setCfScanId(scanId);
+              if (cfDetail.resumeNames?.length) setCfScannedResumeNames(cfDetail.resumeNames);
 
               // Load CF scan resume URLs so Eye buttons work on page reload
               if (cfDetail.resumeUrls) {
@@ -417,8 +461,19 @@ export default function ScoringView({
         if (!scanId) return;
         const cfDetail = await CompanyFinderService.getScanDetail(scanId);
         if (cfDetail.results?.length > 0) {
-          setPersistedCompanyResults(cfDetail.results as AggregatedCompany[]);
+          setPersistedCompanyResults((prev) => {
+            const dbResults = cfDetail.results as AggregatedCompany[];
+            // Don't overwrite fresher in-memory results with stale DB data
+            // (race: saveCFResultsToDB may not have completed when this useEffect fires)
+            if (prev && prev.length > dbResults.length) return prev;
+            return dbResults;
+          });
           if (!cfScanId) setCfScanId(scanId);
+        }
+        if (cfDetail.resumeNames?.length) {
+          setCfScannedResumeNames((prev) =>
+            cfDetail.resumeNames.length > prev.length ? cfDetail.resumeNames : prev
+          );
         }
       } catch (err) {
         console.error("Failed to reload company results after completion:", err);
@@ -629,7 +684,8 @@ export default function ScoringView({
 
   const uploadFilesForPreview = async (newResumes: ParsedResume[]) => {
     const orgId = user?.organization_id || user?.id;
-    const toUpload = newResumes.filter((r) => !previewUrls[r.name]);
+    // Only start uploads for files not already tracked (in-flight or done)
+    const toUpload = newResumes.filter((r) => !uploadPromisesRef.current.has(r.name));
     if (toUpload.length === 0) return;
 
     setUploadingFiles((prev) => {
@@ -639,35 +695,42 @@ export default function ScoringView({
     });
 
     await Promise.all(
-      toUpload.map(async (resume) => {
-        try {
-          const formData = new FormData();
-          formData.append("resume", resume.file);
-          if (orgId) formData.append("organizationId", orgId);
-          if (user?.id) formData.append("userId", user.id);
+      toUpload.map((resume) => {
+        const p = (async (): Promise<string | null> => {
+          try {
+            const formData = new FormData();
+            formData.append("resume", resume.file);
+            if (orgId) formData.append("organizationId", orgId);
+            if (user?.id) formData.append("userId", user.id);
 
-          const res = await fetch("/api/upload-resume", { method: "POST", body: formData });
-          if (res.ok) {
-            const { resumeUrl } = await res.json();
-            if (resumeUrl) {
-              setPreviewUrls((prev) => ({ ...prev, [resume.name]: resumeUrl }));
+            const res = await fetch("/api/upload-resume", { method: "POST", body: formData });
+            if (res.ok) {
+              const { resumeUrl } = await res.json();
+              if (resumeUrl) {
+                setPreviewUrls((prev) => ({ ...prev, [resume.name]: resumeUrl }));
+                return resumeUrl;
+              }
             }
+            return null;
+          } catch {
+            return null;
+          } finally {
+            setUploadingFiles((prev) => {
+              const next = new Set(prev);
+              next.delete(resume.name);
+              return next;
+            });
           }
-        } catch {
-          // Silently skip failed uploads
-        } finally {
-          setUploadingFiles((prev) => {
-            const next = new Set(prev);
-            next.delete(resume.name);
-            return next;
-          });
-        }
+        })();
+        uploadPromisesRef.current.set(resume.name, p);
+        return p;
       })
     );
   };
 
   // Analyze resumes with batched API calls
   const handleAnalyze = async () => {
+    if (isAnalyzingRef.current) return;
     if (!jobDescription.trim()) {
       toast.error("Please provide a job description");
       return;
@@ -676,9 +739,11 @@ export default function ScoringView({
       toast.error("Please upload at least one resume");
       return;
     }
+    isAnalyzingRef.current = true;
 
     // Skip resumes already scored for this job
-    const existingNames = new Set(results?.map((r) => r.resumeName) || []);
+    const existingResultsAtStart: ATSScoreResult[] = results || [];
+    const existingNames = new Set(existingResultsAtStart.map((r) => r.resumeName));
     const skippedResumes = resumes.filter((r) => existingNames.has(r.name));
     const newResumes = resumes.filter((r) => !existingNames.has(r.name));
 
@@ -690,6 +755,7 @@ export default function ScoringView({
     }
 
     if (newResumes.length === 0) {
+      isAnalyzingRef.current = false;
       setResumes([]);
       return;
     }
@@ -700,6 +766,50 @@ export default function ScoringView({
     setProcessingState(atsKey, { analyzing: true, itemCount: newResumes.length, progress: { current: 0, total: 0 } });
 
     try {
+      // Phase 1: Upload ALL resumes to blob before scoring starts.
+      // Re-use any in-flight promises from uploadFilesForPreview (triggered on file drop)
+      // so we never upload the same file twice. Start fresh uploads only for files not tracked.
+      const orgId = user?.organization_id || user?.id;
+      const preUploadUrls: Record<string, string> = {};
+
+      for (const resume of newResumes) {
+        if (!uploadPromisesRef.current.has(resume.name)) {
+          const p = (async (): Promise<string | null> => {
+            try {
+              const formData = new FormData();
+              formData.append("resume", resume.file);
+              if (orgId) formData.append("organizationId", orgId);
+              if (user?.id) formData.append("userId", user.id);
+              setUploadingFiles((prev) => new Set([...prev, resume.name]));
+              const res = await fetch("/api/upload-resume", { method: "POST", body: formData });
+              if (res.ok) {
+                const { resumeUrl } = await res.json();
+                if (resumeUrl) {
+                  setPreviewUrls((prev) => ({ ...prev, [resume.name]: resumeUrl }));
+                  return resumeUrl;
+                }
+              }
+              return null;
+            } catch {
+              return null;
+            } finally {
+              setUploadingFiles((prev) => { const next = new Set(prev); next.delete(resume.name); return next; });
+            }
+          })();
+          uploadPromisesRef.current.set(resume.name, p);
+        }
+      }
+
+      // Await ALL uploads (both previously started and new) before scoring begins
+      const uploadResults = await Promise.allSettled(
+        newResumes.map((r) => uploadPromisesRef.current.get(r.name) ?? Promise.resolve(null))
+      );
+      newResumes.forEach((r, i) => {
+        const res = uploadResults[i];
+        const url = res.status === "fulfilled" ? res.value : null;
+        if (url) preUploadUrls[r.name] = url;
+      });
+
       const batches: ParsedResume[][] = [];
       for (let i = 0; i < newResumes.length; i += BATCH_SIZE) {
         batches.push(newResumes.slice(i, i + BATCH_SIZE));
@@ -707,13 +817,14 @@ export default function ScoringView({
 
       setAnalyzeProgress({ current: 0, total: batches.length });
       setProcessingState(atsKey, { progress: { current: 0, total: batches.length } });
-      const newResults: ATSScoreResult[] = [];
+      // Shared accumulator — all workers push here between awaits (JS single-thread = atomic).
+      const allNewResults: ATSScoreResult[] = [];
       let completedBatches = 0;
       const scoredAt = new Date().toISOString();
 
       let failedBatches = 0;
       const callATSAPI = async (resumeBatch: ParsedResume[]): Promise<ATSScoreResult[]> => {
-        const response = await fetch("/api/ats-scoring", {
+        const response = await fetchWithRetry("/api/ats-scoring", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -731,6 +842,27 @@ export default function ScoringView({
         return (data.results || []).map((r: ATSScoreResult) => ({ ...r, scoredAt }));
       };
 
+      // Push results + take a consistent snapshot + render. Called synchronously
+      // between awaits so push + snapshot is atomic across concurrent workers.
+      const appendAndRender = (results: ATSScoreResult[]) => {
+        allNewResults.push(...results);
+        const snapshot = allNewResults.map((r) => ({
+          ...r,
+          resumeUrl: preUploadUrls[r.resumeName] || resumeUrlMap[r.resumeName] || r.resumeUrl,
+        }));
+        setResults((prev) => {
+          const existingBase = prev || [];
+          const partialNames = new Set(snapshot.map((r) => r.resumeName));
+          const partialMerged = [
+            ...existingBase.filter((r) => !partialNames.has(r.resumeName)),
+            ...snapshot,
+          ];
+          partialMerged.sort((a, b) => b.overallScore - a.overallScore);
+          return partialMerged;
+        });
+        ATSJobService.updateResults(interviewId, [...existingResultsAtStart, ...snapshot]).catch(() => {});
+      };
+
       const batchQueue = batches.map((batch, idx) => ({ batch, idx }));
       const batchWorker = async () => {
         while (batchQueue.length > 0) {
@@ -738,18 +870,16 @@ export default function ScoringView({
           if (!item) break;
 
           try {
-            // First attempt
             const results = await callATSAPI(item.batch);
-            newResults.push(...results);
+            appendAndRender(results);
           } catch (firstErr) {
             console.warn(`Batch ${item.idx + 1} failed, retrying with smaller chunks:`, firstErr);
-            // Retry: split batch in half and process each half
             const half = Math.ceil(item.batch.length / 2);
             const subBatches = [item.batch.slice(0, half), item.batch.slice(half)].filter(b => b.length > 0);
             for (const sub of subBatches) {
               try {
                 const results = await callATSAPI(sub);
-                newResults.push(...results);
+                appendAndRender(results);
               } catch (subErr) {
                 console.error(`Sub-batch failed:`, subErr);
                 failedBatches++;
@@ -760,25 +890,6 @@ export default function ScoringView({
           completedBatches++;
           setProcessingState(atsKey, { progress: { current: completedBatches, total: batches.length } });
           setAnalyzeProgress({ current: completedBatches, total: batches.length });
-
-          // Progressive display: show results as each batch completes
-          // Snapshot newResults to avoid mutation from other parallel workers
-          if (newResults.length > 0) {
-            const snapshot = [...newResults];
-            // Update UI immediately via functional setState (avoids stale closure)
-            setResults((prev) => {
-              const existingBase = prev || [];
-              const partialNames = new Set(snapshot.map((r) => r.resumeName));
-              const partialMerged = [
-                ...existingBase.filter((r) => !partialNames.has(r.resumeName)),
-                ...snapshot,
-              ];
-              partialMerged.sort((a, b) => b.overallScore - a.overallScore);
-              return partialMerged;
-            });
-            // Persist partial results to DB so re-mounts (page navigation) show progress
-            ATSJobService.updateResults(interviewId, snapshot).catch(() => {});
-          }
         }
       };
 
@@ -788,63 +899,28 @@ export default function ScoringView({
       );
       await Promise.all(batchWorkers);
 
-      // Upload resume files in parallel before showing results so Eye buttons are available immediately
-      const orgId = user?.organization_id || user?.id;
-      const uploadPromises = newResults.map(async (r) => {
-        if (resumeUrlMap[r.resumeName]) return { name: r.resumeName, url: resumeUrlMap[r.resumeName] };
-        const matchingResume = resumes.find((res) => res.name === r.resumeName);
-        if (!matchingResume?.file) return { name: r.resumeName, url: "" };
-        try {
-          const formData = new FormData();
-          formData.append("resume", matchingResume.file);
-          if (orgId) formData.append("organizationId", orgId);
-          if (user?.id) formData.append("userId", user.id);
-          const uploadRes = await fetch("/api/upload-resume", { method: "POST", body: formData });
-          if (uploadRes.ok) {
-            const { resumeUrl } = await uploadRes.json();
-            return { name: r.resumeName, url: resumeUrl || "" };
-          }
-        } catch { /* skip */ }
-        return { name: r.resumeName, url: "" };
-      });
-      const uploadResults = await Promise.allSettled(uploadPromises);
-      const uploadedUrls: Record<string, string> = {};
-      for (const ur of uploadResults) {
-        if (ur.status === "fulfilled" && ur.value.url) {
-          uploadedUrls[ur.value.name] = ur.value.url;
-        }
-      }
-
-      // Attach URLs to new results
-      const newResultsWithUrls = newResults.map((r) => ({
+      // Final merge with URLs attached
+      const uploadedUrls: Record<string, string> = { ...preUploadUrls };
+      const newResultsWithUrls = allNewResults.map((r) => ({
         ...r,
-        resumeUrl: uploadedUrls[r.resumeName] || r.resumeUrl || undefined,
+        resumeUrl: uploadedUrls[r.resumeName] || resumeUrlMap[r.resumeName] || r.resumeUrl || undefined,
       }));
+      const newResumeNames = new Set(allNewResults.map((r) => r.resumeName));
+      const merged: ATSScoreResult[] = [
+        ...existingResultsAtStart.filter((r) => !newResumeNames.has(r.resumeName)),
+        ...newResultsWithUrls,
+      ];
+      merged.sort((a, b) => b.overallScore - a.overallScore);
+      setResults(merged);
 
-      // Merge: new results for same resumeName replace old, others are kept
-      // Use functional setState to avoid stale closure + no mountedRef guard
-      // so results are always set even if user switched tabs
-      const newResumeNames = new Set(newResults.map((r) => r.resumeName));
-      let merged: ATSScoreResult[] = newResultsWithUrls;
-      setResults((prev) => {
-        const existingResults = prev || [];
-        merged = [
-          ...existingResults.filter((r) => !newResumeNames.has(r.resumeName)),
-          ...newResultsWithUrls,
-        ];
-        merged.sort((a, b) => b.overallScore - a.overallScore);
-        return merged;
-      });
-
-      // Persist merged results to Supabase (runs regardless of mount state)
       ATSJobService.updateResults(interviewId, merged).catch((err) => {
         console.error("Failed to save results:", err);
         if (mountedRef.current) toast.error("Results computed but failed to save to server");
       });
 
-      if (newResults.length > 0) {
+      if (allNewResults.length > 0) {
         if (failedBatches > 0 && mountedRef.current) {
-          toast.warning(`${newResults.length} resume(s) scored. ${failedBatches} batch(es) failed — try re-uploading those resumes.`);
+          toast.warning(`${allNewResults.length} resume(s) scored. ${failedBatches} batch(es) failed — try re-uploading those resumes.`);
         }
         // These run regardless of mount state so they complete in background
         createAssigneesFromResults(newResultsWithUrls);
@@ -862,19 +938,60 @@ export default function ScoringView({
         });
       }
     } finally {
+      isAnalyzingRef.current = false;
       // Broadcast analyzing=false BEFORE clearing so any re-mounted subscriber
       // picks up the completion signal (same pattern as runCompanyFinder).
       setProcessingState(atsKey, { analyzing: false });
       clearProcessingState(atsKey);
       setAnalyzing(false);
       setAnalyzeProgress({ current: 0, total: 0 });
+      // Clear upload promises to free memory — these are one-shot per analysis run
+      uploadPromisesRef.current.clear();
       if (mountedRef.current) {
         setResumes([]);
       }
     }
   };
 
-  // Export results as CSV
+  // Export company results as CSV (Companies Founded tab)
+  const exportCompanyCSV = () => {
+    if (!companyResults || companyResults.length === 0) return;
+
+    const headers = [
+      "Company",
+      "Type",
+      "Company Info",
+      "Headquarters",
+      "Founded Year",
+      "Countries",
+      "Frequency",
+      "Source Resumes",
+      "Description",
+    ];
+
+    const rows = companyResults.map((c) => [
+      `"${c.companyName.replace(/"/g, '""')}"`,
+      c.companyType === "service_provider" ? "Service Provider" : c.companyType === "service_consumer" ? "Service Consumer" : "Unknown",
+      `"${(c.companyInfo || "").replace(/"/g, '""')}"`,
+      `"${(c.headquarters || "").replace(/"/g, '""')}"`,
+      c.foundedYear || "",
+      `"${(c.countriesWorkedIn || []).join(", ").replace(/"/g, '""')}"`,
+      c.frequency,
+      `"${(c.sourceResumes || []).join(", ").replace(/"/g, '""')}"`,
+      `"${(c.contexts || []).join(" | ").replace(/"/g, '""')}"`,
+    ]);
+
+    const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `companies-${interviewName.replace(/[^a-zA-Z0-9]/g, "_")}-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
+  // Export ATS results as CSV
   const exportCSV = () => {
     if (!results) return;
 
@@ -1092,97 +1209,126 @@ export default function ScoringView({
 
   const runCompanyFinder = async (initialResumesToScan: ParsedResume[]) => {
     if (initialResumesToScan.length === 0) return;
-    let resumesToScan = [...initialResumesToScan];
-    // Prevent the auto-restart effect from double-starting if this was triggered by the
-    // analyze button (not the effect itself). Safe to set here — the ref is only false on
-    // a fresh component mount, and this function won't be called twice concurrently.
-    cfAutoRestartAttempted.current = true;
-    const CF_BATCH_SIZE = 5;
-    const CF_CONCURRENCY = 3;
+    if (isRunningCFRef.current) {
+      console.warn("[CF] Skipped: already running");
+      return;
+    }
+    isRunningCFRef.current = true;
     const cfKey = `cf_${interviewId}`;
     const cfStorageKey = `cf_resumes_${interviewId}`;
 
-    // Persist resume texts so we can auto-restart if the page is refreshed mid-run
     try {
-      sessionStorage.setItem(cfStorageKey, JSON.stringify(
-        resumesToScan.map((r) => ({ name: r.name, text: r.text }))
-      ));
-    } catch { /* ignore storage errors */ }
+      let resumesToScan = [...initialResumesToScan];
+      // Capture existing CF state at the start so async operations have a stable base
+      const existingCFResultsAtStart: AggregatedCompany[] = persistedCompanyResults || [];
+      const existingCFResumeNamesAtStart: string[] = cfScannedResumeNames || [];
+      // Prevent the auto-restart effect from double-starting if this was triggered by the
+      // analyze button (not the effect itself). Safe to set here — the ref is only false on
+      // a fresh component mount, and this function won't be called twice concurrently.
+      cfAutoRestartAttempted.current = true;
+      const CF_CONCURRENCY = 3;
 
-    setCompanyAnalyzing(true);
-
-    // Resolve/create the DB scan ID once before the loop
-    let resolvedScanId: string | null = cfScanId;
-    if (!resolvedScanId) {
+      // Persist resume texts so we can auto-restart if the page is refreshed mid-run
       try {
-        resolvedScanId = await CompanyFinderService.ensureAtsScan(interviewId);
-        setCfScanId(resolvedScanId);
-      } catch (err) {
-        console.error("Failed to create CF scan before batching:", err);
-      }
-    }
+        sessionStorage.setItem(cfStorageKey, JSON.stringify(
+          resumesToScan.map((r) => ({ name: r.name, text: r.text }))
+        ));
+      } catch { /* ignore storage errors */ }
 
-    // ── Reuse results from other scans (standalone Company Finder, etc.) ──
-    let reusedCompanies: AggregatedCompany[] = [];
-    let reusedResumeNames: string[] = [];
-    try {
-      const crossScan = await CompanyFinderService.findExistingResultsForResumes(
-        resolvedScanId || "",
-        resumesToScan.map((r) => r.name)
-      );
-      if (crossScan.processedNames.length > 0) {
-        reusedCompanies = crossScan.companies;
-        reusedResumeNames = crossScan.processedNames;
-        // Merge resume URLs from source scans so Eye buttons work
-        if (Object.keys(crossScan.resumeUrls).length > 0) {
-          setPreviewUrls((prev) => ({ ...prev, ...crossScan.resumeUrls }));
+      flushSync(() => { setCompanyAnalyzing(true); });
+
+      // Resolve/create the DB scan ID once before the loop
+      let resolvedScanId: string | null = cfScanId;
+      if (!resolvedScanId) {
+        try {
+          resolvedScanId = await CompanyFinderService.ensureAtsScan(interviewId);
+          setCfScanId(resolvedScanId);
+        } catch (err) {
+          console.error("Failed to create CF scan before batching:", err);
         }
-        // Remove already-processed resumes from the API queue
-        const reusedSet = new Set(reusedResumeNames.map((n) => n.toLowerCase().trim()));
-        resumesToScan = resumesToScan.filter((r) => !reusedSet.has(r.name.toLowerCase().trim()));
       }
-    } catch (err) {
-      console.error("Cross-scan lookup failed, proceeding with full analysis:", err);
-    }
 
-    // If reused companies found, merge them immediately into current results
-    if (reusedCompanies.length > 0) {
-      const existing = persistedCompanyResults || [];
-      const reusedKeys = new Set(reusedCompanies.map((c) => c.companyName.trim().toLowerCase()));
-      const merged = [
-        ...existing.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
-        ...reusedCompanies,
-      ];
-      setPersistedCompanyResults(merged);
-      const names = Array.from(new Set([
-        ...reusedResumeNames,
-        ...merged.flatMap((c) => c.sourceResumes),
-      ]));
-      saveCFResultsToDB(merged, names, resolvedScanId);
-    }
+      // ── Reuse results from other scans (standalone Company Finder, etc.) ──
+      let reusedCompanies: AggregatedCompany[] = [];
+      let reusedResumeNames: string[] = [];
+      try {
+        const crossScan = await CompanyFinderService.findExistingResultsForResumes(
+          resolvedScanId || "",
+          resumesToScan.map((r) => r.name)
+        );
+        if (crossScan.processedNames.length > 0) {
+          reusedCompanies = crossScan.companies;
+          reusedResumeNames = crossScan.processedNames;
+          // Merge resume URLs from source scans so Eye buttons work
+          if (Object.keys(crossScan.resumeUrls).length > 0) {
+            setPreviewUrls((prev) => ({ ...prev, ...crossScan.resumeUrls }));
+          }
+          // Remove already-processed resumes from the API queue
+          const reusedSet = new Set(reusedResumeNames.map((n) => n.toLowerCase().trim()));
+          resumesToScan = resumesToScan.filter((r) => !reusedSet.has(r.name.toLowerCase().trim()));
+        }
+      } catch (err) {
+        console.error("Cross-scan lookup failed, proceeding with full analysis:", err);
+      }
 
-    // If all resumes were already processed in other scans, finish early
-    if (resumesToScan.length === 0) {
-      try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
-      setProcessingState(cfKey, { analyzing: false });
-      clearProcessingState(cfKey);
-      setCompanyAnalyzing(false);
-      return;
-    }
+      // If reused companies found, merge them immediately into current results
+      if (reusedCompanies.length > 0) {
+        const reusedKeys = new Set(reusedCompanies.map((c) => c.companyName.trim().toLowerCase()));
+        const merged = [
+          ...existingCFResultsAtStart.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
+          ...reusedCompanies,
+        ];
+        // flushSync forces an immediate synchronous render so the Companies Founded
+        // tab shows results right away even if the user is on the ATS Scoring tab.
+        flushSync(() => { setPersistedCompanyResults(merged); });
+        const names = Array.from(new Set([
+          ...existingCFResumeNamesAtStart,
+          ...reusedResumeNames,
+          ...merged.flatMap((c) => c.sourceResumes),
+        ]));
+        setCfScannedResumeNames((prev) => names.length > prev.length ? names : prev);
+        // Await the DB save so the completion useEffect doesn't fetch stale data
+        await saveCFResultsToDB(merged, names, resolvedScanId);
+      }
 
-    // Split remaining resumes into batches of 5
-    const batches: ParsedResume[][] = [];
-    for (let i = 0; i < resumesToScan.length; i += CF_BATCH_SIZE) {
-      batches.push(resumesToScan.slice(i, i + CF_BATCH_SIZE));
-    }
+      // If all resumes were already processed in other scans, finish early
+      if (resumesToScan.length === 0) {
+        try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
+        return;
+      }
 
-    setProcessingState(cfKey, { analyzing: true, itemCount: resumesToScan.length, progress: { current: 0, total: batches.length } });
+      // Split remaining resumes into batches of CF_BATCH_SIZE
+      const batches: ParsedResume[][] = [];
+      for (let i = 0; i < resumesToScan.length; i += CF_BATCH_SIZE) {
+        batches.push(resumesToScan.slice(i, i + CF_BATCH_SIZE));
+      }
 
-    // Local accumulator to avoid stale closure on extractedCompanies state
-    let accumulatedRaw: ExtractedCompany[] = [...extractedCompanies];
-    let completedBatches = 0;
+      setProcessingState(cfKey, { analyzing: true, itemCount: resumesToScan.length, progress: { current: 0, total: batches.length } });
 
-    try {
+      // Shared accumulator — all workers push here between awaits (JS single-thread = atomic push).
+      const allRawCompanies: ExtractedCompany[] = [...extractedCompanies];
+      let completedBatches = 0;
+      // Shared set of ALL processed resume names (concurrent-safe in JS single-threaded event loop)
+      // Include previously scanned names so the resume count is cumulative
+      const processedNamesSet = new Set<string>([...existingCFResumeNamesAtStart, ...reusedResumeNames]);
+
+      // Push results + take snapshot + render + persist. Called synchronously between awaits
+      // so push + snapshot is atomic across concurrent workers. Returns a promise for the DB save.
+      const appendAndRenderCF = async (newRaw: ExtractedCompany[]) => {
+        allRawCompanies.push(...newRaw);
+        setExtractedCompanies([...allRawCompanies]);
+        const processedNames = Array.from(processedNamesSet);
+        const freshAggregated = aggregateCFCompanies(allRawCompanies);
+        const freshKeys = new Set(freshAggregated.map((c) => c.companyName.trim().toLowerCase()));
+        const combined = [
+          ...existingCFResultsAtStart.filter((c) => !freshKeys.has(c.companyName.trim().toLowerCase())),
+          ...reusedCompanies.filter((c) => !freshKeys.has(c.companyName.trim().toLowerCase())),
+          ...freshAggregated,
+        ];
+        flushSync(() => { setPersistedCompanyResults(combined); });
+        await saveCFResultsToDB(combined, processedNames, resolvedScanId);
+      };
+
       const batchQueue = batches.map((batch, idx) => ({ batch, idx }));
       const batchWorker = async () => {
         while (batchQueue.length > 0) {
@@ -1190,7 +1336,7 @@ export default function ScoringView({
           if (!item) break;
 
           try {
-            const response = await fetch("/api/company-finder", {
+            const response = await fetchWithRetry("/api/company-finder", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1201,31 +1347,21 @@ export default function ScoringView({
               }),
             });
 
+            // Add this batch's resumes to the shared set — always, regardless of whether
+            // companies were found, so the resume count includes all analyzed resumes
+            for (const r of item.batch) processedNamesSet.add(r.name);
+            const processedNames = Array.from(processedNamesSet);
+            setCfScannedResumeNames((prev) =>
+              processedNames.length > prev.length ? processedNames : prev
+            );
+
             if (response.ok) {
               const data = await response.json();
               if (data.companies?.length > 0) {
-                const newRaw = data.companies as ExtractedCompany[];
-                accumulatedRaw = [...accumulatedRaw, ...newRaw];
-                setExtractedCompanies(accumulatedRaw);
-
-                // Aggregate and show partial results after each batch
-                // Merge with reused companies so the UI shows everything
-                const freshAggregated = aggregateCFCompanies(accumulatedRaw);
-                const freshKeys = new Set(freshAggregated.map((c) => c.companyName.trim().toLowerCase()));
-                const combined = [
-                  ...reusedCompanies.filter((c) => !freshKeys.has(c.companyName.trim().toLowerCase())),
-                  ...freshAggregated,
-                ];
-                setPersistedCompanyResults(combined);
-
-                // Save partial results to DB after each batch
-                const processedNames = [
-                  ...reusedResumeNames,
-                  ...resumesToScan
-                    .slice(0, (completedBatches + 1) * CF_BATCH_SIZE)
-                    .map((r) => r.name),
-                ];
-                saveCFResultsToDB(combined, processedNames, resolvedScanId);
+                await appendAndRenderCF(data.companies as ExtractedCompany[]);
+              } else {
+                // No new companies — still render with current accumulated data + persist resume names
+                await appendAndRenderCF([]);
               }
             } else {
               console.warn(`Company Finder batch ${item.idx + 1}/${batches.length} returned ${response.status}`);
@@ -1252,6 +1388,7 @@ export default function ScoringView({
       console.error("Company Finder run failed:", err);
       try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
     } finally {
+      isRunningCFRef.current = false;
       // Broadcast analyzing=false BEFORE clearing so any newly-subscribed component instance
       // (e.g. after a navigate-away + back) receives the completion signal via its subscriber.
       setProcessingState(`cf_${interviewId}`, { analyzing: false });
@@ -1419,7 +1556,7 @@ export default function ScoringView({
     }
   };
 
-  const filteredCFResults = companyResults
+  const filteredCFResults = useMemo(() => companyResults
     .filter((c) => {
       if (cfTypeFilter !== "all" && c.companyType !== cfTypeFilter) return false;
       if (cfSearchQuery.trim()) {
@@ -1437,7 +1574,7 @@ export default function ScoringView({
       cfSortBy === "frequency"
         ? b.frequency - a.frequency
         : a.companyName.localeCompare(b.companyName)
-    );
+    ), [companyResults, cfTypeFilter, cfSearchQuery, cfSortBy]);
 
   const toggleCFSelect = (companyName: string) => {
     const key = companyName.trim().toLowerCase();
@@ -1480,7 +1617,7 @@ export default function ScoringView({
   };
 
   // Filtered results
-  const filteredResults = results
+  const filteredResults = useMemo(() => results
     ? results
         .filter((r) => {
           // Score filter (normalized to 0-10 scale)
@@ -1510,12 +1647,12 @@ export default function ScoringView({
           // date
           return (b.scoredAt || "").localeCompare(a.scoredAt || "");
         })
-    : null;
+    : null, [results, scoreFilter, searchQuery, sortBy]);
 
   // Loading state
   if (dataLoading) {
     return (
-      <div className="flex flex-col gap-6">
+      <main className="p-8 pt-0 ml-12 mr-auto flex flex-col gap-6">
         <div className="flex items-center gap-4 mt-8">
           <Button
             variant="ghost"
@@ -1536,12 +1673,12 @@ export default function ScoringView({
         <div className="flex items-center justify-center h-48">
           <Loader2 className="h-8 w-8 text-indigo-500 animate-spin" />
         </div>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <main className="p-8 pt-0 ml-12 mr-auto flex flex-col gap-6">
       {/* Header */}
       <div className="flex items-center justify-between mt-8">
         <div className="flex items-center gap-4">
@@ -1563,12 +1700,20 @@ export default function ScoringView({
             </p>
           </div>
         </div>
-        {results && (
-          <Button variant="outline" size="sm" onClick={exportCSV}>
-            <Download className="h-4 w-4 mr-2" />
-            Export CSV
-          </Button>
-        )}
+        {activeTab === "companies"
+          ? companyResults.length > 0 && (
+              <Button variant="outline" size="sm" onClick={exportCompanyCSV}>
+                <Download className="h-4 w-4 mr-2" />
+                Export CSV
+              </Button>
+            )
+          : results && (
+              <Button variant="outline" size="sm" onClick={exportCSV}>
+                <Download className="h-4 w-4 mr-2" />
+                Export CSV
+              </Button>
+            )
+        }
       </div>
 
       {/* Job Description Input */}
@@ -2031,6 +2176,7 @@ export default function ScoringView({
                       rank={index + 1}
                       onDelete={handleDeleteResult}
                       previewUrl={previewUrls[result.resumeName]}
+                      isUploading={uploadingFiles.has(result.resumeName)}
                     />
                   </div>
                 </div>
@@ -2046,36 +2192,39 @@ export default function ScoringView({
 
           {/* Companies Founded Tab */}
           {(user?.role === 'admin' || user?.role === 'marketing') && <TabsContent value="companies" className="mt-4">
-            {companyAnalyzing && companyResults.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-4 text-slate-500">
-                <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
-                <span className="text-sm">Fetching company data from the web…</span>
-                {cfProgress && cfItemCount > 0 && (
-                  <div className="w-full max-w-md p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-indigo-700">Processing resumes...</span>
-                      <span className="text-sm font-medium text-indigo-700">
-                        {Math.min(cfProgress.current * 5, cfItemCount)}/{cfItemCount} processed
-                      </span>
-                    </div>
-                    <div className="w-full bg-indigo-100 rounded-full h-2">
-                      <div
-                        className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${(Math.min(cfProgress.current * 5, cfItemCount) / cfItemCount) * 100}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : companyResults.length === 0 ? (
+            {!companyAnalyzing && companyResults.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2 text-slate-400">
                 <Building2 className="h-8 w-8" />
                 <p className="text-sm">No companies found yet. Analyze resumes to auto-detect companies.</p>
               </div>
             ) : (
               <div className="flex flex-col gap-6">
+                {/* Inline progress banner — visible while analyzing, replaces old full-screen spinner */}
+                {companyAnalyzing && (
+                  <div className="p-3 bg-indigo-50 rounded-lg border border-indigo-100">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-indigo-700 flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Fetching company data from the web…
+                      </span>
+                      {cfProgress && cfItemCount > 0 && (
+                        <span className="text-sm font-medium text-indigo-700">
+                          {Math.min(cfProgress.current * CF_BATCH_SIZE, cfItemCount)}/{cfItemCount} processed
+                        </span>
+                      )}
+                    </div>
+                    {cfProgress && cfItemCount > 0 && (
+                      <div className="w-full bg-indigo-100 rounded-full h-2">
+                        <div
+                          className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
+                          style={{
+                            width: `${(Math.min(cfProgress.current * CF_BATCH_SIZE, cfItemCount) / cfItemCount) * 100}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
                 {/* Stats */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <Card>
@@ -2087,12 +2236,7 @@ export default function ScoringView({
                             {companyResults.length}
                             {companyAnalyzing && <Loader2 className="inline h-4 w-4 ml-2 animate-spin text-indigo-400" />}
                           </p>
-                          <p className="text-xs text-slate-500">
-                            Total Companies
-                            {companyAnalyzing && cfProgress && cfItemCount > 0 && (
-                              <span className="ml-1 text-indigo-400">({Math.min(cfProgress.current * 5, cfItemCount)}/{cfItemCount} resumes processed)</span>
-                            )}
-                          </p>
+                          <p className="text-xs text-slate-500">Total Companies</p>
                         </div>
                       </div>
                     </CardContent>
@@ -2102,7 +2246,7 @@ export default function ScoringView({
                       <div className="flex items-center gap-3">
                         <Users className="h-5 w-5 text-amber-500" />
                         <div>
-                          <p className="text-2xl font-bold">{results?.length || 0}</p>
+                          <p className="text-2xl font-bold">{cfScannedResumeNames.length || new Set(companyResults.flatMap((c) => c.sourceResumes)).size || results?.length || 0}</p>
                           <p className="text-xs text-slate-500">Resumes Analyzed</p>
                         </div>
                       </div>
@@ -2162,6 +2306,13 @@ export default function ScoringView({
                       </tr>
                     </thead>
                     <tbody>
+                      {filteredCFResults.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="py-10 text-center text-sm text-slate-400">
+                            {companyAnalyzing ? "Scanning resumes for companies…" : "No companies match your filters."}
+                          </td>
+                        </tr>
+                      )}
                       {filteredCFResults.map((company, index) => (
                         <tr
                           key={index}
@@ -2294,6 +2445,6 @@ export default function ScoringView({
           fileName={viewingResume.name}
         />
       )}
-    </div>
+    </main>
   );
 }

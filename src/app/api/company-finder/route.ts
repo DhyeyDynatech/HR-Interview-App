@@ -9,7 +9,12 @@ import { logger } from "@/lib/logger";
 import { ApiUsageService } from "@/services/api-usage.service";
 import { CompanyFinderRequest, CompanyFinderAIResponse } from "@/types/company-finder";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
+
+const MAX_RESUMES_PER_REQUEST = 10;
+const MAX_RESUME_TEXT_LENGTH = 100_000; // ~100K chars per resume
+const MAX_ENRICH_COMPANIES = 50;
+const OPENAI_TIMEOUT_MS = 240_000; // 4 minutes — GPT-5 needs time for large batches
 
 export async function POST(req: Request) {
   logger.info("company-finder request received");
@@ -32,6 +37,26 @@ export async function POST(req: Request) {
     );
   }
 
+  if (!body.enrichOnly && body.resumes && body.resumes.length > MAX_RESUMES_PER_REQUEST) {
+    return NextResponse.json(
+      { error: `Maximum ${MAX_RESUMES_PER_REQUEST} resumes per request` },
+      { status: 400 }
+    );
+  }
+
+  if (body.enrichOnly && body.enrichOnly.length > MAX_ENRICH_COMPANIES) {
+    return NextResponse.json(
+      { error: `Maximum ${MAX_ENRICH_COMPANIES} companies per enrichment request` },
+      { status: 400 }
+    );
+  }
+
+  // Truncate oversized resume texts
+  const resumes = (body.resumes || []).map((r) => ({
+    ...r,
+    text: r.text.slice(0, MAX_RESUME_TEXT_LENGTH),
+  }));
+
   if (!process.env.OPENAI_API_KEY) {
     logger.error("OPENAI_API_KEY is not set");
     return NextResponse.json(
@@ -42,8 +67,8 @@ export async function POST(req: Request) {
 
   const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
-    maxRetries: 1,
-    dangerouslyAllowBrowser: true,
+    maxRetries: 3,
+    timeout: OPENAI_TIMEOUT_MS,
   });
 
   try {
@@ -54,7 +79,7 @@ export async function POST(req: Request) {
     // -------------------------------------------------------------------------
     const prompt = body.enrichOnly && body.enrichOnly.length > 0
       ? generateEnrichmentPrompt(body.enrichOnly)
-      : generateCompanyFinderPrompt({ resumes: body.resumes });
+      : generateCompanyFinderPrompt({ resumes });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-5",
@@ -97,7 +122,7 @@ export async function POST(req: Request) {
     // In enrichment-only mode, skip the relevance filter — all companies were already
     // deemed relevant during extraction; re-filtering without resume context is unreliable.
     const companies = (parsed.companies || [])
-      .filter((c) => body.enrichOnly ? true : (c as any).isRelevant === true)
+      .filter((c) => body.enrichOnly ? true : (c as any).isRelevant !== false)
       .map((c) => {
         // Normalize countriesWorkedIn: model may return a comma-separated string instead of array
         const raw = (c as any).countriesWorkedIn;
@@ -122,15 +147,15 @@ export async function POST(req: Request) {
       totalTokens: usage?.total_tokens || 0,
       model: "gpt-5",
       metadata: {
-        resumeCount: body.resumes.length,
-        resumeNames: body.resumes.map((r) => r.name),
+        resumeCount: resumes.length,
+        resumeNames: resumes.map((r) => r.name),
       },
     }).catch((err) => {
       logger.error("Failed to save API usage for company finder", { error: err });
     });
 
     logger.info("Company finder completed successfully", {
-      resumeCount: body.resumes.length,
+      resumeCount: resumes.length,
       companiesFound: companies.length,
       inputTokens: usage?.prompt_tokens,
       outputTokens: usage?.completion_tokens,
@@ -138,12 +163,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ companies }, { status: 200 });
   } catch (error: any) {
-    const errorMessage = error?.message || String(error);
-    console.error("Company finder error:", errorMessage);
-    console.error("Full error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    logger.error("Company finder error", { error: error?.message || String(error) });
 
     return NextResponse.json(
-      { error: errorMessage || "Internal server error" },
+      { error: "Company analysis failed. Please try again." },
       { status: 500 }
     );
   }

@@ -20,6 +20,7 @@ import {
   Briefcase,
   BarChart3,
   Shield,
+  Loader2,
 } from "lucide-react";
 import { ATSScoreResult } from "@/types/ats-scoring";
 import { ResumeViewer } from "@/components/dashboard/user/ResumeViewer";
@@ -29,6 +30,7 @@ interface ATSResultCardProps {
   rank: number;
   onDelete?: (resumeName: string) => void;
   previewUrl?: string;
+  isUploading?: boolean;
 }
 
 /** Normalize legacy 0-100 scores to 0-10 scale */
@@ -78,7 +80,7 @@ function hasDetailedAnalysis(result: ATSScoreResult): boolean {
   return !!(result.candidateProfile || result.swotAnalysis || result.experienceDepthAnalysis || result.jdUnderstanding);
 }
 
-export default function ATSResultCard({ result, rank, onDelete, previewUrl }: ATSResultCardProps) {
+export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUploading }: ATSResultCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [showResume, setShowResume] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
@@ -127,7 +129,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl }: AT
                   })}
                 </span>
               )}
-              {(result.resumeUrl || previewUrl) && (
+              {(result.resumeUrl || previewUrl) ? (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -140,7 +142,12 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl }: AT
                   <Eye className="h-3 w-3" />
                   View Resume
                 </Button>
-              )}
+              ) : isUploading ? (
+                <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Uploading...
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-3">

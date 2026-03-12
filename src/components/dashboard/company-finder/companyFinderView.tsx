@@ -41,7 +41,7 @@ import {
   clearProcessingState,
 } from "@/lib/processing-store";
 
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 3;
 const PARSE_CONCURRENCY = 5;
 const API_CONCURRENCY = 3;
 
@@ -420,9 +420,13 @@ export default function CompanyFinderView({
       return;
     }
 
+    // Capture existing state at the start so async operations have a stable base
+    const existingResultsAtStart: AggregatedCompany[] = results || [];
+    const existingResumeNamesAtStart: string[] = savedResumeNames || [];
+
     // Skip resumes already analyzed in this scan (only if results actually exist)
-    const existingNames = results && results.length > 0
-      ? new Set(savedResumeNames || [])
+    const existingNames = existingResultsAtStart.length > 0
+      ? new Set(existingResumeNamesAtStart)
       : new Set<string>();
     const skippedResumes = resumes.filter((r) => existingNames.has(r.name));
     let newResumes = resumes.filter((r) => !existingNames.has(r.name));
@@ -474,21 +478,19 @@ export default function CompanyFinderView({
 
       // If all resumes were found in other scans, merge and finish
       if (newResumes.length === 0 && reusedCompanies.length > 0) {
-        setResults((prev) => {
-          const existingBase = prev || [];
-          const reusedKeys = new Set(reusedCompanies.map((c) => c.companyName.trim().toLowerCase()));
-          const merged = [
-            ...existingBase.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
-            ...reusedCompanies,
-          ];
-          merged.sort((a, b) => b.frequency - a.frequency);
-          return merged;
-        });
+        const existingBase = results || [];
+        const reusedKeys = new Set(reusedCompanies.map((c) => c.companyName.trim().toLowerCase()));
+        const mergedReused: AggregatedCompany[] = [
+          ...existingBase.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
+          ...reusedCompanies,
+        ];
+        mergedReused.sort((a, b) => b.frequency - a.frequency);
+        setResults(mergedReused);
         const baseNames = (results && results.length > 0) ? (savedResumeNames || []) : [];
         const allResumeNames = Array.from(new Set([...baseNames, ...reusedResumeNames]));
         setSavedResumeNames(allResumeNames);
         await CompanyFinderService.updateResults(scanId, {
-          results: reusedCompanies,
+          results: mergedReused,
           resumeNames: allResumeNames,
           resumeUrls: { ...resumeUrls, ...reusedResumeUrls },
         });
@@ -548,29 +550,27 @@ export default function CompanyFinderView({
           });
 
           // Progressive display: aggregate and show results after each batch
-          // Use functional setState to avoid stale closure on `results`
           if (allExtracted.length > 0) {
             const partialAggregated = aggregateCompanies(allExtracted);
             partialAggregated.forEach((c) => { c.scannedAt = scannedAt; });
-            setResults((prev) => {
-              const existingBase = prev || [];
-              const partialKeys = new Set(
-                partialAggregated.map((c) => c.companyName.trim().toLowerCase())
-              );
-              const partialMerged = [
-                ...existingBase.filter(
-                  (c) => !partialKeys.has(c.companyName.trim().toLowerCase())
-                ),
-                ...partialAggregated,
-              ];
-              partialMerged.sort((a, b) => b.frequency - a.frequency);
-              return partialMerged;
-            });
-            // Persist partial results to DB so re-mounts (page navigation) show progress
-            // Only carry over existing resume names if there were actual results before this analysis
-            const baseResumeNames = (results && results.length > 0) ? (savedResumeNames || []) : [];
-            const resumeNames = Array.from(new Set([...baseResumeNames, ...resumes.map((r) => r.name)]));
-            CompanyFinderService.updateResults(scanId, { results: partialAggregated, resumeNames }).catch(() => {});
+            const partialKeys = new Set(
+              partialAggregated.map((c) => c.companyName.trim().toLowerCase())
+            );
+            // Merge: existing companies (from before this run) + reused + new batch results
+            const partialMerged: AggregatedCompany[] = [
+              ...existingResultsAtStart.filter(
+                (c) => !partialKeys.has(c.companyName.trim().toLowerCase())
+              ),
+              ...reusedCompanies.filter(
+                (c) => !partialKeys.has(c.companyName.trim().toLowerCase())
+              ),
+              ...partialAggregated,
+            ];
+            partialMerged.sort((a, b) => b.frequency - a.frequency);
+            setResults(partialMerged);
+            // Persist merged partial results to DB so re-mounts show all companies
+            const resumeNames = Array.from(new Set([...existingResumeNamesAtStart, ...resumes.map((r) => r.name)]));
+            CompanyFinderService.updateResults(scanId, { results: partialMerged, resumeNames }).catch(() => {});
           }
         }
       };
@@ -580,59 +580,6 @@ export default function CompanyFinderView({
         () => batchWorker()
       );
       await Promise.all(batchWorkers);
-
-      // Post-enrichment: find companies that are missing enrichment data and re-enrich them.
-      // This handles the case where a company only appears in one batch and the AI skipped its enrichment.
-      const companiesMissingEnrichment = Array.from(
-        new Set(
-          allExtracted
-            .filter((c) => !c.countriesWorkedIn?.length || !c.headquarters || c.headquarters === "unknown")
-            .map((c) => c.companyName.trim())
-        )
-      );
-      if (companiesMissingEnrichment.length > 0) {
-        try {
-          const enrichResponse = await fetch("/api/company-finder", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              resumes: [],
-              enrichOnly: companiesMissingEnrichment,
-              userId: user?.id,
-              organizationId: user?.organization_id,
-            }),
-          });
-          if (enrichResponse.ok) {
-            const enrichData = await enrichResponse.json();
-            if (enrichData.companies?.length) {
-              // Merge enrichment back into allExtracted entries
-              const enrichMap = new Map<string, typeof enrichData.companies[0]>();
-              for (const ec of enrichData.companies) {
-                enrichMap.set(ec.companyName.trim().toLowerCase(), ec);
-              }
-              for (const c of allExtracted) {
-                const enriched = enrichMap.get((c as any).companyName?.trim().toLowerCase());
-                if (enriched) {
-                  if (!c.countriesWorkedIn?.length && enriched.countriesWorkedIn?.length) {
-                    (c as any).countriesWorkedIn = enriched.countriesWorkedIn;
-                  }
-                  if ((!c.headquarters || c.headquarters === "unknown") && enriched.headquarters && enriched.headquarters !== "unknown") {
-                    (c as any).headquarters = enriched.headquarters;
-                  }
-                  if ((!c.foundedYear || c.foundedYear === "unknown") && enriched.foundedYear && enriched.foundedYear !== "unknown") {
-                    (c as any).foundedYear = enriched.foundedYear;
-                  }
-                  if (!c.companyInfo && enriched.companyInfo) {
-                    (c as any).companyInfo = enriched.companyInfo;
-                  }
-                }
-              }
-            }
-          }
-        } catch (enrichErr) {
-          console.warn("Post-enrichment step failed (non-critical):", enrichErr);
-        }
-      }
 
       // Final aggregation (ensures consistency after all batches)
       const newAggregated = aggregateCompanies(allExtracted);
@@ -653,25 +600,17 @@ export default function CompanyFinderView({
         combinedNew.map((c) => c.companyName.trim().toLowerCase())
       );
 
-      let merged: AggregatedCompany[] = combinedNew;
-      setResults((prev) => {
-        const existingResults = prev || [];
-        merged = [
-          ...existingResults.filter(
-            (c) => !combinedKeys.has(c.companyName.trim().toLowerCase())
-          ),
-          ...combinedNew,
-        ];
-        merged.sort((a, b) => b.frequency - a.frequency);
-        return merged;
-      });
+      const merged: AggregatedCompany[] = [
+        ...existingResultsAtStart.filter(
+          (c) => !combinedKeys.has(c.companyName.trim().toLowerCase())
+        ),
+        ...combinedNew,
+      ];
+      merged.sort((a, b) => b.frequency - a.frequency);
+      setResults(merged);
 
-      // Only carry over existing resume names if there were actual results before this analysis.
-      // This prevents stale names from accumulating after the user deletes all results.
-      const existingResumeNames = (results && results.length > 0) ? (savedResumeNames || []) : [];
-      const newResumeNames = resumes.map((r) => r.name);
       const allResumeNames = Array.from(
-        new Set([...existingResumeNames, ...reusedResumeNames, ...newResumeNames])
+        new Set([...existingResumeNamesAtStart, ...reusedResumeNames, ...resumes.map((r) => r.name)])
       );
       setSavedResumeNames(allResumeNames);
 
@@ -927,7 +866,7 @@ export default function CompanyFinderView({
   // Count all analyzed resumes (not just those with companies found)
   // During active analysis, show only the resumes processed so far (completed batches × batch size)
   const resumeCountDisplay = analyzing
-    ? Math.min(analyzeProgress.current * BATCH_SIZE, analyzingCountRef.current) || 0
+    ? savedResumeNames.length + Math.min(analyzeProgress.current * BATCH_SIZE, analyzingCountRef.current)
     : savedResumeNames.length > 0
       ? savedResumeNames.length
       : resumes.length;
@@ -943,7 +882,7 @@ export default function CompanyFinderView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <main className="p-8 pt-0 ml-12 mr-auto flex flex-col gap-6">
       {/* Header */}
       <div className="flex items-center justify-between mt-8">
         <div>
@@ -1489,6 +1428,6 @@ export default function CompanyFinderView({
           fileName={viewingResume.name}
         />
       )}
-    </div>
+    </main>
   );
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { put, head } from '@vercel/blob';
+import { put } from '@vercel/blob';
 import { createClient } from "@supabase/supabase-js";
 import { ApiUsageService } from "@/services/api-usage.service";
 
@@ -99,41 +99,7 @@ export async function POST(request: NextRequest) {
     const resumeText = await extractTextFromResume(file);
     const candidateEmail = resumeText ? extractEmailFromText(resumeText) : null;
 
-    if (candidateEmail && (organizationId || userId)) {
-      try {
-        const supabase = getSupabaseClient();
-        const orgId = organizationId || userId;
-
-        const { data: existingByEmail } = await supabase
-          .from("interview_assignee")
-          .select("id, first_name, last_name, email")
-          .eq("organization_id", orgId)
-          .ilike("email", candidateEmail)
-          .not("email", "is", null)
-          .limit(1);
-
-        if (existingByEmail && existingByEmail.length > 0) {
-          const existing = existingByEmail[0];
-          console.log(`[Resume Dedup] Duplicate email detected: "${candidateEmail}" already exists (assignee id=${existing.id}).`);
-          return NextResponse.json(
-            {
-              error: `A candidate with email "${candidateEmail}" already exists in this organization.`,
-              isDuplicate: true,
-              duplicateEmail: candidateEmail,
-              existingCandidate: {
-                id: existing.id,
-                name: `${existing.first_name || ''} ${existing.last_name || ''}`.trim(),
-                email: existing.email,
-              },
-            },
-            { status: 409 }
-          );
-        }
-      } catch (err) {
-        // If email duplicate check fails, log and continue — don't block upload
-        console.error("[Resume Dedup] Email duplicate check failed, proceeding:", err);
-      }
-    }
+    // Email duplicate check skipped — same candidate can re-upload updated resume.
 
     // -------------------------------------------------------------------------
     // Determine storage filename.
@@ -152,24 +118,14 @@ export async function POST(request: NextRequest) {
       : sanitizedName;
     const fileName = `resumes/${emailKey}`;
 
-    // Check if blob already exists in Vercel Blob — skip upload if so
-    try {
-      const existing = await head(fileName);
-      if (existing && existing.url) {
-        console.log(`[Resume Dedup] Blob already exists at "${fileName}". Reusing URL: ${existing.url}`);
-        return NextResponse.json({ resumeUrl: existing.url }, { status: 200 });
-      }
-    } catch {
-      // head() throws if blob doesn't exist — proceed with upload
-    }
-
     console.log('Uploading resume to Vercel Blob:', fileName);
 
-    // Upload to Vercel Blob Storage
+    // Always overwrite — same email path replaces the old file with the updated resume
     const blob = await put(fileName, file, {
       access: 'public',
       addRandomSuffix: false,
-    });
+      allowOverwrite: true,
+    } as any);
 
     console.log('Resume uploaded successfully to Vercel Blob:', blob.url);
 
