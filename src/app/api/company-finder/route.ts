@@ -1,4 +1,5 @@
-import { OpenAI } from "openai";
+import { getOpenAIClientDirect, DIRECT_MODELS } from "@/lib/openai-client";
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import {
   COMPANY_FINDER_SYSTEM_PROMPT,
@@ -14,7 +15,9 @@ export const maxDuration = 300;
 const MAX_RESUMES_PER_REQUEST = 10;
 const MAX_RESUME_TEXT_LENGTH = 100_000; // ~100K chars per resume
 const MAX_ENRICH_COMPANIES = 50;
-const OPENAI_TIMEOUT_MS = 240_000; // 4 minutes — GPT-5 needs time for large batches
+const OPENAI_TIMEOUT_MS = 290_000; // ~5 minutes — web search needs more time
+
+const CF_MODEL = DIRECT_MODELS.GPT5_MINI;
 
 export async function POST(req: Request) {
   logger.info("company-finder request received");
@@ -65,32 +68,37 @@ export async function POST(req: Request) {
     );
   }
 
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    maxRetries: 3,
-    timeout: OPENAI_TIMEOUT_MS,
-  });
+  const openai = getOpenAIClientDirect();
 
   try {
     // -------------------------------------------------------------------------
-    // Single call: gpt-5
-    // Either extract+enrich companies from resume text (normal mode),
-    // or enrich a list of company names only (enrichOnly mode).
+    // Responses API with web_search tool for real-time company enrichment
     // -------------------------------------------------------------------------
     const prompt = body.enrichOnly && body.enrichOnly.length > 0
       ? generateEnrichmentPrompt(body.enrichOnly)
       : generateCompanyFinderPrompt({ resumes });
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5",
-      max_completion_tokens: 65536,
-      messages: [
-        { role: "system", content: COMPANY_FINDER_SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-    } as any);
+    // Hard abort after timeout to prevent hanging requests
+    const abortController = new AbortController();
+    const abortTimer = setTimeout(() => abortController.abort(), OPENAI_TIMEOUT_MS);
 
-    const raw = completion.choices[0]?.message?.content || "{}";
+    let response;
+    try {
+      response = await openai.responses.create(
+        {
+          model: CF_MODEL,
+          instructions: COMPANY_FINDER_SYSTEM_PROMPT,
+          tools: [{ type: "web_search" as any }],
+          input: prompt,
+          max_output_tokens: 65536,
+        } as any,
+        { signal: abortController.signal }
+      );
+    } finally {
+      clearTimeout(abortTimer);
+    }
+
+    const raw = (response as any).output_text || "{}";
 
     // Safely extract JSON in case the model wraps output in markdown fences
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -117,7 +125,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const usage = completion.usage;
+    const usage = (response as any).usage;
 
     // In enrichment-only mode, skip the relevance filter — all companies were already
     // deemed relevant during extraction; re-filtering without resume context is unreliable.
@@ -125,13 +133,13 @@ export async function POST(req: Request) {
       .filter((c) => body.enrichOnly ? true : (c as any).isRelevant !== false)
       .map((c) => {
         // Normalize countriesWorkedIn: model may return a comma-separated string instead of array
-        const raw = (c as any).countriesWorkedIn;
-        if (typeof raw === "string" && raw.trim()) {
-          (c as any).countriesWorkedIn = raw
+        const rawField = (c as any).countriesWorkedIn;
+        if (typeof rawField === "string" && rawField.trim()) {
+          (c as any).countriesWorkedIn = rawField
             .split(/,\s*/)
             .map((s: string) => s.trim())
             .filter(Boolean);
-        } else if (!Array.isArray(raw)) {
+        } else if (!Array.isArray(rawField)) {
           (c as any).countriesWorkedIn = [];
         }
         return c;
@@ -142,10 +150,10 @@ export async function POST(req: Request) {
       userId: body.userId,
       organizationId: body.organizationId,
       category: body.category || "company_finder",
-      inputTokens: usage?.prompt_tokens || 0,
-      outputTokens: usage?.completion_tokens || 0,
-      totalTokens: usage?.total_tokens || 0,
-      model: "gpt-5",
+      inputTokens: usage?.input_tokens || 0,
+      outputTokens: usage?.output_tokens || 0,
+      totalTokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0),
+      model: CF_MODEL,
       metadata: {
         resumeCount: resumes.length,
         resumeNames: resumes.map((r) => r.name),
@@ -154,20 +162,65 @@ export async function POST(req: Request) {
       logger.error("Failed to save API usage for company finder", { error: err });
     });
 
+    // Auto-save ALL enriched companies to cache (fire-and-forget)
+    // We cache regardless of isRelevant so we never web-search the same company twice.
+    const allEnrichedCompanies = parsed.companies || [];
+    if (allEnrichedCompanies.length > 0) {
+      try {
+        const supabase = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+        );
+        const now = new Date().toISOString();
+        // Deduplicate by normalized company name before upserting
+        const seen = new Set<string>();
+        const cacheRows = allEnrichedCompanies
+          .filter((c: any) => {
+            const key = c.companyName.toLowerCase().trim().replace(/\s+/g, " ");
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .map((c: any) => ({
+            company_name: c.companyName,
+            normalized_key: c.companyName.toLowerCase().trim().replace(/\s+/g, " "),
+            company_type: c.companyType || "unknown",
+            company_info: c.companyInfo || null,
+            headquarters: c.headquarters || null,
+            founded_year: c.foundedYear || null,
+            countries_worked_in: c.countriesWorkedIn || [],
+            is_relevant: c.isRelevant ?? false,
+            enriched_at: now,
+            created_at: now,
+          }));
+        supabase
+          .from("company_cache")
+          .upsert(cacheRows, { onConflict: "normalized_key" })
+          .then(({ error: cacheErr }) => {
+            if (cacheErr) logger.error("Auto-cache upsert failed", { error: cacheErr });
+            else logger.info("Auto-cached companies", { count: cacheRows.length });
+          });
+      } catch (cacheErr) {
+        logger.error("Auto-cache error", { error: cacheErr });
+      }
+    }
+
     logger.info("Company finder completed successfully", {
       resumeCount: resumes.length,
       companiesFound: companies.length,
-      inputTokens: usage?.prompt_tokens,
-      outputTokens: usage?.completion_tokens,
+      inputTokens: usage?.input_tokens,
+      outputTokens: usage?.output_tokens,
     });
 
     return NextResponse.json({ companies }, { status: 200 });
   } catch (error: any) {
-    logger.error("Company finder error", { error: error?.message || String(error) });
+    const errMsg = error?.message || error?.error?.message || JSON.stringify(error) || String(error);
+    const isTimeout = errMsg.includes('abort') || errMsg.includes('timeout') || errMsg.includes('ETIMEDOUT');
+    logger.error("Company finder error", { error: errMsg, isTimeout });
 
     return NextResponse.json(
-      { error: "Company analysis failed. Please try again." },
-      { status: 500 }
+      { error: isTimeout ? "Request timed out. Try with fewer resumes." : "Company analysis failed. Please try again." },
+      { status: isTimeout ? 504 : 500 }
     );
   }
 }

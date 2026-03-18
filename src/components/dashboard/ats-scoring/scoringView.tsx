@@ -26,6 +26,7 @@ import {
   ArrowLeft,
   Eye,
   AlertTriangle,
+  AlertCircle,
   Search,
   Filter,
   Building2,
@@ -37,7 +38,7 @@ import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
 import { parsePdf } from "@/actions/parse-pdf";
 import { ATSScoreResult, ParsedResume } from "@/types/ats-scoring";
-import { ExtractedCompany, AggregatedCompany } from "@/types/company-finder";
+import { ExtractedCompany, AggregatedCompany, CachedCompany, ExtractedCompanyName } from "@/types/company-finder";
 import ATSResultCard, { normalizeScore } from "@/components/dashboard/ats-scoring/atsResultCard";
 import { ATSJobService } from "@/services/ats-job.service";
 import { CompanyFinderService } from "@/services/company-finder.service";
@@ -48,11 +49,15 @@ import {
   subscribeProcessing,
   clearProcessingState,
 } from "@/lib/processing-store";
+import { ATSResultsList } from "./ATSResultsList";
+import { CompanyResultsList } from "./CompanyResultsList";
+import { ATSBatchProcessor } from "./ATSBatchProcessor";
 
 const BATCH_SIZE = 5;
-const PARSE_CONCURRENCY = 5;
+const PARSE_CONCURRENCY = 5; // Balanced for performance and server stability
 const API_CONCURRENCY = 3;
-const CF_BATCH_SIZE = 10;
+const CF_EXTRACT_BATCH_SIZE = 10; // extraction is fast — no web search
+const CF_ENRICH_BATCH_SIZE = 5; // enrichment uses web_search — keep small to avoid 504 timeouts
 const MAX_RETRIES = 4;
 const INITIAL_BACKOFF_MS = 2_000;
 
@@ -88,7 +93,7 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = MAX_RETR
 // ---------- Company Finder helpers ----------
 function extractResumeNamesFromContext(contexts: string[]): string[] {
   const names = new Set<string>();
-  const regex = /From resume ["\u201c]([^"\u201d]+)["\u201d]/gi;
+  const regex = /From resume [“]([^”]+)[”]/gi;
   for (const ctx of contexts) {
     let match;
     while ((match = regex.exec(ctx)) !== null) names.add(match[1]);
@@ -179,8 +184,6 @@ export default function ScoringView({
     const storedAts = getProcessingState(atsKey);
     if (storedAts?.analyzing) {
       atsRemounted = true;
-      setAnalyzing(true);
-      setAnalyzeProgress(storedAts.progress);
       analyzingCountRef.current = storedAts.itemCount;
       // Reload partial results from DB so user sees progress after navigating back
       ATSJobService.getJobDetail(interviewId).then((detail) => {
@@ -199,6 +202,7 @@ export default function ScoringView({
       // Always process analyzing=false to avoid stuck spinners
       if (!s.analyzing) {
         setAnalyzing(false);
+        setBatchJobActive(false);
         setAnalyzeProgress({ current: 0, total: 0 });
         atsRemounted = false;
         return;
@@ -206,6 +210,10 @@ export default function ScoringView({
       setAnalyzing(s.analyzing);
       setAnalyzeProgress(s.progress);
       analyzingCountRef.current = s.itemCount;
+      if (s.batchJobActive) {
+        setBatchJobActive(true);
+        setBatchTotal(s.batchTotal || s.itemCount);
+      }
       // If we remounted into an ongoing analysis, reload results from DB
       // (the old closure's setResults targets the dead component instance).
       // Delay slightly to let the DB write from the old closure complete.
@@ -249,26 +257,47 @@ export default function ScoringView({
 
   // Resume state
   const [resumes, setResumes] = useState<ParsedResume[]>([]);
+  const [results, setResults] = useState<ATSScoreResult[]>([]);
+  const [pagination, setPagination] = useState<{ total: number; offset: number; limit: number } | null>(null);
+  const [loading, setLoading] = useState(true);
   const [parsingResumes, setParsingResumes] = useState(false);
   const [parseProgress, setParseProgress] = useState({ current: 0, total: 0 });
 
-  // Analysis state
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeProgress, setAnalyzeProgress] = useState({ current: 0, total: 0 });
-  const [results, setResults] = useState<ATSScoreResult[] | null>(null);
+  // Analysis state — initialize directly from processingStore so the progress bar
+  // appears on the VERY FIRST render after navigation, not after an effect fires.
+  const [analyzing, setAnalyzing] = useState(() => {
+    const stored = getProcessingState(`ats_${interviewId}`);
+    return stored?.analyzing ?? false;
+  });
+  const [batchJobActive, setBatchJobActive] = useState(() => {
+    const stored = getProcessingState(`ats_${interviewId}`);
+    return stored?.batchJobActive ?? false;
+  });
+  const [batchTotal, setBatchTotal] = useState(() => {
+    const stored = getProcessingState(`ats_${interviewId}`);
+    return stored?.batchTotal ?? 0;
+  });
+  const [analyzeProgress, setAnalyzeProgress] = useState(() => {
+    const stored = getProcessingState(`ats_${interviewId}`);
+    return stored?.progress ?? { current: 0, total: 0 };
+  });
   const [creatingAssignees, setCreatingAssignees] = useState(false);
   const [viewingResume, setViewingResume] = useState<{ url: string; name: string } | null>(null);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  // Ref always holds latest previewUrls — used inside async functions to avoid stale closure
+  const previewUrlsRef = useRef<Record<string, string>>({});
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const analyzingCountRef = useRef(0);
   const isAnalyzingRef = useRef(false);
   const isRunningCFRef = useRef(false);
+  // Holds parsed resumes so company finder can be triggered after ATS batch completes
+  const cfPendingResumesRef = useRef<ParsedResume[]>([]);
   // Tracks in-flight / completed blob upload promises keyed by resume name.
   // Shared between uploadFilesForPreview (file-drop) and handleAnalyze so we
   // never upload the same file twice and handleAnalyze can await them all.
   const uploadPromisesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const [skippedInfo, setSkippedInfo] = useState<{ count: number; names: string[] } | null>(null);
-
+  const [failedToParse, setFailedToParse] = useState<{ count: number; names: string[] } | null>(null);
   // Company Finder state
   const [extractedCompanies, setExtractedCompanies] = useState<ExtractedCompany[]>([]);
   // Initialize companyAnalyzing to true immediately if sessionStorage has resume data for this interview
@@ -278,7 +307,15 @@ export default function ScoringView({
     if (typeof window === "undefined") return false;
     try {
       const cfState = getProcessingState(`cf_${interviewId}`);
-      if (cfState?.analyzing) return true;
+      if (cfState?.analyzing) {
+        // Only treat as truly running if sessionStorage still has resume data
+        const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+        if (!stored) return false; // stale store — CF already completed
+        return true;
+      }
+      // Don't pre-set CF analyzing if ATS batch is still running
+      const atsState = getProcessingState(`ats_${interviewId}`);
+      if (atsState?.batchJobActive || atsState?.analyzing) return false;
       const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
       return !!stored;
     } catch {
@@ -310,6 +347,20 @@ export default function ScoringView({
     return map;
   }, [results]);
 
+  // Keep previewUrlsRef in sync with previewUrls state so async functions always have fresh URLs
+  useEffect(() => { previewUrlsRef.current = previewUrls; }, [previewUrls]);
+
+  // Whenever resumeUrlMap gains new URLs, merge them into previewUrls so CF badges are clickable
+  useEffect(() => {
+    const newEntries = Object.entries(resumeUrlMap).filter(([k]) => !previewUrls[k]);
+    if (newEntries.length > 0) {
+      const newUrls = Object.fromEntries(newEntries);
+      previewUrlsRef.current = { ...previewUrlsRef.current, ...newUrls };
+      setPreviewUrls((prev) => ({ ...prev, ...newUrls }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeUrlMap]);
+
   // Load JD and results from Supabase on mount
   useEffect(() => {
     if (!interviewId) return;
@@ -330,6 +381,25 @@ export default function ScoringView({
         }
         if (detail.results && detail.results.length > 0) {
           setResults(detail.results);
+        }
+
+        // Restore active batch job from DB if processingStore has no record of it.
+        // This covers: hard refresh, or navigating away before setProcessingState was called.
+        if (detail.activeBatchJob && !getProcessingState(`ats_${interviewId}`)?.analyzing) {
+          const bj = detail.activeBatchJob;
+          const done = bj.processedItems + bj.failedItems;
+          setAnalyzing(true);
+          setBatchJobActive(true);
+          setBatchTotal(bj.totalItems);
+          setAnalyzeProgress({ current: done, total: bj.totalItems });
+          analyzingCountRef.current = bj.totalItems;
+          setProcessingState(`ats_${interviewId}`, {
+            analyzing: true,
+            batchJobActive: true,
+            batchTotal: bj.totalItems,
+            itemCount: bj.totalItems,
+            progress: { current: done, total: bj.totalItems },
+          });
         }
 
         // Load linked company finder results
@@ -365,6 +435,7 @@ export default function ScoringView({
 
               // Load CF scan resume URLs so Eye buttons work on page reload
               if (cfDetail.resumeUrls) {
+                previewUrlsRef.current = { ...previewUrlsRef.current, ...cfDetail.resumeUrls };
                 setPreviewUrls((prev) => ({ ...prev, ...cfDetail.resumeUrls }));
               }
 
@@ -405,11 +476,27 @@ export default function ScoringView({
     const currentState = getProcessingState(cfKey);
 
     // If the processing store still shows CF running from a PREVIOUS mount's closure,
-    // do NOT restart — that closure is still active. The subscriber will pick up completion.
+    // verify sessionStorage still has resume data. If not, the store is stale — clear it.
     if (currentState?.analyzing) {
+      try {
+        const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+        if (!stored) {
+          // Store is stale (CF finished but store wasn't cleared) — reset UI
+          clearProcessingState(`cf_${interviewId}`);
+          setCompanyAnalyzing(false);
+          cfAutoRestartAttempted.current = true;
+          return;
+        }
+      } catch { /* ignore */ }
       cfAutoRestartAttempted.current = true;
       return;
     }
+
+    // Do NOT start CF while ATS batch is still in progress.
+    // handleBatchComplete will trigger CF automatically once ATS finishes.
+    // Don't mark as attempted — the effect will re-run when analyzing/batchJobActive become false.
+    if (analyzing || batchJobActive) return;
+
 
     try {
       const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
@@ -421,7 +508,7 @@ export default function ScoringView({
       runCompanyFinder(storedResumes as ParsedResume[]);
     } catch { /* ignore */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataLoading, interviewId, user?.role]);
+  }, [dataLoading, interviewId, user?.role, analyzing, batchJobActive]);
 
   // Auto-save JD to Supabase (debounced, 1500ms for network calls)
   useEffect(() => {
@@ -449,13 +536,16 @@ export default function ScoringView({
   // Reload Company Finder results from DB when analysis completes.
   // Covers the tab-switch case: old closure saved results to DB but couldn't
   // update this component's state (old setState is a no-op in React 18).
+  // NOTE: We wait 2s before reading from DB so the async saveCFResultsToDB write
+  // has time to finish — without this delay the effect reads stale data and reverts
+  // the freshly-set in-memory state back to the old results (race condition).
   const prevCompanyAnalyzingRef = useRef(companyAnalyzing);
   useEffect(() => {
     const was = prevCompanyAnalyzingRef.current;
     prevCompanyAnalyzingRef.current = companyAnalyzing;
     if (!was || companyAnalyzing) return; // only on true → false transition
 
-    (async () => {
+    const timer = setTimeout(async () => {
       try {
         const scanId = cfScanId || await CompanyFinderService.findAtsScanId(interviewId);
         if (!scanId) return;
@@ -463,9 +553,9 @@ export default function ScoringView({
         if (cfDetail.results?.length > 0) {
           setPersistedCompanyResults((prev) => {
             const dbResults = cfDetail.results as AggregatedCompany[];
-            // Don't overwrite fresher in-memory results with stale DB data
-            // (race: saveCFResultsToDB may not have completed when this useEffect fires)
-            if (prev && prev.length > dbResults.length) return prev;
+            // Only replace in-memory results with DB data if DB has MORE companies.
+            // This prevents a stale DB snapshot from overwriting fresher in-memory state.
+            if (prev && prev.length >= dbResults.length) return prev;
             return dbResults;
           });
           if (!cfScanId) setCfScanId(scanId);
@@ -478,7 +568,9 @@ export default function ScoringView({
       } catch (err) {
         console.error("Failed to reload company results after completion:", err);
       }
-    })();
+    }, 2000); // Wait for saveCFResultsToDB async write to complete before reading back
+
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyAnalyzing, interviewId]);
 
@@ -584,6 +676,7 @@ export default function ScoringView({
     setParseProgress({ current: 0, total: pdfFiles.length });
     const newResumes: ParsedResume[] = [];
     let skippedCount = 0;
+    const skippedNames: string[] = [];
 
     const queue = [...pdfFiles];
     let completed = 0;
@@ -595,6 +688,7 @@ export default function ScoringView({
 
         if (file.size > 10 * 1024 * 1024) {
           skippedCount++;
+          skippedNames.push(file.name);
           completed++;
           setParseProgress({ current: completed, total: pdfFiles.length });
           continue;
@@ -605,17 +699,21 @@ export default function ScoringView({
           formData.append("file", file);
           const result = await parsePdf(formData);
 
-          if (result.success && result.text) {
+          if (result.success && result.text && result.text.trim().length > 0) {
             newResumes.push({
               name: file.name,
               text: result.text,
               file,
             });
           } else {
+            console.warn(`Parse returned empty for ${file.name}:`, result.error || 'empty text');
             skippedCount++;
+            skippedNames.push(file.name);
           }
-        } catch {
+        } catch (err) {
+          console.warn(`Parse threw for ${file.name}:`, err);
           skippedCount++;
+          skippedNames.push(file.name);
         }
 
         completed++;
@@ -636,7 +734,10 @@ export default function ScoringView({
       uploadFilesForPreview(newResumes);
     }
     if (skippedCount > 0) {
-      toast.warning(`${skippedCount} file(s) skipped (too large or failed to parse)`);
+      setFailedToParse({ count: skippedCount, names: skippedNames });
+      toast.warning(
+        `${skippedCount} file(s) could not be parsed. See details below.`
+      );
     }
 
     setParsingResumes(false);
@@ -707,6 +808,7 @@ export default function ScoringView({
             if (res.ok) {
               const { resumeUrl } = await res.json();
               if (resumeUrl) {
+                previewUrlsRef.current = { ...previewUrlsRef.current, [resume.name]: resumeUrl };
                 setPreviewUrls((prev) => ({ ...prev, [resume.name]: resumeUrl }));
                 return resumeUrl;
               }
@@ -728,7 +830,7 @@ export default function ScoringView({
     );
   };
 
-  // Analyze resumes with batched API calls
+  // Analyze resumes with background queue system (Production Scale)
   const handleAnalyze = async () => {
     if (isAnalyzingRef.current) return;
     if (!jobDescription.trim()) {
@@ -744,213 +846,119 @@ export default function ScoringView({
     // Skip resumes already scored for this job
     const existingResultsAtStart: ATSScoreResult[] = results || [];
     const existingNames = new Set(existingResultsAtStart.map((r) => r.resumeName));
-    const skippedResumes = resumes.filter((r) => existingNames.has(r.name));
     const newResumes = resumes.filter((r) => !existingNames.has(r.name));
 
-    if (skippedResumes.length > 0) {
-      setSkippedInfo({
-        count: skippedResumes.length,
-        names: skippedResumes.map((r) => r.name),
-      });
-    }
-
     if (newResumes.length === 0) {
+      toast.info("All uploaded resumes have already been scored.");
       isAnalyzingRef.current = false;
-      setResumes([]);
       return;
     }
 
-    const atsKey = `ats_${interviewId}`;
-    analyzingCountRef.current = newResumes.length;
     setAnalyzing(true);
-    setProcessingState(atsKey, { analyzing: true, itemCount: newResumes.length, progress: { current: 0, total: 0 } });
+    // Don't activate ATSBatchProcessor yet — wait until queue API confirms job creation.
+    // Setting batchJobActive before the DB write completes causes a race: ATSBatchProcessor
+    // polls /process immediately, finds the OLD completed job, gets 404, and calls finish().
+    setAnalyzeProgress({ current: 0, total: newResumes.length });
+    analyzingCountRef.current = newResumes.length;
+    setProcessingState(`ats_${interviewId}`, {
+      analyzing: true,
+      itemCount: newResumes.length,
+      progress: { current: 0, total: newResumes.length },
+    });
 
     try {
-      // Phase 1: Upload ALL resumes to blob before scoring starts.
-      // Re-use any in-flight promises from uploadFilesForPreview (triggered on file drop)
-      // so we never upload the same file twice. Start fresh uploads only for files not tracked.
-      const orgId = user?.organization_id || user?.id;
-      const preUploadUrls: Record<string, string> = {};
+      // 1. Queue resumes in chunks (Production safeguard for high volume)
+      // Sending 6,000 in one POST would cause '413 Request Entity Too Large'
+      const CHUNK_SIZE = 200; // ~1-2MB per chunk
+      let totalQueued = 0;
+      let activeJobId: string | null = null;
 
-      for (const resume of newResumes) {
-        if (!uploadPromisesRef.current.has(resume.name)) {
-          const p = (async (): Promise<string | null> => {
-            try {
-              const formData = new FormData();
-              formData.append("resume", resume.file);
-              if (orgId) formData.append("organizationId", orgId);
-              if (user?.id) formData.append("userId", user.id);
-              setUploadingFiles((prev) => new Set([...prev, resume.name]));
-              const res = await fetch("/api/upload-resume", { method: "POST", body: formData });
-              if (res.ok) {
-                const { resumeUrl } = await res.json();
-                if (resumeUrl) {
-                  setPreviewUrls((prev) => ({ ...prev, [resume.name]: resumeUrl }));
-                  return resumeUrl;
-                }
-              }
-              return null;
-            } catch {
-              return null;
-            } finally {
-              setUploadingFiles((prev) => { const next = new Set(prev); next.delete(resume.name); return next; });
-            }
-          })();
-          uploadPromisesRef.current.set(resume.name, p);
-        }
+      for (let i = 0; i < newResumes.length; i += CHUNK_SIZE) {
+        const chunk = newResumes.slice(i, i + CHUNK_SIZE);
+
+        const response = await ATSJobService.startBatchAnalysis(
+          interviewId,
+          chunk.map(r => ({ name: r.name, text: r.text }))
+        );
+
+        if (!activeJobId) activeJobId = response.jobId;
+
+        totalQueued += chunk.length;
+        setAnalyzeProgress({ current: totalQueued, total: newResumes.length });
+
+        // Remove successfully queued resumes from memory to prevent browser lag
+        const chunkNames = new Set(chunk.map(c => c.name));
+        setResumes(prev => prev.filter(r => !chunkNames.has(r.name)));
       }
 
-      // Await ALL uploads (both previously started and new) before scoring begins
-      const uploadResults = await Promise.allSettled(
-        newResumes.map((r) => uploadPromisesRef.current.get(r.name) ?? Promise.resolve(null))
-      );
-      newResumes.forEach((r, i) => {
-        const res = uploadResults[i];
-        const url = res.status === "fulfilled" ? res.value : null;
-        if (url) preUploadUrls[r.name] = url;
+      // 2. All chunks queued — job is now confirmed in DB. Activate the batch processor.
+      setBatchJobActive(true);
+      setBatchTotal(newResumes.length);
+      setProcessingState(`ats_${interviewId}`, {
+        analyzing: true,
+        batchJobActive: true,
+        batchTotal: newResumes.length,
+        itemCount: newResumes.length,
+        progress: { current: 0, total: newResumes.length },
       });
 
-      const batches: ParsedResume[][] = [];
-      for (let i = 0; i < newResumes.length; i += BATCH_SIZE) {
-        batches.push(newResumes.slice(i, i + BATCH_SIZE));
-      }
-
-      setAnalyzeProgress({ current: 0, total: batches.length });
-      setProcessingState(atsKey, { progress: { current: 0, total: batches.length } });
-      // Shared accumulator — all workers push here between awaits (JS single-thread = atomic).
-      const allNewResults: ATSScoreResult[] = [];
-      let completedBatches = 0;
-      const scoredAt = new Date().toISOString();
-
-      let failedBatches = 0;
-      const callATSAPI = async (resumeBatch: ParsedResume[]): Promise<ATSScoreResult[]> => {
-        const response = await fetchWithRetry("/api/ats-scoring", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobDescription: jobDescription.trim(),
-            resumes: resumeBatch.map((r) => ({ name: r.name, text: r.text })),
-            userId: user?.id,
-            organizationId: user?.organization_id,
-          }),
-        });
-        if (!response.ok) {
-          const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-          throw new Error(err.error || `HTTP ${response.status}`);
-        }
-        const data = await response.json();
-        return (data.results || []).map((r: ATSScoreResult) => ({ ...r, scoredAt }));
-      };
-
-      // Push results + take a consistent snapshot + render. Called synchronously
-      // between awaits so push + snapshot is atomic across concurrent workers.
-      const appendAndRender = (results: ATSScoreResult[]) => {
-        allNewResults.push(...results);
-        const snapshot = allNewResults.map((r) => ({
-          ...r,
-          resumeUrl: preUploadUrls[r.resumeName] || resumeUrlMap[r.resumeName] || r.resumeUrl,
-        }));
-        setResults((prev) => {
-          const existingBase = prev || [];
-          const partialNames = new Set(snapshot.map((r) => r.resumeName));
-          const partialMerged = [
-            ...existingBase.filter((r) => !partialNames.has(r.resumeName)),
-            ...snapshot,
-          ];
-          partialMerged.sort((a, b) => b.overallScore - a.overallScore);
-          return partialMerged;
-        });
-        ATSJobService.updateResults(interviewId, [...existingResultsAtStart, ...snapshot]).catch(() => {});
-      };
-
-      const batchQueue = batches.map((batch, idx) => ({ batch, idx }));
-      const batchWorker = async () => {
-        while (batchQueue.length > 0) {
-          const item = batchQueue.shift();
-          if (!item) break;
-
-          try {
-            const results = await callATSAPI(item.batch);
-            appendAndRender(results);
-          } catch (firstErr) {
-            console.warn(`Batch ${item.idx + 1} failed, retrying with smaller chunks:`, firstErr);
-            const half = Math.ceil(item.batch.length / 2);
-            const subBatches = [item.batch.slice(0, half), item.batch.slice(half)].filter(b => b.length > 0);
-            for (const sub of subBatches) {
-              try {
-                const results = await callATSAPI(sub);
-                appendAndRender(results);
-              } catch (subErr) {
-                console.error(`Sub-batch failed:`, subErr);
-                failedBatches++;
-              }
-            }
-          }
-
-          completedBatches++;
-          setProcessingState(atsKey, { progress: { current: completedBatches, total: batches.length } });
-          setAnalyzeProgress({ current: completedBatches, total: batches.length });
-        }
-      };
-
-      const batchWorkers = Array.from(
-        { length: Math.min(API_CONCURRENCY, batches.length) },
-        () => batchWorker()
-      );
-      await Promise.all(batchWorkers);
-
-      // Final merge with URLs attached
-      const uploadedUrls: Record<string, string> = { ...preUploadUrls };
-      const newResultsWithUrls = allNewResults.map((r) => ({
-        ...r,
-        resumeUrl: uploadedUrls[r.resumeName] || resumeUrlMap[r.resumeName] || r.resumeUrl || undefined,
-      }));
-      const newResumeNames = new Set(allNewResults.map((r) => r.resumeName));
-      const merged: ATSScoreResult[] = [
-        ...existingResultsAtStart.filter((r) => !newResumeNames.has(r.resumeName)),
-        ...newResultsWithUrls,
-      ];
-      merged.sort((a, b) => b.overallScore - a.overallScore);
-      setResults(merged);
-
-      ATSJobService.updateResults(interviewId, merged).catch((err) => {
-        console.error("Failed to save results:", err);
-        if (mountedRef.current) toast.error("Results computed but failed to save to server");
-      });
-
-      if (allNewResults.length > 0) {
-        if (failedBatches > 0 && mountedRef.current) {
-          toast.warning(`${allNewResults.length} resume(s) scored. ${failedBatches} batch(es) failed — try re-uploading those resumes.`);
-        }
-        // These run regardless of mount state so they complete in background
-        createAssigneesFromResults(newResultsWithUrls);
-        if (user?.role === 'admin' || user?.role === 'marketing') {
-          runCompanyFinder(resumes);
-        }
-      } else if (mountedRef.current) {
-        toast.error("Analysis failed — connection was reset by OpenAI. Please try again with fewer resumes or retry.");
-      }
+      // Save resumes for CF auto-trigger after ATS completes
+      cfPendingResumesRef.current = newResumes;
+      try {
+        sessionStorage.setItem(
+          `cf_resumes_${interviewId}`,
+          JSON.stringify(newResumes.map((r) => ({ name: r.name, text: r.text })))
+        );
+      } catch { /* ignore */ }
+      setAnalyzeProgress({ current: 0, total: newResumes.length });
+      toast.success(`Queued ${newResumes.length} resumes — AI analysis starting...`);
+      
     } catch (error: any) {
-      console.error("ATS analysis error:", error);
-      if (mountedRef.current) {
-        toast.error("Analysis failed", {
-          description: error.message || "Please try again.",
-        });
-      }
-    } finally {
-      isAnalyzingRef.current = false;
-      // Broadcast analyzing=false BEFORE clearing so any re-mounted subscriber
-      // picks up the completion signal (same pattern as runCompanyFinder).
-      setProcessingState(atsKey, { analyzing: false });
-      clearProcessingState(atsKey);
+      console.error("Failed to start analysis:", error);
+      toast.error("Failed to start analysis", {
+        description: error.message || "An unexpected error occurred while queueing."
+      });
+      // Queue failed — reset all processing state
       setAnalyzing(false);
-      setAnalyzeProgress({ current: 0, total: 0 });
-      // Clear upload promises to free memory — these are one-shot per analysis run
-      uploadPromisesRef.current.clear();
-      if (mountedRef.current) {
-        setResumes([]);
-      }
+      setBatchJobActive(false);
+      isAnalyzingRef.current = false;
+      clearProcessingState(`ats_${interviewId}`);
     }
+  };
+
+  const handleBatchComplete = () => {
+    // If the component is unmounted (user navigated away), do NOT clear the processing store.
+    // Clearing it would prevent the next mount from restoring the batch processor.
+    // When the user returns, ATSBatchProcessor will remount, poll, get a 404 (job done),
+    // and call onComplete() again — this time with the component mounted.
+    if (!mountedRef.current) return;
+
+    setBatchJobActive(false);
+    setAnalyzing(false);
+    isAnalyzingRef.current = false;
+    // Clear persisted batch state
+    setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
+    clearProcessingState(`ats_${interviewId}`);
+    // Reload results then auto-run company finder
+    ATSJobService.getJobDetail(interviewId).then(data => {
+       setResults(data.results || []);
+       if (data.pagination) setPagination(data.pagination);
+       // Auto-trigger company finder with the resumes we saved before clearing state
+       const resumesForCF = cfPendingResumesRef.current;
+       if (resumesForCF.length > 0 && !isRunningCFRef.current) {
+         cfPendingResumesRef.current = [];
+         runCompanyFinder(resumesForCF);
+       } else if (!isRunningCFRef.current) {
+         // Fallback: ref was cleared (post-navigation remount) — try sessionStorage
+         try {
+           const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+           if (stored) {
+             const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+             if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+           }
+         } catch { /* ignore */ }
+       }
+    });
   };
 
   // Export company results as CSV (Companies Founded tab)
@@ -969,7 +977,7 @@ export default function ScoringView({
       "Description",
     ];
 
-    const rows = companyResults.map((c) => [
+    const rows = companyResults.map((c: AggregatedCompany) => [
       `"${c.companyName.replace(/"/g, '""')}"`,
       c.companyType === "service_provider" ? "Service Provider" : c.companyType === "service_consumer" ? "Service Consumer" : "Unknown",
       `"${(c.companyInfo || "").replace(/"/g, '""')}"`,
@@ -1219,12 +1227,8 @@ export default function ScoringView({
 
     try {
       let resumesToScan = [...initialResumesToScan];
-      // Capture existing CF state at the start so async operations have a stable base
       const existingCFResultsAtStart: AggregatedCompany[] = persistedCompanyResults || [];
       const existingCFResumeNamesAtStart: string[] = cfScannedResumeNames || [];
-      // Prevent the auto-restart effect from double-starting if this was triggered by the
-      // analyze button (not the effect itself). Safe to set here — the ref is only false on
-      // a fresh component mount, and this function won't be called twice concurrently.
       cfAutoRestartAttempted.current = true;
       const CF_CONCURRENCY = 3;
 
@@ -1259,11 +1263,10 @@ export default function ScoringView({
         if (crossScan.processedNames.length > 0) {
           reusedCompanies = crossScan.companies;
           reusedResumeNames = crossScan.processedNames;
-          // Merge resume URLs from source scans so Eye buttons work
           if (Object.keys(crossScan.resumeUrls).length > 0) {
+            previewUrlsRef.current = { ...previewUrlsRef.current, ...crossScan.resumeUrls };
             setPreviewUrls((prev) => ({ ...prev, ...crossScan.resumeUrls }));
           }
-          // Remove already-processed resumes from the API queue
           const reusedSet = new Set(reusedResumeNames.map((n) => n.toLowerCase().trim()));
           resumesToScan = resumesToScan.filter((r) => !reusedSet.has(r.name.toLowerCase().trim()));
         }
@@ -1278,8 +1281,6 @@ export default function ScoringView({
           ...existingCFResultsAtStart.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
           ...reusedCompanies,
         ];
-        // flushSync forces an immediate synchronous render so the Companies Founded
-        // tab shows results right away even if the user is on the ATS Scoring tab.
         flushSync(() => { setPersistedCompanyResults(merged); });
         const names = Array.from(new Set([
           ...existingCFResumeNamesAtStart,
@@ -1287,113 +1288,261 @@ export default function ScoringView({
           ...merged.flatMap((c) => c.sourceResumes),
         ]));
         setCfScannedResumeNames((prev) => names.length > prev.length ? names : prev);
-        // Await the DB save so the completion useEffect doesn't fetch stale data
         await saveCFResultsToDB(merged, names, resolvedScanId);
       }
 
       // If all resumes were already processed in other scans, finish early
       if (resumesToScan.length === 0) {
+        // Still update the resume count so the card shows the correct number
+        const allNames = Array.from(new Set([...existingCFResumeNamesAtStart, ...reusedResumeNames]));
+        setCfScannedResumeNames(allNames);
         try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
         return;
       }
 
-      // Split remaining resumes into batches of CF_BATCH_SIZE
-      const batches: ParsedResume[][] = [];
-      for (let i = 0; i < resumesToScan.length; i += CF_BATCH_SIZE) {
-        batches.push(resumesToScan.slice(i, i + CF_BATCH_SIZE));
-      }
-
-      setProcessingState(cfKey, { analyzing: true, itemCount: resumesToScan.length, progress: { current: 0, total: batches.length } });
-
-      // Shared accumulator — all workers push here between awaits (JS single-thread = atomic push).
-      const allRawCompanies: ExtractedCompany[] = [...extractedCompanies];
-      let completedBatches = 0;
-      // Shared set of ALL processed resume names (concurrent-safe in JS single-threaded event loop)
-      // Include previously scanned names so the resume count is cumulative
+      const scannedAt = new Date().toISOString();
       const processedNamesSet = new Set<string>([...existingCFResumeNamesAtStart, ...reusedResumeNames]);
 
-      // Push results + take snapshot + render + persist. Called synchronously between awaits
-      // so push + snapshot is atomic across concurrent workers. Returns a promise for the DB save.
-      const appendAndRenderCF = async (newRaw: ExtractedCompany[]) => {
-        allRawCompanies.push(...newRaw);
-        setExtractedCompanies([...allRawCompanies]);
-        const processedNames = Array.from(processedNamesSet);
-        const freshAggregated = aggregateCFCompanies(allRawCompanies);
-        const freshKeys = new Set(freshAggregated.map((c) => c.companyName.trim().toLowerCase()));
-        const combined = [
-          ...existingCFResultsAtStart.filter((c) => !freshKeys.has(c.companyName.trim().toLowerCase())),
-          ...reusedCompanies.filter((c) => !freshKeys.has(c.companyName.trim().toLowerCase())),
-          ...freshAggregated,
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE A — Extract company names from resumes (gpt-5-mini, fast)
+      // ═══════════════════════════════════════════════════════════════════
+      const extractBatches: ParsedResume[][] = [];
+      for (let i = 0; i < resumesToScan.length; i += CF_EXTRACT_BATCH_SIZE) {
+        extractBatches.push(resumesToScan.slice(i, i + CF_EXTRACT_BATCH_SIZE));
+      }
+
+      const totalResumes = resumesToScan.length;
+      setProcessingState(cfKey, { analyzing: true, itemCount: totalResumes, progress: { current: 0, total: totalResumes } });
+
+      const allExtractedNames: ExtractedCompanyName[] = [];
+      let resumesExtracted = 0;
+
+      // Helper: build AggregatedCompany[] from extracted names + available enrichment data
+      const buildPartialResults = (enrichedCached: CachedCompany[]): AggregatedCompany[] => {
+        const enrichedMap = new Map<string, CachedCompany>();
+        for (const c of enrichedCached) {
+          enrichedMap.set(c.companyName.toLowerCase().trim().replace(/\s+/g, " "), c);
+        }
+        const companyMap = new Map<string, AggregatedCompany>();
+        for (const ext of allExtractedNames) {
+          const key = ext.companyName.toLowerCase().trim().replace(/\s+/g, " ");
+          const enriched = enrichedMap.get(key);
+          const existing = companyMap.get(key);
+          if (existing) {
+            existing.contexts.push(ext.context);
+            if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
+              existing.sourceResumes.push(ext.resumeName);
+            }
+            existing.frequency = existing.sourceResumes.length;
+          } else {
+            companyMap.set(key, {
+              companyName: enriched?.companyName || ext.companyName,
+              companyType: enriched?.companyType || "unknown",
+              companyInfo: enriched?.companyInfo || "",
+              headquarters: enriched?.headquarters || "",
+              foundedYear: enriched?.foundedYear || "",
+              countriesWorkedIn: enriched?.countriesWorkedIn || [],
+              technologies: [],
+              relevantDomains: [],
+              sourceResumes: ext.resumeName ? [ext.resumeName] : [],
+              frequency: 1,
+              contexts: [ext.context],
+              scannedAt,
+            });
+          }
+        }
+        const aggregated = Array.from(companyMap.values()).sort((a, b) => b.frequency - a.frequency);
+        const newKeys = new Set(aggregated.map((c) => c.companyName.trim().toLowerCase()));
+        return [
+          ...existingCFResultsAtStart.filter((c) => !newKeys.has(c.companyName.trim().toLowerCase())),
+          ...reusedCompanies.filter((c) => !newKeys.has(c.companyName.trim().toLowerCase())),
+          ...aggregated,
         ];
-        flushSync(() => { setPersistedCompanyResults(combined); });
-        await saveCFResultsToDB(combined, processedNames, resolvedScanId);
       };
 
-      const batchQueue = batches.map((batch, idx) => ({ batch, idx }));
-      const batchWorker = async () => {
-        while (batchQueue.length > 0) {
-          const item = batchQueue.shift();
+      const extractQueue = extractBatches.map((batch, idx) => ({ batch, idx }));
+      const extractWorker = async () => {
+        while (extractQueue.length > 0) {
+          const item = extractQueue.shift();
           if (!item) break;
-
           try {
-            const response = await fetchWithRetry("/api/company-finder", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                resumes: item.batch.map((r) => ({ name: r.name, text: r.text })),
-                userId: user?.id,
-                organizationId: user?.organization_id,
-                category: "ats_scoring",
-              }),
-            });
-
-            // Add this batch's resumes to the shared set — always, regardless of whether
-            // companies were found, so the resume count includes all analyzed resumes
-            for (const r of item.batch) processedNamesSet.add(r.name);
-            const processedNames = Array.from(processedNamesSet);
-            setCfScannedResumeNames((prev) =>
-              processedNames.length > prev.length ? processedNames : prev
+            const names = await CompanyFinderService.extractCompanyNames(
+              item.batch.map((r) => ({ name: r.name, text: r.text })),
+              user?.id,
+              user?.organization_id
             );
-
-            if (response.ok) {
-              const data = await response.json();
-              if (data.companies?.length > 0) {
-                await appendAndRenderCF(data.companies as ExtractedCompany[]);
-              } else {
-                // No new companies — still render with current accumulated data + persist resume names
-                await appendAndRenderCF([]);
-              }
-            } else {
-              console.warn(`Company Finder batch ${item.idx + 1}/${batches.length} returned ${response.status}`);
-            }
-          } catch (batchErr) {
-            console.error(`Company Finder batch ${item.idx + 1}/${batches.length} failed:`, batchErr);
+            allExtractedNames.push(...names);
+          } catch (err) {
+            console.error(`CF extraction batch ${item.idx + 1} failed:`, err);
           }
-
-          completedBatches++;
-          setProcessingState(cfKey, { progress: { current: completedBatches, total: batches.length } });
+          // Track resume names regardless of extraction success
+          for (const r of item.batch) processedNamesSet.add(r.name);
+          const processedNames = Array.from(processedNamesSet);
+          setCfScannedResumeNames((prev) =>
+            processedNames.length > prev.length ? processedNames : prev
+          );
+          // Resume-based progress (not step-based)
+          resumesExtracted = Math.min(resumesExtracted + item.batch.length, totalResumes);
+          setProcessingState(cfKey, { progress: { current: resumesExtracted, total: totalResumes } });
+          // Save resume names to DB so they survive tab/page navigation during active run.
+          // Use updateResumeNames (not saveCFResultsToDB) to avoid overwriting company results.
+          if (resolvedScanId) {
+            const urlsForSave: Record<string, string> = {};
+            for (const n of processedNames) {
+              const u = previewUrlsRef.current[n] || resumeUrlMap[n];
+              if (u) urlsForSave[n] = u;
+            }
+            CompanyFinderService.updateResumeNames(resolvedScanId, processedNames, urlsForSave).catch(() => {});
+          }
         }
       };
-
-      const workers = Array.from(
-        { length: Math.min(CF_CONCURRENCY, batches.length) },
-        () => batchWorker()
+      const extractWorkers = Array.from(
+        { length: Math.min(CF_CONCURRENCY, extractBatches.length) },
+        () => extractWorker()
       );
-      await Promise.all(workers);
+      await Promise.all(extractWorkers);
 
-      // All batches done — clear the restart token
+      // Deduplicate company names
+      const uniqueCompanyNames = Array.from(
+        new Set(allExtractedNames.map((c) => c.companyName.trim()))
+      ).filter(Boolean);
+
+      if (uniqueCompanyNames.length === 0 && reusedCompanies.length === 0) {
+        // No companies found — still save resume names
+        const processedNames = Array.from(processedNamesSet);
+        await saveCFResultsToDB(existingCFResultsAtStart, processedNames, resolvedScanId);
+        try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
+        return;
+      }
+
+      // Show partial (extraction-only) companies immediately so the list isn't empty during enrichment
+      if (allExtractedNames.length > 0) {
+        setPersistedCompanyResults(buildPartialResults([]));
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE B — Cache lookup
+      // ═══════════════════════════════════════════════════════════════════
+      let cachedCompanies: CachedCompany[] = [];
+      let cacheMisses: string[] = uniqueCompanyNames;
+      try {
+        const cacheResult = await CompanyFinderService.lookupCache(uniqueCompanyNames);
+        cachedCompanies = cacheResult.cached;
+        cacheMisses = cacheResult.misses;
+      } catch (err) {
+        console.error("Cache lookup failed, enriching all:", err);
+      }
+      // Show companies updated with cached data immediately
+      if (cachedCompanies.length > 0) {
+        setPersistedCompanyResults(buildPartialResults(cachedCompanies));
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE C — Enrich cache misses via web search
+      // ═══════════════════════════════════════════════════════════════════
+      let freshlyEnriched: CachedCompany[] = [];
+      if (cacheMisses.length > 0) {
+        const enrichBatches: string[][] = [];
+        for (let i = 0; i < cacheMisses.length; i += CF_ENRICH_BATCH_SIZE) {
+          enrichBatches.push(cacheMisses.slice(i, i + CF_ENRICH_BATCH_SIZE));
+        }
+
+        const enrichQueue = enrichBatches.map((batch, idx) => ({ batch, idx }));
+        const enrichWorker = async () => {
+          while (enrichQueue.length > 0) {
+            const item = enrichQueue.shift();
+            if (!item) break;
+            try {
+              const enriched = await CompanyFinderService.enrichAndCache(
+                item.batch,
+                user?.id,
+                user?.organization_id,
+                "ats_scoring"
+              );
+              freshlyEnriched.push(...enriched);
+            } catch (err) {
+              console.error(`CF enrichment batch ${item.idx + 1} failed:`, err);
+            }
+            // Update companies progressively after each enrichment batch
+            setPersistedCompanyResults(buildPartialResults([...cachedCompanies, ...freshlyEnriched]));
+          }
+        };
+        const enrichWorkers = Array.from(
+          { length: Math.min(CF_CONCURRENCY, enrichBatches.length) },
+          () => enrichWorker()
+        );
+        await Promise.all(enrichWorkers);
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // MERGE — Combine cached + enriched + resume contexts → AggregatedCompany[]
+      // ═══════════════════════════════════════════════════════════════════
+      const allEnrichedMap = new Map<string, CachedCompany>();
+      for (const c of [...cachedCompanies, ...freshlyEnriched]) {
+        const key = c.companyName.toLowerCase().trim().replace(/\s+/g, " ");
+        allEnrichedMap.set(key, c);
+      }
+
+      // Build AggregatedCompany[] by joining extraction data with enrichment
+      const companyMap = new Map<string, AggregatedCompany>();
+      for (const ext of allExtractedNames) {
+        const key = ext.companyName.toLowerCase().trim().replace(/\s+/g, " ");
+        const enriched = allEnrichedMap.get(key);
+        const existing = companyMap.get(key);
+
+        if (existing) {
+          existing.contexts.push(ext.context);
+          if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
+            existing.sourceResumes.push(ext.resumeName);
+          }
+          existing.frequency = existing.sourceResumes.length;
+        } else {
+          companyMap.set(key, {
+            companyName: enriched?.companyName || ext.companyName,
+            companyType: enriched?.companyType || "unknown",
+            companyInfo: enriched?.companyInfo || "",
+            headquarters: enriched?.headquarters || "",
+            foundedYear: enriched?.foundedYear || "",
+            countriesWorkedIn: enriched?.countriesWorkedIn || [],
+            technologies: [],
+            relevantDomains: [],
+            sourceResumes: ext.resumeName ? [ext.resumeName] : [],
+            frequency: 1,
+            contexts: [ext.context],
+            scannedAt,
+          });
+        }
+      }
+
+      const newAggregated = Array.from(companyMap.values());
+      newAggregated.sort((a, b) => b.frequency - a.frequency);
+
+      // Merge: reused + new + existing
+      const newCompanyKeys = new Set(newAggregated.map((c) => c.companyName.trim().toLowerCase()));
+      const combined = [
+        ...existingCFResultsAtStart.filter((c) => !newCompanyKeys.has(c.companyName.trim().toLowerCase())),
+        ...reusedCompanies.filter((c) => !newCompanyKeys.has(c.companyName.trim().toLowerCase())),
+        ...newAggregated,
+      ];
+
+      flushSync(() => { setPersistedCompanyResults(combined); });
+      setExtractedCompanies([]); // no longer accumulating raw companies in 3-stage mode
+      const processedNames = Array.from(processedNamesSet);
+      setCfScannedResumeNames((prev) =>
+        processedNames.length > prev.length ? processedNames : prev
+      );
+      await saveCFResultsToDB(combined, processedNames, resolvedScanId);
+
+      // All done — clear the restart token
       try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
 
     } catch (err) {
       console.error("Company Finder run failed:", err);
-      try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
+      try { sessionStorage.removeItem(`cf_resumes_${interviewId}`); } catch { /* ignore */ }
     } finally {
       isRunningCFRef.current = false;
-      // Broadcast analyzing=false BEFORE clearing so any newly-subscribed component instance
-      // (e.g. after a navigate-away + back) receives the completion signal via its subscriber.
       setProcessingState(`cf_${interviewId}`, { analyzing: false });
       clearProcessingState(`cf_${interviewId}`);
-      // Direct call covers the same-instance case (no guard — safe in React 18)
       setCompanyAnalyzing(false);
     }
   };
@@ -1412,10 +1561,9 @@ export default function ScoringView({
 
   const handleDeleteResult = useCallback(
     async (resumeName: string) => {
-      if (!results) return;
       const previousResults = results;
       const updated = results.filter((r) => r.resumeName !== resumeName);
-      setResults(updated.length > 0 ? updated : null);
+      setResults(updated);
 
       try {
         await ATSJobService.updateResults(interviewId, updated);
@@ -1443,7 +1591,7 @@ export default function ScoringView({
         setResults(previousResults);
       }
     },
-    [results, interviewId, persistedCompanyResults] // eslint-disable-line react-hooks/exhaustive-deps
+    [results, interviewId, persistedCompanyResults] // eslint-disable-next-line react-hooks/exhaustive-deps
   );
 
   // Selection state
@@ -1468,12 +1616,12 @@ export default function ScoringView({
   };
 
   const handleDeleteSelected = async () => {
-    if (!results || selectedResults.size === 0) return;
+    if (selectedResults.size === 0) return;
     const previousResults = results;
     const previousSelected = new Set(selectedResults);
     const deletedNames = new Set(selectedResults);
     const updated = results.filter((r) => !deletedNames.has(r.resumeName));
-    setResults(updated.length > 0 ? updated : null);
+    setResults(updated);
     setSelectedResults(new Set());
 
     try {
@@ -1540,10 +1688,10 @@ export default function ScoringView({
       const names =
         resumeNames ??
         Array.from(new Set(aggregated.flatMap((c) => c.sourceResumes)));
-      // Build resume URLs from previewUrls + ATS results so Eye buttons work cross-scan
+      // Build resume URLs — use ref for freshest data (avoids stale closure in long async runs)
       const urls: Record<string, string> = {};
       for (const n of names) {
-        const url = previewUrls[n] || resumeUrlMap[n];
+        const url = previewUrlsRef.current[n] || resumeUrlMap[n] || previewUrls[n];
         if (url) urls[n] = url;
       }
       await CompanyFinderService.updateResults(id, {
@@ -1797,8 +1945,8 @@ export default function ScoringView({
         </CardContent>
       </Card>
 
-      {/* Resume Upload */}
-      <Card>
+      {/* Resume Upload — hidden while batch processing is active */}
+      <Card className={batchJobActive ? "hidden" : ""}>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Upload Resumes</CardTitle>
@@ -1948,7 +2096,7 @@ export default function ScoringView({
           )}
         </Button>
 
-        {/* Skipped resumes banner */}
+        {/* Skipped resumes banner (Already scored) */}
         {skippedInfo && !analyzing && (
           <div className="w-full max-w-2xl p-4 bg-amber-50 rounded-lg border border-amber-200">
             <div className="flex items-start justify-between gap-3">
@@ -1956,12 +2104,12 @@ export default function ScoringView({
                 <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium text-amber-800">
-                    {skippedInfo.count} resume(s) skipped
+                    {skippedInfo.count} resume(s) already scored
                   </p>
                   <p className="text-xs text-amber-600 mt-1">
-                    Already scored for this job. To re-score a resume, delete its existing result first, then analyze again.
+                    These were already scored for this job. To re-score, delete the existing result first.
                   </p>
-                  <div className="flex flex-wrap gap-1.5 mt-2">
+                  <div className="flex flex-wrap gap-1.5 mt-2 overflow-y-auto max-h-[100px]">
                     {skippedInfo.names.map((name) => (
                       <span
                         key={name}
@@ -1983,22 +2131,57 @@ export default function ScoringView({
           </div>
         )}
 
-        {/* Analysis progress */}
-        {analyzing && analyzeProgress.total > 1 && (
+        {/* Failed to parse banner */}
+        {failedToParse && !analyzing && (
+          <div className="w-full max-w-2xl p-4 bg-red-50 rounded-lg border border-red-200 mt-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-red-800">
+                    {failedToParse.count} file(s) failed to parse
+                  </p>
+                  <p className="text-xs text-red-600 mt-1">
+                    These files might be empty, corrupted, scanned (images), or too large (&gt;10MB).
+                  </p>
+                  <div className="flex flex-wrap gap-1.5 mt-2 overflow-y-auto max-h-[100px]">
+                    {failedToParse.names.map((name) => (
+                      <span
+                        key={name}
+                        className="inline-block px-2 py-0.5 bg-red-100 rounded text-[11px] text-red-700 border border-red-200 max-w-[250px] truncate"
+                      >
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setFailedToParse(null)}
+                className="text-red-400 hover:text-red-600 transition-colors flex-shrink-0"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Analysis progress — only show during queuing phase, not when ATSBatchProcessor is active */}
+        {analyzing && !batchJobActive && analyzeProgress.total > 1 && (
           <div className="w-full max-w-md p-3 bg-indigo-50 rounded-lg border border-indigo-100">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm text-indigo-700">
                 Processing resumes...
               </span>
               <span className="text-sm font-medium text-indigo-700">
-                {Math.min(analyzeProgress.current * BATCH_SIZE, analyzingCountRef.current)}/{analyzingCountRef.current} processed
+                {Math.min(analyzeProgress.current, analyzingCountRef.current)}/{analyzingCountRef.current} processed
               </span>
             </div>
             <div className="w-full bg-indigo-100 rounded-full h-2">
               <div
                 className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
                 style={{
-                  width: `${(Math.min(analyzeProgress.current * BATCH_SIZE, analyzingCountRef.current) / analyzingCountRef.current) * 100}%`,
+                  width: `${(Math.min(analyzeProgress.current, analyzingCountRef.current) / Math.max(1, analyzingCountRef.current)) * 100}%`,
                 }}
               />
             </div>
@@ -2009,8 +2192,30 @@ export default function ScoringView({
         )}
       </div>
 
+      {/* Batch Processor — lives OUTSIDE tabs so it never unmounts when switching tabs */}
+      {batchJobActive && (
+        <ATSBatchProcessor
+          interviewId={interviewId}
+          totalItems={batchTotal}
+          initialScored={analyzeProgress.current}
+          onComplete={handleBatchComplete}
+          onProgress={(curr) => {
+            setAnalyzeProgress({ current: curr, total: batchTotal });
+            setProcessingState(`ats_${interviewId}`, { progress: { current: curr, total: batchTotal } });
+            // Fetch scored results from DB after each batch so they show progressively
+            if (curr > 0) {
+              ATSJobService.getJobDetail(interviewId)
+                .then((detail) => { if (detail.results?.length > 0) setResults(detail.results); })
+                .catch(() => {});
+            }
+          }}
+          isProcessing={analyzing}
+          setIsProcessing={setAnalyzing}
+        />
+      )}
+
       {/* Results Section */}
-      {results && results.length > 0 && (
+      {((results && results.length > 0) || batchJobActive) && (
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "ats" | "companies")}>
           <TabsList>
             <TabsTrigger value="ats" className="gap-1.5">
@@ -2022,7 +2227,7 @@ export default function ScoringView({
                 <Building2 className="h-4 w-4" />
                 Companies Founded
                 {companyAnalyzing && <Loader2 className="h-3 w-3 animate-spin" />}
-                {!companyAnalyzing && companyResults.length > 0 && (
+                {!companyAnalyzing && !analyzing && !batchJobActive && companyResults.length > 0 && (
                   <span className="ml-0.5 text-[11px] bg-indigo-100 text-indigo-700 rounded-full px-1.5 py-0.5 font-medium">
                     {companyResults.length}
                   </span>
@@ -2031,408 +2236,268 @@ export default function ScoringView({
             )}
           </TabsList>
 
-          <TabsContent value="ats" className="mt-4">
-          <div className="flex flex-col gap-6">
-          {/* Summary Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <Users className="h-5 w-5 text-indigo-500" />
-                  <div>
-                    <p className="text-2xl font-bold">{results.length}</p>
-                    <p className="text-xs text-slate-500">Resumes Analyzed</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <BarChart3 className="h-5 w-5 text-blue-500" />
-                  <div>
-                    <p className="text-2xl font-bold">{avgScore}</p>
-                    <p className="text-xs text-slate-500">Average Score</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <Trophy className="h-5 w-5 text-green-500" />
-                  <div>
-                    <p className="text-2xl font-bold">
-                      {results[0] ? normalizeScore(results[0].overallScore) : 0}
-                    </p>
-                    <p className="text-xs text-slate-500">Highest Score</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <TrendingDown className="h-5 w-5 text-red-500" />
-                  <div>
-                    <p className="text-2xl font-bold">
-                      {results[results.length - 1] ? normalizeScore(results[results.length - 1].overallScore) : 0}
-                    </p>
-                    <p className="text-xs text-slate-500">Lowest Score</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Filter Bar */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-            <div className="relative flex-1 w-full sm:max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-              <Input
-                placeholder="Search resumes, candidates, skills..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <select
-                value={scoreFilter}
-                onChange={(e) =>
-                  setScoreFilter(e.target.value as "all" | "excellent" | "strong" | "good")
-                }
-                className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm bg-white"
-              >
-                <option value="all">All Scores</option>
-                <option value="excellent">Excellent (80+)</option>
-                <option value="strong">Strong (70+)</option>
-                <option value="good">Good (55+)</option>
-              </select>
-              <select
-                value={sortBy}
-                onChange={(e) =>
-                  setSortBy(e.target.value as "score" | "name" | "date")
-                }
-                className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm bg-white"
-              >
-                <option value="score">Sort by Score</option>
-                <option value="name">Sort by Name</option>
-                <option value="date">Sort by Date</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Results count + Select All + Delete Selected */}
-          {filteredResults && (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={filteredResults.length > 0 && selectedResults.size === filteredResults.length}
-                    onChange={toggleSelectAll}
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                  />
-                  <span className="text-sm text-slate-600">Select All</span>
-                </label>
-                <p className="text-sm text-slate-500">
-                  Showing {filteredResults.length} of {results.length} results
-                  {selectedResults.size > 0 && (
-                    <span className="text-indigo-600 font-medium ml-1">
-                      ({selectedResults.size} selected)
-                    </span>
-                  )}
-                </p>
+          <TabsContent value="ats" className="mt-4 focus-visible:outline-none">
+            <div className="flex flex-col gap-6">
+              {/* Summary Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <Card className="bg-gradient-to-br from-indigo-50 to-white border-indigo-100 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-indigo-500/10 rounded-lg">
+                        <Users className="h-5 w-5 text-indigo-500" />
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold">{(results || []).length.toLocaleString()}</p>
+                        <p className="text-xs text-slate-500">Resumes Analyzed</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-gradient-to-br from-blue-50 to-white border-blue-100 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-blue-500/10 rounded-lg">
+                        <BarChart3 className="h-5 w-5 text-blue-500" />
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold">{avgScore}</p>
+                        <p className="text-xs text-slate-500">Average Score</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-gradient-to-br from-green-50 to-white border-green-100 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-green-500/10 rounded-lg">
+                        <Trophy className="h-5 w-5 text-green-500" />
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold">
+                          {results?.[0] ? normalizeScore(results[0].overallScore) : 0}
+                        </p>
+                        <p className="text-xs text-slate-500">Highest Score</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-gradient-to-br from-red-50 to-white border-red-100 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-red-500/10 rounded-lg">
+                        <TrendingDown className="h-5 w-5 text-red-500" />
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold">
+                          {results?.[results.length - 1] ? normalizeScore(results[results.length - 1].overallScore) : 0}
+                        </p>
+                        <p className="text-xs text-slate-500">Lowest Score</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
-              {selectedResults.size > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDeleteSelected}
-                  className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700 gap-1.5"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete Selected ({selectedResults.size})
-                </Button>
+
+              {/* Filter Bar */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 bg-white p-3 rounded-xl border shadow-sm">
+                <div className="relative flex-1 w-full sm:max-w-sm">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                  <Input
+                    placeholder="Search resumes, skills, candidates..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 bg-slate-50/50 border-slate-200 focus:bg-white transition-colors"
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <select
+                    value={scoreFilter}
+                    onChange={(e) => setScoreFilter(e.target.value as any)}
+                    className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
+                  >
+                    <option value="all">All Scores</option>
+                    <option value="excellent">Excellent (8+)</option>
+                    <option value="strong">Strong (7+)</option>
+                    <option value="good">Good (5.5+)</option>
+                  </select>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as any)}
+                    className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
+                  >
+                    <option value="score">Sort by Score</option>
+                    <option value="name">Sort by Name</option>
+                    <option value="date">Sort by Date</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Virtualized ATS Results */}
+              {filteredResults && (
+                <ATSResultsList
+                  results={filteredResults}
+                  selectedResults={selectedResults}
+                  toggleSelect={toggleSelect}
+                  toggleSelectAll={toggleSelectAll}
+                  handleDeleteResult={handleDeleteResult}
+                  handleDeleteSelected={handleDeleteSelected}
+                  previewUrls={previewUrls}
+                  uploadingFiles={uploadingFiles}
+                  searchQuery={searchQuery}
+                />
               )}
             </div>
-          )}
-
-          {/* Result Cards */}
-          <div className="flex flex-col gap-3">
-            {filteredResults && filteredResults.length > 0 ? (
-              filteredResults.map((result, index) => (
-                <div key={result.resumeName} className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    checked={selectedResults.has(result.resumeName)}
-                    onChange={() => toggleSelect(result.resumeName)}
-                    className="h-4 w-4 mt-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer flex-shrink-0"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <ATSResultCard
-                      result={result}
-                      rank={index + 1}
-                      onDelete={handleDeleteResult}
-                      previewUrl={previewUrls[result.resumeName]}
-                      isUploading={uploadingFiles.has(result.resumeName)}
-                    />
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-slate-400 text-center py-6">
-                No results match your filters.
-              </p>
-            )}
-          </div>
-          </div>
           </TabsContent>
 
-          {/* Companies Founded Tab */}
-          {(user?.role === 'admin' || user?.role === 'marketing') && <TabsContent value="companies" className="mt-4">
-            {!companyAnalyzing && companyResults.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-2 text-slate-400">
-                <Building2 className="h-8 w-8" />
-                <p className="text-sm">No companies found yet. Analyze resumes to auto-detect companies.</p>
-              </div>
-            ) : (
+          {(user?.role === "admin" || user?.role === "marketing") && (
+            <TabsContent value="companies" className="mt-4 focus-visible:outline-none">
               <div className="flex flex-col gap-6">
-                {/* Inline progress banner — visible while analyzing, replaces old full-screen spinner */}
+                {/* ATS scoring in progress — company results may be stale */}
+                {(analyzing || batchJobActive) && companyResults.length > 0 && (
+                  <div className="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+                    <Loader2 className="h-4 w-4 animate-spin shrink-0 text-amber-600" />
+                    <span>ATS scoring is in progress. Company data shown below is from a previous run and will update once scoring completes.</span>
+                  </div>
+                )}
+                {/* Inline extraction progress */}
                 {companyAnalyzing && (
-                  <div className="p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-indigo-700 flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Fetching company data from the web…
-                      </span>
-                      {cfProgress && cfItemCount > 0 && (
-                        <span className="text-sm font-medium text-indigo-700">
-                          {Math.min(cfProgress.current * CF_BATCH_SIZE, cfItemCount)}/{cfItemCount} processed
+                  <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className="h-8 w-8 rounded-full bg-white flex items-center justify-center shadow-sm">
+                          <Loader2 className="h-4 w-4 text-indigo-500 animate-spin" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-indigo-900">
+                            {cfProgress && cfProgress.current < cfProgress.total
+                              ? "Scanning Resumes"
+                              : "Enriching Companies"}
+                          </p>
+                          <p className="text-xs text-indigo-600">
+                            {cfProgress && cfProgress.total > 0
+                              ? cfProgress.current < cfProgress.total
+                                ? `${cfProgress.current} of ${cfProgress.total} resumes scanned`
+                                : `${cfProgress.total} of ${cfProgress.total} resumes scanned — enriching company data…`
+                              : "This happens in the background. You can browse results so far."}
+                          </p>
+                        </div>
+                      </div>
+                      {cfProgress && cfProgress.total > 0 && (
+                        <span className="text-sm font-bold text-indigo-700">
+                          {Math.min(100, Math.round((cfProgress.current / cfProgress.total) * 100))}%
                         </span>
                       )}
                     </div>
-                    {cfProgress && cfItemCount > 0 && (
-                      <div className="w-full bg-indigo-100 rounded-full h-2">
+                    {cfProgress && cfProgress.total > 0 && (
+                      <div className="h-1.5 w-full bg-indigo-100 rounded-full overflow-hidden">
                         <div
-                          className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
-                          style={{
-                            width: `${(Math.min(cfProgress.current * CF_BATCH_SIZE, cfItemCount) / cfItemCount) * 100}%`,
-                          }}
+                          className="h-full bg-indigo-500 rounded-full transition-all duration-500 ease-out"
+                          style={{ width: `${Math.min(100, Math.round((cfProgress.current / cfProgress.total) * 100))}%` }}
                         />
                       </div>
                     )}
                   </div>
                 )}
-                {/* Stats */}
+
+                {/* Companies Summary Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Card>
+                  <Card className="bg-gradient-to-br from-indigo-50 to-white border-indigo-100 shadow-sm">
                     <CardContent className="pt-6">
                       <div className="flex items-center gap-3">
-                        <Building2 className="h-5 w-5 text-indigo-500" />
+                        <div className="p-2 bg-indigo-500/10 rounded-lg">
+                          <Building2 className="h-5 w-5 text-indigo-500" />
+                        </div>
                         <div>
-                          <p className="text-2xl font-bold">
-                            {companyResults.length}
-                            {companyAnalyzing && <Loader2 className="inline h-4 w-4 ml-2 animate-spin text-indigo-400" />}
-                          </p>
-                          <p className="text-xs text-slate-500">Total Companies</p>
+                          <p className="text-2xl font-bold">{companyResults.length.toLocaleString()}</p>
+                          <p className="text-xs text-slate-500">Total Unique Companies</p>
                         </div>
                       </div>
                     </CardContent>
                   </Card>
-                  <Card>
+                  <Card className="bg-gradient-to-br from-amber-50 to-white border-amber-100 shadow-sm">
                     <CardContent className="pt-6">
                       <div className="flex items-center gap-3">
-                        <Users className="h-5 w-5 text-amber-500" />
+                        <div className="p-2 bg-amber-500/10 rounded-lg">
+                          <Users className="h-5 w-5 text-amber-500" />
+                        </div>
                         <div>
-                          <p className="text-2xl font-bold">{cfScannedResumeNames.length || new Set(companyResults.flatMap((c) => c.sourceResumes)).size || results?.length || 0}</p>
-                          <p className="text-xs text-slate-500">Resumes Analyzed</p>
+                          <p className="text-2xl font-bold">{cfScannedResumeNames.length.toLocaleString()}</p>
+                          <p className="text-xs text-slate-500">Resumes Processed</p>
                         </div>
                       </div>
                     </CardContent>
                   </Card>
                 </div>
 
-                {/* Filter Bar */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                {/* Company Filter Bar */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 bg-white p-3 rounded-xl border shadow-sm">
                   <div className="relative flex-1 w-full sm:max-w-sm">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                     <Input
-                      placeholder="Search companies, technologies, domains..."
+                      placeholder="Search companies, HQ, info..."
                       value={cfSearchQuery}
                       onChange={(e) => setCfSearchQuery(e.target.value)}
-                      className="pl-9"
+                      className="pl-9 bg-slate-50/50 border-slate-200 focus:bg-white transition-colors"
                     />
                   </div>
                   <div className="flex items-center gap-3">
                     <select
                       value={cfTypeFilter}
                       onChange={(e) => setCfTypeFilter(e.target.value as "all" | "service_provider" | "service_consumer")}
-                      className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm bg-white"
+                      className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
                     >
                       <option value="all">All Types</option>
-                      <option value="service_provider">Service Provider</option>
-                      <option value="service_consumer">Service Consumer</option>
+                      <option value="service_provider">Providers</option>
+                      <option value="service_consumer">Consumers</option>
                     </select>
                     <select
                       value={cfSortBy}
                       onChange={(e) => setCfSortBy(e.target.value as "frequency" | "name")}
-                      className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm bg-white"
+                      className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
                     >
-                      <option value="frequency">Sort by Frequency</option>
+                      <option value="frequency">Sort by Freq</option>
                       <option value="name">Sort by Name</option>
                     </select>
                   </div>
                 </div>
 
-                {/* Count */}
+                {/* Select All / Bulk Delete bar */}
                 <div className="flex items-center justify-between">
                   <p className="text-sm text-slate-500">
-                    Showing {filteredCFResults.length} of {companyResults.length} companies
+                    Showing {filteredCFResults.length.toLocaleString()} companies
+                    {selectedCFCompanies.size > 0 && (
+                      <span className="text-indigo-600 font-medium ml-1">
+                        ({selectedCFCompanies.size.toLocaleString()} selected)
+                      </span>
+                    )}
                   </p>
+                  {selectedCFCompanies.size > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleDeleteCFSelected}
+                      className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700 gap-1.5"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete Selected ({selectedCFCompanies.size.toLocaleString()})
+                    </Button>
+                  )}
                 </div>
 
-                {/* Table */}
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b bg-slate-50">
-                        <th className="text-left py-3 px-4 font-medium text-slate-600">Company</th>
-                        <th className="text-left py-3 px-4 font-medium text-slate-600">Type</th>
-                        <th className="text-left py-3 px-4 font-medium text-slate-600">Description</th>
-                        <th className="text-center py-3 px-4 font-medium text-slate-600">Frequency</th>
-                        <th className="py-3 px-2 w-10"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredCFResults.length === 0 && (
-                        <tr>
-                          <td colSpan={5} className="py-10 text-center text-sm text-slate-400">
-                            {companyAnalyzing ? "Scanning resumes for companies…" : "No companies match your filters."}
-                          </td>
-                        </tr>
-                      )}
-                      {filteredCFResults.map((company, index) => (
-                        <tr
-                          key={index}
-                          className="border-b last:border-0 hover:bg-slate-50 transition-colors"
-                        >
-                          <td className="py-3 px-4">
-                            <span className="font-medium text-slate-800">{company.companyName}</span>
-                            {company.scannedAt && (
-                              <span className="flex items-center gap-1 text-[11px] text-slate-400 mt-0.5">
-                                <Calendar className="h-3 w-3" />
-                                {new Date(company.scannedAt).toLocaleDateString("en-US", {
-                                  month: "short",
-                                  day: "numeric",
-                                  year: "numeric",
-                                })}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 px-4">
-                            <Badge
-                              className={`whitespace-nowrap ${
-                                company.companyType === "service_provider"
-                                  ? "bg-blue-100 text-blue-700 hover:bg-blue-100"
-                                  : company.companyType === "service_consumer"
-                                  ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
-                                  : "bg-slate-100 text-slate-500 hover:bg-slate-100"
-                              }`}
-                            >
-                              {company.companyType === "service_provider" ? "Provider" : company.companyType === "service_consumer" ? "Consumer" : "Unknown"}
-                            </Badge>
-                          </td>
-                          <td className="py-3 px-4">
-                            {company.companyInfo && (
-                              <div className="mb-2">
-                                <span className="text-[10px] font-semibold text-indigo-600 uppercase tracking-wide">Company Info</span>
-                                <p className="text-xs text-slate-700 mt-0.5">{company.companyInfo}</p>
-                                <div className="flex flex-wrap items-center gap-3 mt-1.5">
-                                  {company.headquarters && company.headquarters !== "Unknown" && (
-                                    <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                                      <MapPin className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                                      {company.headquarters}
-                                    </span>
-                                  )}
-                                  {company.foundedYear && company.foundedYear !== "Unknown" && (
-                                    <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                                      <Calendar className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                                      Est. {company.foundedYear}
-                                    </span>
-                                  )}
-                                  {company.countriesWorkedIn && company.countriesWorkedIn.length > 0 && (
-                                    <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                                      <Globe className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                                      {company.countriesWorkedIn.join(", ")}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                            <div>
-                              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Why Selected</span>
-                              {(() => {
-                                // Build a human-readable reason based on companyType and contexts
-                                const isConsumer = company.companyType === "service_consumer";
-                                const contextLines = company.contexts.filter(Boolean);
-                                let reason = "";
-                                if (isConsumer) {
-                                  reason = `${company.companyName} is a client/end-user organisation. ${contextLines.length > 0 ? contextLines[0] : ""}`.trim();
-                                } else {
-                                  reason = contextLines.length > 0 ? contextLines.join(" | ") : `Candidate worked at ${company.companyName}.`;
-                                }
-                                return <p className="text-xs text-slate-500 mt-0.5">{reason}</p>;
-                              })()}
-                              {company.sourceResumes && company.sourceResumes.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                  {company.sourceResumes.map((name) => {
-                                    const url = previewUrls[name] || resumeUrlMap[name];
-                                    return url ? (
-                                      <button
-                                        key={name}
-                                        onClick={() => setViewingResume({ url, name })}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-[10px] text-indigo-600 hover:bg-indigo-100 transition-colors border border-indigo-100"
-                                      >
-                                        <Eye className="h-3 w-3" />
-                                        <span className="max-w-[150px] truncate">{name}</span>
-                                      </button>
-                                    ) : (
-                                      <span
-                                        key={name}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-[10px] text-slate-500 border border-slate-200"
-                                      >
-                                        <FileText className="h-3 w-3" />
-                                        <span className="max-w-[150px] truncate">{name}</span>
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <span className="font-medium text-slate-700">{company.frequency}</span>
-                          </td>
-                          <td className="py-3 px-2 text-center">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0 text-slate-400 hover:text-red-500 hover:bg-red-50"
-                              onClick={() => handleDeleteCFCompany(company.companyName)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                {/* Company List */}
+                <CompanyResultsList
+                  companies={filteredCFResults}
+                  previewUrls={previewUrls}
+                  resumeUrlMap={resumeUrlMap}
+                  onViewResume={(url, name) => setViewingResume({ url, name })}
+                  selectedCompanies={selectedCFCompanies}
+                  onToggleSelect={toggleCFSelect}
+                  onToggleSelectAll={toggleCFSelectAll}
+                  onDeleteCompany={handleDeleteCFCompany}
+                />
               </div>
-            )}
-          </TabsContent>}
+            </TabsContent>
+          )}
         </Tabs>
       )}
 

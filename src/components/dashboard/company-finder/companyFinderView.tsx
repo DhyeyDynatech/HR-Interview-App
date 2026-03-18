@@ -31,6 +31,8 @@ import {
   ExtractedCompany,
   AggregatedCompany,
   CompanyType,
+  CachedCompany,
+  ExtractedCompanyName,
 } from "@/types/company-finder";
 import { CompanyFinderService } from "@/services/company-finder.service";
 import { ResumeViewer } from "@/components/dashboard/user/ResumeViewer";
@@ -41,7 +43,8 @@ import {
   clearProcessingState,
 } from "@/lib/processing-store";
 
-const BATCH_SIZE = 3;
+const EXTRACT_BATCH_SIZE = 10; // extraction is fast — no web search
+const ENRICH_BATCH_SIZE = 5; // enrichment batches for cache misses (smaller batch avoids LLM truncation)
 const PARSE_CONCURRENCY = 5;
 const API_CONCURRENCY = 3;
 
@@ -274,6 +277,7 @@ export default function CompanyFinderView({
     setParseProgress({ current: 0, total: validFiles.length });
     const newResumes: CFParsedResume[] = [];
     let skippedCount = 0;
+    const skippedNames: string[] = [];
 
     const queue = [...validFiles];
     let completed = 0;
@@ -285,6 +289,7 @@ export default function CompanyFinderView({
 
         if (file.size > 10 * 1024 * 1024) {
           skippedCount++;
+          skippedNames.push(file.name);
           completed++;
           setParseProgress({ current: completed, total: validFiles.length });
           continue;
@@ -295,13 +300,17 @@ export default function CompanyFinderView({
           formData.append("file", file);
           const result = await parsePdf(formData);
 
-          if (result.success && result.text) {
+          if (result.success && result.text && result.text.trim().length > 0) {
             newResumes.push({ name: file.name, text: result.text, file });
           } else {
+            console.warn(`Parse returned empty for ${file.name}:`, result.error || 'empty text');
             skippedCount++;
+            skippedNames.push(file.name);
           }
-        } catch {
+        } catch (err) {
+          console.warn(`Parse threw for ${file.name}:`, err);
           skippedCount++;
+          skippedNames.push(file.name);
         }
 
         completed++;
@@ -323,7 +332,7 @@ export default function CompanyFinderView({
     }
     if (skippedCount > 0) {
       toast.warning(
-        `${skippedCount} file(s) skipped (too large or failed to parse)`
+        `${skippedCount} file(s) skipped (too large or failed to parse): ${skippedNames.join(', ')}`
       );
     }
 
@@ -412,7 +421,7 @@ export default function CompanyFinderView({
     );
   };
 
-  // ---------- Analysis ----------
+  // ---------- Analysis (3-Stage Pipeline: Extract → Cache → Enrich) ----------
 
   const handleAnalyze = async () => {
     if (resumes.length === 0) {
@@ -461,11 +470,9 @@ export default function CompanyFinderView({
           reusedCompanies = crossScan.companies;
           reusedResumeNames = crossScan.processedNames;
           reusedResumeUrls = crossScan.resumeUrls;
-          // Merge resume URLs from source scans so Eye buttons work
           if (Object.keys(reusedResumeUrls).length > 0) {
             setResumeUrls((prev) => ({ ...prev, ...reusedResumeUrls }));
           }
-          // Remove already-processed resumes from the API queue
           const reusedSet = new Set(reusedResumeNames.map((n) => n.toLowerCase().trim()));
           newResumes = newResumes.filter((r) => !reusedSet.has(r.name.toLowerCase().trim()));
           toast.info(
@@ -502,91 +509,173 @@ export default function CompanyFinderView({
         return;
       }
 
-      const batches: CFParsedResume[][] = [];
-      for (let i = 0; i < newResumes.length; i += BATCH_SIZE) {
-        batches.push(newResumes.slice(i, i + BATCH_SIZE));
-      }
-
-      setAnalyzeProgress({ current: 0, total: batches.length });
-      setProcessingState(scanId, { progress: { current: 0, total: batches.length } });
-      const allExtracted: ExtractedCompany[] = [];
-      let completedBatches = 0;
       const scannedAt = new Date().toISOString();
 
-      const batchQueue = batches.map((batch, idx) => ({ batch, idx }));
-      const batchWorker = async () => {
-        while (batchQueue.length > 0) {
-          const item = batchQueue.shift();
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE A — Extract company names from resumes (gpt-5-mini, fast)
+      // ═══════════════════════════════════════════════════════════════════
+      const extractBatches: CFParsedResume[][] = [];
+      for (let i = 0; i < newResumes.length; i += EXTRACT_BATCH_SIZE) {
+        extractBatches.push(newResumes.slice(i, i + EXTRACT_BATCH_SIZE));
+      }
+
+      // Total steps: extraction batches + 1 (cache lookup) + enrichment batches (unknown yet, estimate 1)
+      const estimatedTotal = extractBatches.length + 2;
+      setAnalyzeProgress({ current: 0, total: estimatedTotal });
+      setProcessingState(scanId, { progress: { current: 0, total: estimatedTotal } });
+
+      const allExtractedNames: ExtractedCompanyName[] = [];
+      let completedSteps = 0;
+
+      // Run extraction batches with concurrency
+      const extractQueue = extractBatches.map((batch, idx) => ({ batch, idx }));
+      const extractWorker = async () => {
+        while (extractQueue.length > 0) {
+          const item = extractQueue.shift();
           if (!item) break;
-
-          const response = await fetch("/api/company-finder", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              resumes: item.batch.map((r) => ({
-                name: r.name,
-                text: r.text,
-              })),
-              userId: user?.id,
-              organizationId: user?.organization_id,
-            }),
-          });
-
-          if (!response.ok) {
-            const err = await response.json();
-            console.error(`Batch ${item.idx + 1} failed:`, err.error);
-          } else {
-            const data = await response.json();
-            if (data.companies) {
-              allExtracted.push(...data.companies);
-            }
-          }
-
-          completedBatches++;
-          setProcessingState(scanId, { progress: { current: completedBatches, total: batches.length } });
-          setAnalyzeProgress({
-            current: completedBatches,
-            total: batches.length,
-          });
-
-          // Progressive display: aggregate and show results after each batch
-          if (allExtracted.length > 0) {
-            const partialAggregated = aggregateCompanies(allExtracted);
-            partialAggregated.forEach((c) => { c.scannedAt = scannedAt; });
-            const partialKeys = new Set(
-              partialAggregated.map((c) => c.companyName.trim().toLowerCase())
+          try {
+            const names = await CompanyFinderService.extractCompanyNames(
+              item.batch.map((r) => ({ name: r.name, text: r.text })),
+              user?.id,
+              user?.organization_id
             );
-            // Merge: existing companies (from before this run) + reused + new batch results
-            const partialMerged: AggregatedCompany[] = [
-              ...existingResultsAtStart.filter(
-                (c) => !partialKeys.has(c.companyName.trim().toLowerCase())
-              ),
-              ...reusedCompanies.filter(
-                (c) => !partialKeys.has(c.companyName.trim().toLowerCase())
-              ),
-              ...partialAggregated,
-            ];
-            partialMerged.sort((a, b) => b.frequency - a.frequency);
-            setResults(partialMerged);
-            // Persist merged partial results to DB so re-mounts show all companies
-            const resumeNames = Array.from(new Set([...existingResumeNamesAtStart, ...resumes.map((r) => r.name)]));
-            CompanyFinderService.updateResults(scanId, { results: partialMerged, resumeNames }).catch(() => {});
+            allExtractedNames.push(...names);
+          } catch (err) {
+            console.error(`Extraction batch ${item.idx + 1} failed:`, err);
           }
+          completedSteps++;
+          setAnalyzeProgress({ current: completedSteps, total: estimatedTotal });
+          setProcessingState(scanId, { progress: { current: completedSteps, total: estimatedTotal } });
         }
       };
-
-      const batchWorkers = Array.from(
-        { length: Math.min(API_CONCURRENCY, batches.length) },
-        () => batchWorker()
+      const extractWorkers = Array.from(
+        { length: Math.min(API_CONCURRENCY, extractBatches.length) },
+        () => extractWorker()
       );
-      await Promise.all(batchWorkers);
+      await Promise.all(extractWorkers);
 
-      // Final aggregation (ensures consistency after all batches)
-      const newAggregated = aggregateCompanies(allExtracted);
-      newAggregated.forEach((c) => { c.scannedAt = scannedAt; });
+      // Deduplicate company names
+      const uniqueCompanyNames = Array.from(
+        new Set(allExtractedNames.map((c) => c.companyName.trim()))
+      ).filter(Boolean);
 
-      // Merge reused companies from other scans with newly extracted ones
-      // Reused companies act as a base; new API results take priority for same company name
+      if (uniqueCompanyNames.length === 0 && reusedCompanies.length === 0) {
+        // No companies found at all — still save resume names
+        const allResumeNames = Array.from(
+          new Set([...existingResumeNamesAtStart, ...reusedResumeNames, ...resumes.map((r) => r.name)])
+        );
+        setSavedResumeNames(allResumeNames);
+        await CompanyFinderService.updateResults(scanId, {
+          results: existingResultsAtStart,
+          resumeNames: allResumeNames,
+        });
+        if (mountedRef.current) toast.info("No companies found in the uploaded resumes");
+        return;
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE B — Cache lookup
+      // ═══════════════════════════════════════════════════════════════════
+      let cachedCompanies: CachedCompany[] = [];
+      let cacheMisses: string[] = uniqueCompanyNames;
+      try {
+        const cacheResult = await CompanyFinderService.lookupCache(uniqueCompanyNames);
+        cachedCompanies = cacheResult.cached;
+        cacheMisses = cacheResult.misses;
+        if (cachedCompanies.length > 0) {
+          toast.info(`Cache: ${cachedCompanies.length} found, ${cacheMisses.length} need enrichment`);
+        }
+      } catch (err) {
+        console.error("Cache lookup failed, enriching all:", err);
+      }
+      completedSteps++;
+      setAnalyzeProgress({ current: completedSteps, total: estimatedTotal });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE C — Enrich cache misses via web search
+      // ═══════════════════════════════════════════════════════════════════
+      let freshlyEnriched: CachedCompany[] = [];
+      if (cacheMisses.length > 0) {
+        const enrichBatches: string[][] = [];
+        for (let i = 0; i < cacheMisses.length; i += ENRICH_BATCH_SIZE) {
+          enrichBatches.push(cacheMisses.slice(i, i + ENRICH_BATCH_SIZE));
+        }
+
+        // Update total now that we know enrichment batch count
+        const finalTotal = completedSteps + enrichBatches.length;
+        setAnalyzeProgress({ current: completedSteps, total: finalTotal });
+        setProcessingState(scanId, { progress: { current: completedSteps, total: finalTotal } });
+
+        const enrichQueue = enrichBatches.map((batch, idx) => ({ batch, idx }));
+        const enrichWorker = async () => {
+          while (enrichQueue.length > 0) {
+            const item = enrichQueue.shift();
+            if (!item) break;
+            try {
+              const enriched = await CompanyFinderService.enrichAndCache(
+                item.batch,
+                user?.id,
+                user?.organization_id
+              );
+              freshlyEnriched.push(...enriched);
+            } catch (err) {
+              console.error(`Enrichment batch ${item.idx + 1} failed:`, err);
+            }
+            completedSteps++;
+            setAnalyzeProgress({ current: completedSteps, total: finalTotal });
+            setProcessingState(scanId, { progress: { current: completedSteps, total: finalTotal } });
+          }
+        };
+        const enrichWorkers = Array.from(
+          { length: Math.min(API_CONCURRENCY, enrichBatches.length) },
+          () => enrichWorker()
+        );
+        await Promise.all(enrichWorkers);
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // MERGE — Combine cached + enriched + resume contexts → AggregatedCompany[]
+      // ═══════════════════════════════════════════════════════════════════
+      const allEnrichedMap = new Map<string, CachedCompany>();
+      for (const c of [...cachedCompanies, ...freshlyEnriched]) {
+        const key = c.companyName.toLowerCase().trim().replace(/\s+/g, " ");
+        allEnrichedMap.set(key, c);
+      }
+
+      // Build AggregatedCompany[] by joining extraction data with enrichment
+      const companyMap = new Map<string, AggregatedCompany>();
+      for (const ext of allExtractedNames) {
+        const key = ext.companyName.toLowerCase().trim().replace(/\s+/g, " ");
+        const enriched = allEnrichedMap.get(key);
+        const existing = companyMap.get(key);
+
+        if (existing) {
+          existing.contexts.push(ext.context);
+          if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
+            existing.sourceResumes.push(ext.resumeName);
+          }
+          existing.frequency = existing.sourceResumes.length;
+        } else {
+          companyMap.set(key, {
+            companyName: enriched?.companyName || ext.companyName,
+            companyType: enriched?.companyType || "unknown",
+            companyInfo: enriched?.companyInfo || "",
+            headquarters: enriched?.headquarters || "",
+            foundedYear: enriched?.foundedYear || "",
+            countriesWorkedIn: enriched?.countriesWorkedIn || [],
+            technologies: [],
+            relevantDomains: [],
+            sourceResumes: ext.resumeName ? [ext.resumeName] : [],
+            frequency: 1,
+            contexts: [ext.context],
+            scannedAt,
+          });
+        }
+      }
+
+      const newAggregated = Array.from(companyMap.values());
+
+      // Merge: reused companies + new results + existing results
       const newCompanyKeys = new Set(
         newAggregated.map((c) => c.companyName.trim().toLowerCase())
       );
@@ -615,7 +704,6 @@ export default function CompanyFinderView({
       setSavedResumeNames(allResumeNames);
 
       // Save results to DB IMMEDIATELY so they survive a page refresh.
-      // This must happen before uploads — uploads are non-critical and can take a while.
       try {
         await CompanyFinderService.updateResults(scanId, {
           results: merged,
@@ -632,7 +720,7 @@ export default function CompanyFinderView({
       if (mountedRef.current) {
         if (newAggregated.length > 0) {
           toast.success(
-            `Analysis complete! ${newAggregated.length} new companies found. Total: ${merged.length}`
+            `Analysis complete! ${newAggregated.length} companies found (${cachedCompanies.length} cached, ${freshlyEnriched.length} enriched). Total: ${merged.length}`
           );
         } else {
           toast.info("No companies found in the uploaded resumes");
@@ -646,12 +734,8 @@ export default function CompanyFinderView({
         });
       }
     } finally {
-      // Broadcast analyzing=false BEFORE clearing so any re-mounted subscriber
-      // (e.g. after navigating away and back) receives the completion signal.
       setProcessingState(scanId, { analyzing: false });
       clearProcessingState(scanId);
-      // No mountedRef guard — React 18 safely ignores setState on unmounted components,
-      // and we need these to fire so the reload-on-completion effect can pick up results.
       setAnalyzing(false);
       setAnalyzeProgress({ current: 0, total: 0 });
       if (mountedRef.current) {
@@ -866,7 +950,7 @@ export default function CompanyFinderView({
   // Count all analyzed resumes (not just those with companies found)
   // During active analysis, show only the resumes processed so far (completed batches × batch size)
   const resumeCountDisplay = analyzing
-    ? savedResumeNames.length + Math.min(analyzeProgress.current * BATCH_SIZE, analyzingCountRef.current)
+    ? savedResumeNames.length + analyzingCountRef.current
     : savedResumeNames.length > 0
       ? savedResumeNames.length
       : resumes.length;
@@ -1102,18 +1186,14 @@ export default function CompanyFinderView({
                 Processing resumes...
               </span>
               <span className="text-sm font-medium text-indigo-700">
-                {Math.min(
-                  analyzeProgress.current * BATCH_SIZE,
-                  analyzingCountRef.current
-                )}
-                /{analyzingCountRef.current} processed
+                {analyzeProgress.current}/{analyzeProgress.total} steps
               </span>
             </div>
             <div className="w-full bg-indigo-100 rounded-full h-2">
               <div
                 className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
                 style={{
-                  width: `${(Math.min(analyzeProgress.current * BATCH_SIZE, analyzingCountRef.current) / analyzingCountRef.current) * 100}%`,
+                  width: `${analyzeProgress.total > 0 ? (analyzeProgress.current / analyzeProgress.total) * 100 : 0}%`,
                 }}
               />
             </div>

@@ -1,4 +1,4 @@
-import { OpenAI } from "openai";
+import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/logger";
 import { ApiUsageService } from "@/services/api-usage.service";
@@ -22,14 +22,10 @@ export async function POST(req: Request) {
       );
     }
 
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      maxRetries: 5,
-      dangerouslyAllowBrowser: true,
-    });
+    const openai = getOpenAIClient();
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-5-mini",
+      model: MODELS.GPT5_MINI,
       messages: [
         {
           role: "system",
@@ -57,7 +53,7 @@ export async function POST(req: Request) {
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
-        model: "gpt-5-mini",
+        model: MODELS.GPT5_MINI,
         requestId: body.callId,
       }).catch((err) => {
         logger.error("Failed to save API usage for communication analysis", { error: err });

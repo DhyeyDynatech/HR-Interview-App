@@ -1,6 +1,6 @@
 "use server";
 
-import { OpenAI } from "openai";
+import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { ResponseService } from "@/services/responses.service";
 import { InterviewService } from "@/services/interviews.service";
 import { ApiUsageService } from "@/services/api-usage.service";
@@ -41,11 +41,7 @@ export const generateInterviewAnalytics = async (payload: {
       .map((q: Question, index: number) => `${index + 1}. ${q.question}`)
       .join("\n");
 
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      maxRetries: 5,
-      dangerouslyAllowBrowser: true,
-    });
+    const openai = getOpenAIClient();
 
     const prompt = getInterviewAnalyticsPrompt(
       interviewTranscript,
@@ -53,7 +49,7 @@ export const generateInterviewAnalytics = async (payload: {
     );
 
     const baseCompletion = await openai.chat.completions.create({
-      model: "gpt-5",
+      model: MODELS.GPT5,
       messages: [
         {
           role: "system",
@@ -87,7 +83,7 @@ export const generateInterviewAnalytics = async (payload: {
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
-        model: "gpt-5",
+        model: MODELS.GPT5,
         requestId: callId,
         metadata: {
           candidateName: response.name,

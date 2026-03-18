@@ -1,4 +1,4 @@
-import { OpenAI } from "openai";
+import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { NextResponse } from "next/server";
 import { ResponseService } from "@/services/responses.service";
 import { InterviewService } from "@/services/interviews.service";
@@ -23,11 +23,7 @@ export async function POST(req: Request, res: Response) {
     });
   }
 
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    maxRetries: 5,
-    dangerouslyAllowBrowser: true,
-  });
+  const openai = getOpenAIClient();
 
   try {
     const prompt = createUserPrompt(
@@ -38,7 +34,7 @@ export async function POST(req: Request, res: Response) {
     );
 
     const baseCompletion = await openai.chat.completions.create({
-      model: "gpt-5-mini",
+      model: MODELS.GPT5_MINI,
       messages: [
         {
           role: "system",
@@ -72,7 +68,7 @@ export async function POST(req: Request, res: Response) {
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
-        model: "gpt-5-mini",
+        model: MODELS.GPT5_MINI,
         metadata: {
           responseCount: responses?.length || 0,
           interviewName: interview.name,

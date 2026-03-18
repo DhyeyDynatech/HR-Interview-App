@@ -2,6 +2,10 @@ import {
   CFScanCard,
   CFScanDetail,
   AggregatedCompany,
+  CachedCompany,
+  CacheLookupResponse,
+  ExtractedCompanyName,
+  ExtractionOnlyResponse,
 } from "@/types/company-finder";
 
 function getAuthHeaders(): HeadersInit {
@@ -62,6 +66,20 @@ async function updateResults(
     method: "PUT",
     headers: getAuthHeaders(),
     body: JSON.stringify(data),
+  });
+  await handleResponse(res);
+}
+
+/** Update only resume names and URLs — does NOT overwrite company results. */
+async function updateResumeNames(
+  id: string,
+  resumeNames: string[],
+  resumeUrls?: Record<string, string>
+): Promise<void> {
+  const res = await fetch(`/api/company-finder/scans/${id}`, {
+    method: "PUT",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ resumeNames, ...(resumeUrls && Object.keys(resumeUrls).length > 0 && { resumeUrls }) }),
   });
   await handleResponse(res);
 }
@@ -191,14 +209,79 @@ async function findExistingResultsForResumes(
   };
 }
 
+// ---------- 3-Stage Pipeline Helpers ----------
+
+/** Stage A: Extract company names from resumes (no web search, fast) */
+async function extractCompanyNames(
+  resumes: { name: string; text: string }[],
+  userId?: string,
+  organizationId?: string
+): Promise<ExtractedCompanyName[]> {
+  const res = await fetch("/api/company-finder/extract", {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ resumes, userId, organizationId }),
+  });
+  const data = await handleResponse<ExtractionOnlyResponse>(res);
+  return data.companies || [];
+}
+
+/** Stage B: Lookup companies in cache, returns hits + misses */
+async function lookupCache(companyNames: string[]): Promise<CacheLookupResponse> {
+  if (companyNames.length === 0) return { cached: [], misses: [] };
+  const res = await fetch("/api/company-finder/cache", {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ companyNames }),
+  });
+  return handleResponse<CacheLookupResponse>(res);
+}
+
+/** Stage C: Enrich cache misses via web search (auto-saves to cache on backend) */
+async function enrichAndCache(
+  companyNames: string[],
+  userId?: string,
+  organizationId?: string,
+  category?: string
+): Promise<CachedCompany[]> {
+  if (companyNames.length === 0) return [];
+  const res = await fetch("/api/company-finder", {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      enrichOnly: companyNames,
+      userId,
+      organizationId,
+      category: category || "company_finder",
+    }),
+  });
+  const data = await handleResponse<{ companies: any[] }>(res);
+  // Map enrichment response to CachedCompany shape
+  return (data.companies || []).map((c: any) => ({
+    companyName: c.companyName,
+    normalizedKey: c.companyName.toLowerCase().trim().replace(/\s+/g, " "),
+    companyType: c.companyType || "unknown",
+    companyInfo: c.companyInfo || undefined,
+    headquarters: c.headquarters || undefined,
+    foundedYear: c.foundedYear || undefined,
+    countriesWorkedIn: c.countriesWorkedIn || [],
+    isRelevant: c.isRelevant ?? false,
+    enrichedAt: new Date().toISOString(),
+  }));
+}
+
 export const CompanyFinderService = {
   listScans,
   createScan,
   getScanDetail,
   updateResults,
+  updateResumeNames,
   updateName,
   removeScan,
   findAtsScanId,
   ensureAtsScan,
   findExistingResultsForResumes,
+  extractCompanyNames,
+  lookupCache,
+  enrichAndCache,
 };

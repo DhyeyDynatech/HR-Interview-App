@@ -4,7 +4,6 @@ import React, { useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   ChevronDown,
   ChevronUp,
@@ -84,6 +83,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
   const [expanded, setExpanded] = useState(false);
   const [showResume, setShowResume] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const [activeDetailTab, setActiveDetailTab] = useState<"swot" | "profile" | "experience" | "jd">("swot");
 
   const toggleCategory = (label: string) => {
     setExpandedCategories((prev) => {
@@ -103,6 +103,13 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
 
   const overallNorm = normalizeScore(result.overallScore);
   const detailed = hasDetailedAnalysis(result);
+
+  // Pick first tab that actually has data so we don't default to an empty tab
+  const defaultTab = result.swotAnalysis ? "swot"
+    : result.candidateProfile ? "profile"
+    : result.experienceDepthAnalysis ? "experience"
+    : result.jdUnderstanding ? "jd"
+    : "swot";
 
   return (
     <Card className="transition-all duration-200 hover:shadow-md">
@@ -196,9 +203,10 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
           <p className="text-sm text-slate-600 mb-6 ml-12">{result.summary}</p>
 
           {/* Category Scores with Expandable Reasons */}
+          {result.categoryScores && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 items-start">
             {categoryKeys.map((key) => {
-              const rawScore = result.categoryScores[key];
+              const rawScore = result.categoryScores[key] ?? 0;
               const normScore = normalizeScore(rawScore);
               const detail = result.categoryDetails?.[key];
               const reasons = detail?.reasons || [];
@@ -276,7 +284,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                         ))}
                       </ul>
                       {/* Inline matched/missing skills for Skills category */}
-                      {key === "skills" && (result.matchedSkills.length > 0 || result.missingSkills.length > 0) && (
+                      {key === "skills" && ((result.matchedSkills?.length > 0) || (result.missingSkills?.length > 0)) && (
                         <ul className="space-y-1.5 mt-3 pt-2 border-t border-slate-100">
                           {result.matchedSkills.map((skill, i) => (
                             <li key={`m-${i}`} className="flex items-start gap-2 text-xs text-green-700">
@@ -298,31 +306,42 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
               );
             })}
           </div>
+          )}
 
           {/* Detailed Analysis (new format) OR Legacy Strengths/Interview Focus */}
           {detailed ? (
-            <Tabs defaultValue="swot" className="w-full">
-              <TabsList className="grid w-full grid-cols-4 mb-4">
-                <TabsTrigger value="swot" className="text-xs gap-1">
-                  <Shield className="h-3.5 w-3.5" />
-                  SWOT
-                </TabsTrigger>
-                <TabsTrigger value="profile" className="text-xs gap-1">
-                  <User className="h-3.5 w-3.5" />
-                  Profile
-                </TabsTrigger>
-                <TabsTrigger value="experience" className="text-xs gap-1">
-                  <BarChart3 className="h-3.5 w-3.5" />
-                  Exp. Depth
-                </TabsTrigger>
-                <TabsTrigger value="jd" className="text-xs gap-1">
-                  <Briefcase className="h-3.5 w-3.5" />
-                  JD Analysis
-                </TabsTrigger>
-              </TabsList>
+            <div className="w-full">
+              {/* Manual Tab Bar */}
+              <div className="grid grid-cols-4 gap-1 mb-4 bg-slate-100 p-1 rounded-lg">
+                {(["swot", "profile", "experience", "jd"] as const).map((tab) => {
+                  const labels: Record<string, { icon: React.ReactNode; label: string }> = {
+                    swot: { icon: <Shield className="h-3.5 w-3.5" />, label: "SWOT" },
+                    profile: { icon: <User className="h-3.5 w-3.5" />, label: "Profile" },
+                    experience: { icon: <BarChart3 className="h-3.5 w-3.5" />, label: "Exp. Depth" },
+                    jd: { icon: <Briefcase className="h-3.5 w-3.5" />, label: "JD Analysis" },
+                  };
+                  const isActive = activeDetailTab === tab;
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => setActiveDetailTab(tab)}
+                      className={`flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium transition-all ${
+                        isActive
+                          ? "bg-white shadow-sm text-slate-900"
+                          : "text-slate-500 hover:text-slate-700"
+                      }`}
+                    >
+                      {labels[tab].icon}
+                      {labels[tab].label}
+                    </button>
+                  );
+                })}
 
-              {/* SWOT Analysis Tab */}
-              <TabsContent value="swot">
+              </div>
+
+              {/* Tab Content */}
+              {/* SWOT Analysis */}
+              <div className={activeDetailTab === "swot" ? "block" : "hidden"}>
                 {result.swotAnalysis ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -333,7 +352,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                           <span className="text-xs font-semibold text-green-800 uppercase tracking-wide">Strengths</span>
                         </div>
                         <ul className="space-y-1.5">
-                          {result.swotAnalysis.strengths.map((s, i) => (
+                          {(result.swotAnalysis.strengths || []).map((s, i) => (
                             <li key={i} className="flex items-start gap-2 text-xs text-green-700">
                               <span className="mt-1 h-1.5 w-1.5 rounded-full bg-green-400 flex-shrink-0" />
                               {s}
@@ -348,7 +367,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                           <span className="text-xs font-semibold text-red-800 uppercase tracking-wide">Weaknesses</span>
                         </div>
                         <ul className="space-y-1.5">
-                          {result.swotAnalysis.weaknesses.map((s, i) => (
+                          {(result.swotAnalysis.weaknesses || []).map((s, i) => (
                             <li key={i} className="flex items-start gap-2 text-xs text-red-700">
                               <span className="mt-1 h-1.5 w-1.5 rounded-full bg-red-400 flex-shrink-0" />
                               {s}
@@ -363,7 +382,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                           <span className="text-xs font-semibold text-blue-800 uppercase tracking-wide">Opportunities</span>
                         </div>
                         <ul className="space-y-1.5">
-                          {result.swotAnalysis.opportunities.map((s, i) => (
+                          {(result.swotAnalysis.opportunities || []).map((s, i) => (
                             <li key={i} className="flex items-start gap-2 text-xs text-blue-700">
                               <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-400 flex-shrink-0" />
                               {s}
@@ -378,7 +397,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                           <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Risks</span>
                         </div>
                         <ul className="space-y-1.5">
-                          {result.swotAnalysis.risks.map((s, i) => (
+                          {(result.swotAnalysis.risks || []).map((s, i) => (
                             <li key={i} className="flex items-start gap-2 text-xs text-amber-700">
                               <span className="mt-1 h-1.5 w-1.5 rounded-full bg-amber-400 flex-shrink-0" />
                               {s}
@@ -398,10 +417,10 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                 ) : (
                   <p className="text-sm text-slate-400 text-center py-6">No SWOT data available</p>
                 )}
-              </TabsContent>
+              </div>
 
-              {/* Candidate Profile Tab */}
-              <TabsContent value="profile">
+              {/* Candidate Profile */}
+              <div className={activeDetailTab === "profile" ? "block" : "hidden"}>
                 {result.candidateProfile ? (
                   <div className="space-y-4">
                     <div className="overflow-hidden rounded-lg border">
@@ -437,10 +456,10 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                 ) : (
                   <p className="text-sm text-slate-400 text-center py-6">No profile data available</p>
                 )}
-              </TabsContent>
+              </div>
 
-              {/* Experience Depth Tab */}
-              <TabsContent value="experience">
+              {/* Experience Depth */}
+              <div className={activeDetailTab === "experience" ? "block" : "hidden"}>
                 {result.experienceDepthAnalysis ? (
                   <div className="space-y-4">
                     <div className="overflow-hidden rounded-lg border">
@@ -453,7 +472,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                           </tr>
                         </thead>
                         <tbody>
-                          {result.experienceDepthAnalysis.parameters.map((p, i) => (
+                          {(result.experienceDepthAnalysis.parameters || []).map((p, i) => (
                             <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
                               <td className="px-3 py-2 font-medium text-slate-700">{p.parameter}</td>
                               <td className="px-3 py-2">
@@ -467,11 +486,11 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                         </tbody>
                       </table>
                     </div>
-                    {result.experienceDepthAnalysis.keyObservations.length > 0 && (
+                    {(result.experienceDepthAnalysis.keyObservations || []).length > 0 && (
                       <div className="p-3 rounded-lg bg-slate-50 border">
                         <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Key Observations</span>
                         <ul className="space-y-1.5 mt-2">
-                          {result.experienceDepthAnalysis.keyObservations.map((o, i) => (
+                          {(result.experienceDepthAnalysis.keyObservations || []).map((o, i) => (
                             <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
                               <span className="mt-1 h-1.5 w-1.5 rounded-full bg-indigo-400 flex-shrink-0" />
                               {o}
@@ -484,10 +503,10 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                 ) : (
                   <p className="text-sm text-slate-400 text-center py-6">No experience depth data available</p>
                 )}
-              </TabsContent>
+              </div>
 
-              {/* JD Understanding Tab */}
-              <TabsContent value="jd">
+              {/* JD Understanding */}
+              <div className={activeDetailTab === "jd" ? "block" : "hidden"}>
                 {result.jdUnderstanding ? (
                   <div className="space-y-3">
                     {result.jdUnderstanding.roleOverview && (
@@ -553,8 +572,8 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                 ) : (
                   <p className="text-sm text-slate-400 text-center py-6">No JD analysis data available</p>
                 )}
-              </TabsContent>
-            </Tabs>
+              </div>
+            </div>
           ) : (
             /* Legacy layout for old results without detailed analysis */
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -565,7 +584,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                   <span className="text-sm font-medium text-blue-800">Strengths</span>
                 </div>
                 <ul className="space-y-2">
-                  {result.strengths.map((s, i) => (
+                  {(result.strengths || []).map((s, i) => (
                     <li key={i} className="flex items-start gap-2 text-sm text-blue-700">
                       <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-400 flex-shrink-0" />
                       {s}
@@ -580,7 +599,7 @@ export default function ATSResultCard({ result, rank, onDelete, previewUrl, isUp
                   <span className="text-sm font-medium text-amber-800">Interview Focus Areas</span>
                 </div>
                 <ul className="space-y-2">
-                  {result.interviewFocusAreas.map((s, i) => (
+                  {(result.interviewFocusAreas || []).map((s, i) => (
                     <li key={i} className="flex items-start gap-2 text-sm text-amber-700">
                       <span className="mt-1 h-1.5 w-1.5 rounded-full bg-amber-400 flex-shrink-0" />
                       {s}

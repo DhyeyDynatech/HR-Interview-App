@@ -7,10 +7,20 @@ import { ATSJobCardData } from "@/types/ats-scoring";
 import JobGrid from "@/components/dashboard/ats-scoring/jobGrid";
 import ScoringView from "@/components/dashboard/ats-scoring/scoringView";
 
+const SELECTED_JOB_KEY = "ats_selected_job";
+
 export default function ATSScoringPage() {
   const { interviews } = useInterviews();
   const [jobs, setJobs] = useState<ATSJobCardData[]>([]);
-  const [selectedJob, setSelectedJob] = useState<{ interviewId: string; interviewName: string } | null>(null);
+  const [selectedJob, setSelectedJob] = useState<{ interviewId: string; interviewName: string } | null>(() => {
+    // Restore last-opened job on mount so navigation away and back keeps the same view
+    try {
+      const saved = localStorage.getItem(SELECTED_JOB_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
 
   const fetchJobs = useCallback(async () => {
@@ -41,12 +51,15 @@ export default function ATSScoringPage() {
   const handleSelectJob = (interviewId: string) => {
     const job = jobs.find((j) => j.interviewId === interviewId);
     if (job) {
-      setSelectedJob({ interviewId: job.interviewId, interviewName: job.interviewName });
+      const next = { interviewId: job.interviewId, interviewName: job.interviewName };
+      setSelectedJob(next);
+      try { localStorage.setItem(SELECTED_JOB_KEY, JSON.stringify(next)); } catch { /* ignore */ }
     }
   };
 
   const handleBack = () => {
     setSelectedJob(null);
+    try { localStorage.removeItem(SELECTED_JOB_KEY); } catch { /* ignore */ }
     fetchJobs();
   };
 

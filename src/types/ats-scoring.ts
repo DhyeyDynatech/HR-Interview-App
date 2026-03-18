@@ -121,4 +121,11 @@ export interface ATSJobDetail {
   jdText: string;
   jdFilename: string;
   results: ATSScoreResult[];
+  pagination?: { total: number; offset: number; limit: number };
+  activeBatchJob?: {
+    id: string;
+    totalItems: number;
+    processedItems: number;
+    failedItems: number;
+  } | null;
 }

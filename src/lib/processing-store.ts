@@ -13,6 +13,10 @@ export interface ProcessingState {
   progress: { current: number; total: number };
   /** Total number of resumes/items being processed — used for display labels */
   itemCount: number;
+  /** ATS-specific: whether the batch processor component should be active */
+  batchJobActive?: boolean;
+  /** ATS-specific: total resumes in the batch job */
+  batchTotal?: number;
 }
 
 type Listener = (state: ProcessingState) => void;

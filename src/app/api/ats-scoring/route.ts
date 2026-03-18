@@ -1,4 +1,4 @@
-import { OpenAI } from "openai";
+import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { NextResponse } from "next/server";
 import {
   ATS_SYSTEM_PROMPT,
@@ -63,19 +63,15 @@ export async function POST(req: Request) {
     text: r.text.slice(0, MAX_RESUME_TEXT_LENGTH),
   }));
 
-  if (!process.env.OPENAI_API_KEY) {
-    logger.error("OPENAI_API_KEY is not set");
+  if (!process.env.AZURE_OPENAI_API_KEY) {
+    logger.error("AZURE_OPENAI_API_KEY is not set");
     return NextResponse.json(
-      { error: "OpenAI API key is not configured on the server" },
+      { error: "Azure OpenAI API key is not configured on the server" },
       { status: 500 }
     );
   }
 
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    maxRetries: 3,
-    timeout: OPENAI_TIMEOUT_MS,
-  });
+  const openai = getOpenAIClient();
 
   try {
     const prompt = generateATSScoringPrompt({
@@ -83,20 +79,32 @@ export async function POST(req: Request) {
       resumes,
     });
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5",
-      max_completion_tokens: 65536,
-      messages: [
+    // Hard abort after timeout to prevent hanging requests
+    const abortController = new AbortController();
+    const abortTimer = setTimeout(() => abortController.abort(), OPENAI_TIMEOUT_MS);
+
+    let completion;
+    try {
+      completion = await openai.chat.completions.create(
         {
-          role: "system",
-          content: ATS_SYSTEM_PROMPT,
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    } as any);
+          model: MODELS.GPT5_MINI,
+          max_completion_tokens: 65536,
+          messages: [
+            {
+              role: "system",
+              content: ATS_SYSTEM_PROMPT,
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+        } as any,
+        { signal: abortController.signal }
+      );
+    } finally {
+      clearTimeout(abortTimer);
+    }
 
     const raw = completion.choices[0]?.message?.content || "{}";
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -138,7 +146,7 @@ export async function POST(req: Request) {
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
-        model: "gpt-5",
+        model: MODELS.GPT5_MINI,
         metadata: {
           resumeCount: resumes.length,
           resumeNames: resumes.map((r) => r.name),

@@ -1,6 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  serverExternalPackages: ['mammoth'],
   async redirects() {
     return [
       {
@@ -37,6 +36,7 @@ const nextConfig = {
     swcTraceProfiling: false,
     // Fix ESM module handling for Supabase
     esmExternals: 'loose',
+    serverComponentsExternalPackages: ['mammoth', 'word-extractor', 'pdfjs-dist'],
   },
   webpack: (webpackConfig, { webpack, isServer }) => {
     // Remove node: from import specifiers for compatibility

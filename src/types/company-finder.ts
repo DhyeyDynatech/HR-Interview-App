@@ -68,6 +68,37 @@ export interface CompanyFinderResponse {
   companies: ExtractedCompany[];
 }
 
+// ---------- Extraction-Only (Stage A) ----------
+
+export interface ExtractedCompanyName {
+  companyName: string;
+  resumeName: string;
+  context: string;
+}
+
+export interface ExtractionOnlyResponse {
+  companies: ExtractedCompanyName[];
+}
+
+// ---------- Company Cache (Stage B) ----------
+
+export interface CachedCompany {
+  companyName: string;
+  normalizedKey: string;
+  companyType: CompanyType;
+  companyInfo?: string;
+  headquarters?: string;
+  foundedYear?: string;
+  countriesWorkedIn?: string[];
+  isRelevant?: boolean;
+  enrichedAt: string;
+}
+
+export interface CacheLookupResponse {
+  cached: CachedCompany[];
+  misses: string[];
+}
+
 // ---------- Client-Side Parsed Resume ----------
 
 export interface CFParsedResume {

@@ -87,6 +87,18 @@ async function removeJob(interviewId: string): Promise<void> {
   await handleResponse(res);
 }
 
+async function startBatchAnalysis(
+  interviewId: string,
+  resumes: { name: string; text: string }[]
+): Promise<{ jobId: string; totalItems: number }> {
+  const res = await fetch(`/api/ats-scoring/jobs/${interviewId}/queue`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ resumes }),
+  });
+  return handleResponse(res);
+}
+
 export const ATSJobService = {
   listJobs,
   addJobs,
@@ -94,4 +106,5 @@ export const ATSJobService = {
   updateJd,
   updateResults,
   removeJob,
+  startBatchAnalysis,
 };

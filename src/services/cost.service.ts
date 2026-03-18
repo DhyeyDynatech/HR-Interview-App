@@ -230,6 +230,9 @@ export class CostService {
     const supabase = getSupabaseClient();
 
     // Build query to get api_usage records
+    const sortBy = filters?.sortBy || "date";
+    const sortOrder = filters?.sortOrder || "desc";
+
     let query = supabase
       .from("api_usage")
       .select(`
@@ -249,8 +252,17 @@ export class CostService {
         model,
         request_id,
         metadata
-      `)
-      .order("created_at", { ascending: false });
+      `);
+
+    // Apply server-side sorting where possible
+    if (sortBy === "date") {
+      query = query.order("created_at", { ascending: sortOrder === "asc" });
+    } else if (sortBy === "duration") {
+      query = query.order("duration_seconds", { ascending: sortOrder === "asc" });
+    } else {
+      // "cost" sort is applied client-side after fetching
+      query = query.order("created_at", { ascending: false });
+    }
 
     // Apply date filters
     if (filters?.startDate) {
@@ -321,6 +333,7 @@ export class CostService {
           totalTokens: 0,
           totalDurationMinutes: 0,
           totalCost: 0,
+          totalStorageBytes: 0,
         });
       }
 
@@ -331,6 +344,9 @@ export class CostService {
       breakdown.totalTokens += record.total_tokens || 0;
       breakdown.totalDurationMinutes += (record.duration_seconds || 0) / 60;
       breakdown.totalCost += Number(record.cost_usd) || 0;
+      if (category === "blob_upload") {
+        breakdown.totalStorageBytes += (record as any).metadata?.fileSizeBytes || 0;
+      }
     }
 
     // Format category breakdown
@@ -357,13 +373,10 @@ export class CostService {
     const interviewCost = interviewRecords.reduce(
       (sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0
     );
-    // Count unique interview cycles (unique interview_ids that have a voice_call)
-    const interviewCycles = new Set(
-      interviewRecords
-        .filter((r: any) => r.category === "voice_call")
-        .map((r: any) => r.interview_id)
-        .filter(Boolean)
-    ).size;
+    // Count interview cycles = number of voice_call records (each = one interview session)
+    const interviewCycles = filteredRecords.filter(
+      (r: any) => r.category === "voice_call"
+    ).length;
 
     // --- Avg Cost per Resume for ATS Scoring (ats_scoring category includes CF when run from ATS) ---
     const atsRecords = filteredRecords.filter((r: any) => r.category === "ats_scoring");
@@ -383,18 +396,21 @@ export class CostService {
       (sum: number, r: any) => sum + (r.metadata?.resumeCount || 0), 0
     );
 
+    const avgInterviewCost = interviewCycles > 0
+      ? Number((interviewCost / interviewCycles).toFixed(6))
+      : 0;
+
     const summary: EnhancedCostSummary = {
       totalCost: Number(byCategory.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6)),
       totalInterviews: new Set(filteredRecords.map((r: any) => r.interview_id).filter(Boolean)).size,
-      avgCostPerInterview: 0,
+      // interview-only cost (voice + analytics + communication + question gen + insights)
+      avgCostPerInterview: avgInterviewCost,
       gptCost: Number(gptCategories.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6)),
       voiceCost: Number(voiceCategories.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6)),
       totalTokens: byCategory.reduce((sum, b) => sum + b.totalTokens, 0),
       totalMinutes: Number(voiceCategories.reduce((sum, b) => sum + b.totalDurationMinutes, 0).toFixed(2)),
       byCategory,
-      avgInterviewCost: interviewCycles > 0
-        ? Number((interviewCost / interviewCycles).toFixed(6))
-        : 0,
+      avgInterviewCost,
       totalInterviewCycles: interviewCycles,
       avgCostPerResumeATS: atsResumes > 0
         ? Number((atsCost / atsResumes).toFixed(6))
@@ -405,12 +421,6 @@ export class CostService {
         : 0,
       totalCFResumes: cfResumes,
     };
-
-    // Use interview-only cost (voice + analytics + communication + question gen + insights)
-    // not totalCost which includes ATS/CF/blob
-    summary.avgCostPerInterview = interviewCycles > 0
-      ? Number((interviewCost / interviewCycles).toFixed(6))
-      : 0;
 
     // Transform records into display format with interview details
     const data = filteredRecords.map((record: any) => {
@@ -435,6 +445,11 @@ export class CostService {
         metadata: record.metadata,
       };
     });
+
+    // Apply client-side cost sort (can't be done server-side)
+    if (sortBy === "cost") {
+      data.sort((a, b) => sortOrder === "asc" ? a.cost - b.cost : b.cost - a.cost);
+    }
 
     return { data, summary };
   }

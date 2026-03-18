@@ -1,4 +1,4 @@
-import { OpenAI } from "openai";
+import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { NextResponse } from "next/server";
 import {
   SYSTEM_PROMPT,
@@ -25,23 +25,11 @@ export async function POST(req: Request, res: Response) {
     );
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    logger.error("OPENAI_API_KEY is not set");
-    return NextResponse.json(
-      { error: "OpenAI API key is not configured on the server" },
-      { status: 500 },
-    );
-  }
-
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    maxRetries: 5,
-    dangerouslyAllowBrowser: true,
-  });
+  const openai = getOpenAIClient();
 
   try {
     const baseCompletion = await openai.chat.completions.create({
-      model: "gpt-5-mini",
+      model: MODELS.GPT5_MINI,
       messages: [
         {
           role: "system",
@@ -69,7 +57,7 @@ export async function POST(req: Request, res: Response) {
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
-        model: "gpt-5-mini",
+        model: MODELS.GPT5_MINI,
         metadata: {
           questionCount: body.numberOfQuestions,
           jobRole: body.interviewName,

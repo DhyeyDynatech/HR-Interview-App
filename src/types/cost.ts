@@ -108,6 +108,7 @@ export interface CategoryCostBreakdown {
   totalTokens: number;
   totalDurationMinutes: number;
   totalCost: number;
+  totalStorageBytes: number; // for blob_upload: total bytes stored across all uploads
 }
 
 // Enhanced cost summary with category breakdown

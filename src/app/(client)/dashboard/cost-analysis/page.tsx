@@ -721,8 +721,8 @@ function CostAnalysisPage() {
               </Card>
             </div>
 
-            {/* Row 2: Avg Cost/Interview + Avg Cost/Resume (ATS) + Avg Cost/Resume (CF) */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Row 2: Avg Cost/Interview + Avg Cost/Resume (ATS) + Avg Cost/Resume (CF) — tracked data only */}
+            {dataSource === "tracked" && <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <CardTitle className="text-sm font-medium text-gray-600">
@@ -773,7 +773,7 @@ function CostAnalysisPage() {
                   </p>
                 </CardContent>
               </Card>
-            </div>
+            </div>}
           </>
         )}
 
@@ -805,13 +805,17 @@ function CostAnalysisPage() {
                         <span>{cat.totalTokens.toLocaleString()} tokens ({cat.count} calls)</span>
                       ) : cat.service === "retell" ? (
                         <span>{cat.totalDurationMinutes.toFixed(1)} min ({cat.count} calls)</span>
+                      ) : cat.category === "blob_upload" ? (
+                        <span>{(cat.totalStorageBytes / (1024 * 1024 * 1024)).toFixed(4)} GB stored</span>
                       ) : (
                         <span>{cat.count} upload{cat.count !== 1 ? "s" : ""}</span>
                       )}
                     </div>
                     {cat.count > 0 && (
                       <div className="text-xs mt-0.5 opacity-60">
-                        ~${(cat.totalCost / cat.count).toFixed(4)}/{cat.service === "vercel" ? "upload" : "run"}
+                        {cat.category === "blob_upload"
+                          ? "~$0.023/GB/month"
+                          : `~$${(cat.totalCost / cat.count).toFixed(4)}/${cat.service === "vercel" ? "upload" : "run"}`}
                       </div>
                     )}
                   </div>
