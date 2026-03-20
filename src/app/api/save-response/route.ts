@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { ResponseService } from "@/services/responses.service";
 import { logActivityFromRequest } from "@/lib/user-activity-log";
 import { logger } from "@/lib/logger";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 /**
  * API endpoint for saving response with logging
@@ -24,6 +30,23 @@ export async function POST(request: NextRequest) {
 
     // Save the response
     const result = await ResponseService.saveResponse(payload, call_id);
+
+    // Server-side: auto-disable retakes when interview is completed
+    if (payload.is_ended === true && existingResponse) {
+      try {
+        const candidateEmail = existingResponse.email;
+        const interviewId = existingResponse.interview_id;
+        if (candidateEmail && interviewId) {
+          await supabase
+            .from("interview_assignee")
+            .update({ allow_retake: false, interview_status: "INTERVIEW_COMPLETED" })
+            .ilike("email", candidateEmail)
+            .eq("interview_id", interviewId);
+        }
+      } catch (retakeError) {
+        logger.error("Failed to disable retake:", retakeError instanceof Error ? retakeError.message : String(retakeError));
+      }
+    }
 
     // Log interview completion if is_ended is true
     if (payload.is_ended === true && existingResponse) {

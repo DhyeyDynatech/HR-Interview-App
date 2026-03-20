@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Loader2, ChevronLeft, ChevronRight, Download, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Loader2, Download, X, ZoomIn, ZoomOut } from 'lucide-react';
 
 interface ResumeViewerProps {
   isOpen: boolean;
@@ -34,14 +34,13 @@ function isBlobUrl(url: string): boolean {
 
 export function ResumeViewer({ isOpen, onClose, resumeUrl, assigneeName, fileName }: ResumeViewerProps) {
   const [numPages, setNumPages] = useState<number>(0);
-  const [pageNumber, setPageNumber] = useState<number>(1);
   const [zoom, setZoom] = useState<number>(100);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [pdfModule, setPdfModule] = useState<any>(null);
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [pdfDoc, setPdfDoc] = useState<any>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   // Word file state
   const [wordLoaded, setWordLoaded] = useState(false);
@@ -82,13 +81,13 @@ export function ResumeViewer({ isOpen, onClose, resumeUrl, assigneeName, fileNam
     }
   }, [isOpen, resumeUrl, isWord, isBlob]);
 
-  // Load PDF
+  // Load PDF document
   useEffect(() => {
     if (!isOpen || !resumeUrl || !pdfModule || isWord) return;
 
     setLoading(true);
     setError(null);
-    setPageNumber(1);
+    setPdfDoc(null);
     setZoom(100);
 
     const loadPdf = async () => {
@@ -96,6 +95,7 @@ export function ResumeViewer({ isOpen, onClose, resumeUrl, assigneeName, fileNam
         const loadingTask = pdfModule.getDocument(resumeUrl);
         const pdf = await loadingTask.promise;
         setNumPages(pdf.numPages);
+        setPdfDoc(pdf);
         setLoading(false);
       } catch (err: any) {
         console.error('Error loading PDF:', err);
@@ -111,49 +111,50 @@ export function ResumeViewer({ isOpen, onClose, resumeUrl, assigneeName, fileNam
     loadPdf();
   }, [isOpen, resumeUrl, pdfModule, isWord]);
 
-  // Render PDF canvas
-  useEffect(() => {
-    if (!pdfModule || !resumeUrl || !canvasRef.current || loading || error || pageNumber < 1 || isWord) return;
+  // Render ALL PDF pages into individual canvases for scrollable view
+  const renderAllPages = useCallback(async () => {
+    if (!pdfDoc || !canvasContainerRef.current || isWord) return;
 
-    const renderPage = async () => {
+    const container = canvasContainerRef.current;
+    container.innerHTML = ''; // Clear previous canvases
+
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
       try {
-        const loadingTask = pdfModule.getDocument(resumeUrl);
-        const pdf = await loadingTask.promise;
-        const page = await pdf.getPage(pageNumber);
+        const page = await pdfDoc.getPage(i);
+        const viewport = page.getViewport({ scale: BASE_SCALE });
 
-        if (canvasRef.current) {
-          const viewport = page.getViewport({ scale: BASE_SCALE });
-          canvasRef.current.width = viewport.width;
-          canvasRef.current.height = viewport.height;
-          setCanvasSize({ width: viewport.width, height: viewport.height });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.width = `${(viewport.width / BASE_SCALE) * (zoom / 100)}px`;
+        canvas.style.height = `${(viewport.height / BASE_SCALE) * (zoom / 100)}px`;
+        canvas.className = 'shadow-lg bg-white block mx-auto';
 
-          const context = canvasRef.current.getContext('2d');
-          if (context) {
-            await page.render({
-              canvasContext: context,
-              viewport: viewport,
-            }).promise;
-          }
+        // Add spacing between pages
+        if (i > 1) {
+          const spacer = document.createElement('div');
+          spacer.style.height = '16px';
+          container.appendChild(spacer);
+        }
+
+        container.appendChild(canvas);
+
+        const context = canvas.getContext('2d');
+        if (context) {
+          await page.render({ canvasContext: context, viewport }).promise;
         }
       } catch (err) {
-        console.error('Error rendering PDF page:', err);
-        setError('Failed to render PDF page. Please try again.');
+        console.error(`Error rendering page ${i}:`, err);
       }
-    };
-
-    renderPage();
-  }, [pdfModule, resumeUrl, pageNumber, loading, error, isWord]);
-
-  // Reset scroll when zoom changes
-  useEffect(() => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = 0;
-      scrollContainerRef.current.scrollLeft = 0;
     }
-  }, [zoom]);
+  }, [pdfDoc, zoom, isWord]);
 
-  const goToPrevPage = () => setPageNumber((prev) => Math.max(1, prev - 1));
-  const goToNextPage = () => setPageNumber((prev) => Math.min(numPages, prev + 1));
+  // Re-render pages when doc loads or zoom changes
+  useEffect(() => {
+    if (pdfDoc && !loading && !error) {
+      renderAllPages();
+    }
+  }, [pdfDoc, loading, error, renderAllPages]);
 
   const handleDownload = () => {
     const ext = getFileExtension(resumeUrl, fileName);
@@ -168,10 +169,6 @@ export function ResumeViewer({ isOpen, onClose, resumeUrl, assigneeName, fileNam
   const handleZoomIn = () => setZoom((prev) => Math.min(200, prev + 25));
   const handleZoomOut = () => setZoom((prev) => Math.max(50, prev - 25));
   const resetZoom = () => setZoom(100);
-
-  // CSS display size for PDF
-  const displayWidth = (canvasSize.width / BASE_SCALE) * (zoom / 100);
-  const displayHeight = (canvasSize.height / BASE_SCALE) * (zoom / 100);
 
   // Show zoom controls
   const showZoomControls = isWord ? wordLoaded : (!loading && !error);
@@ -329,47 +326,18 @@ export function ResumeViewer({ isOpen, onClose, resumeUrl, assigneeName, fileNam
             </>
           )}
 
-          {/* PDF canvas content */}
+          {/* PDF scrollable pages */}
           {!loading && !error && !isWord && (
-            <div style={{ minWidth: displayWidth > 0 ? `${displayWidth}px` : undefined }}>
-              <canvas
-                ref={canvasRef}
-                className="shadow-lg bg-white block mx-auto"
-                style={{
-                  width: displayWidth > 0 ? `${displayWidth}px` : undefined,
-                  height: displayHeight > 0 ? `${displayHeight}px` : undefined,
-                }}
-              />
-            </div>
+            <div ref={canvasContainerRef} />
           )}
         </div>
 
-        {/* PDF page navigation */}
+        {/* Page count indicator */}
         {!loading && !error && !isWord && numPages > 0 && (
-          <div className="flex items-center justify-between pt-4 border-t flex-shrink-0">
-            <Button
-              variant="outline"
-              onClick={goToPrevPage}
-              disabled={pageNumber <= 1}
-              className="flex items-center gap-2"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Previous
-            </Button>
-
-            <span className="text-sm text-gray-600">
-              Page {pageNumber} of {numPages}
+          <div className="flex items-center justify-center pt-2 border-t flex-shrink-0">
+            <span className="text-xs text-gray-500">
+              {numPages} {numPages === 1 ? 'page' : 'pages'}
             </span>
-
-            <Button
-              variant="outline"
-              onClick={goToNextPage}
-              disabled={pageNumber >= numPages}
-              className="flex items-center gap-2"
-            >
-              Next
-              <ChevronRight className="h-4 w-4" />
-            </Button>
           </div>
         )}
       </DialogContent>

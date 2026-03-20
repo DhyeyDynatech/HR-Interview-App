@@ -5,6 +5,12 @@ import { InterviewService } from "@/services/interviews.service";
 import { NextRequest, NextResponse } from "next/server";
 import Retell from "retell-sdk";
 import { logActivityFromRequest } from "@/lib/user-activity-log";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 const retellClient = new Retell({
   apiKey: process.env.RETELL_API_KEY || "",
@@ -46,6 +52,22 @@ export async function POST(req: NextRequest, res: Response) {
     retell_llm_dynamic_variables: body.dynamic_data,
     opt_out_sensitive_data_storage: false, // Enable recording
   };
+
+  // Disable retakes immediately when interview starts (before creating the call)
+  // This prevents re-attempts even if the candidate closes the tab mid-interview
+  const candidateEmail = body.dynamic_data?.email;
+  const candidateInterviewId = body.dynamic_data?.interview_id;
+  if (candidateEmail && candidateInterviewId) {
+    try {
+      await supabase
+        .from("interview_assignee")
+        .update({ allow_retake: false })
+        .ilike("email", candidateEmail)
+        .eq("interview_id", candidateInterviewId);
+    } catch (retakeError) {
+      logger.error("Failed to disable retake at call start:", retakeError instanceof Error ? retakeError.message : String(retakeError));
+    }
+  }
 
   const registerCallResponse = await retellClient.call.createWebCall(callParams);
 

@@ -88,7 +88,8 @@ export async function POST(
       job_id: jobId,
       resume_name: (r.name || "Unknown").replace(/[\u0000-\u001F\u007F-\u009F]/g, ""),
       // Sanitize resume text: remove null characters and other problematic controls
-      resume_text: (r.text || "").replace(/\u0000/g, ""), 
+      resume_text: (r.text || "").replace(/\u0000/g, ""),
+      resume_url: r.url || null,
       status: "pending"
     }));
 

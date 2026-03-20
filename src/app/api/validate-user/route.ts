@@ -15,16 +15,23 @@ export async function POST(req: NextRequest) {
     }
     const { data, error } = await supabase
       .from("interview_assignee")
-      .select("id")
+      .select("id, allow_retake")
       .ilike("email", email)
       .eq("interview_id", interview_id)
       .single();
-    console.log("Supabase data:", data, "error:", error); 
-    if (error || !data) {
 
+    if (error || !data) {
       return NextResponse.json(
         { error: "You are not authorized person" },
         { status: 401 }
+      );
+    }
+
+    // Server-side retake check — block if allow_retake is explicitly false
+    if (data.allow_retake === false) {
+      return NextResponse.json(
+        { error: "You have already completed this interview. Please contact your recruiter if you need another attempt." },
+        { status: 403 }
       );
     }
 

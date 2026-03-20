@@ -127,7 +127,7 @@ export async function POST(
     // 4. Fetch next batch of pending tasks
     const { data: tasks, error: tasksError } = await supabase
       .from("ats_job_tasks")
-      .select("id, resume_name, resume_text")
+      .select("id, resume_name, resume_text, resume_url")
       .eq("job_id", job.id)
       .eq("status", "pending")
       .limit(batchSize);
@@ -242,10 +242,17 @@ export async function POST(
     }
 
     // 6. Save results to ats_score_items
+    // Build name→URL lookup from claimed tasks so we can persist resume URLs
+    const taskUrlMap: Record<string, string> = {};
+    for (const t of actualTasks) {
+      if (t.resume_url) taskUrlMap[t.resume_name] = t.resume_url;
+    }
+
     const scoreRows = aiResults.map((result: any) => ({
       interview_id: interviewId,
       organization_id: jobData.organization_id,
       resume_name: result.resumeName,
+      resume_url: taskUrlMap[result.resumeName] || null,
       overall_score: result.overallScore ?? 0,
       category_scores: result.categoryScores,
       category_details: result.categoryDetails,

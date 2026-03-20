@@ -270,6 +270,27 @@ async function enrichAndCache(
   }));
 }
 
+async function startBatchAnalysis(
+  scanId: string,
+  resumes: { name: string; text: string; url?: string }[]
+): Promise<{ jobId: string; totalItems: number }> {
+  const res = await fetch(`/api/company-finder/scans/${scanId}/queue`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ resumes }),
+  });
+  return handleResponse(res);
+}
+
+async function getCFJobStatus(scanId: string): Promise<{
+  activeBatchJob: { id: string; totalItems: number; processedItems: number; failedItems: number } | null;
+}> {
+  const res = await fetch(`/api/company-finder/scans/${scanId}/job-status`, {
+    headers: getAuthHeaders(),
+  });
+  return handleResponse(res);
+}
+
 export const CompanyFinderService = {
   listScans,
   createScan,
@@ -284,4 +305,6 @@ export const CompanyFinderService = {
   extractCompanyNames,
   lookupCache,
   enrichAndCache,
+  startBatchAnalysis,
+  getCFJobStatus,
 };

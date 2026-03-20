@@ -89,7 +89,7 @@ async function removeJob(interviewId: string): Promise<void> {
 
 async function startBatchAnalysis(
   interviewId: string,
-  resumes: { name: string; text: string }[]
+  resumes: { name: string; text: string; url?: string }[]
 ): Promise<{ jobId: string; totalItems: number }> {
   const res = await fetch(`/api/ats-scoring/jobs/${interviewId}/queue`, {
     method: "POST",

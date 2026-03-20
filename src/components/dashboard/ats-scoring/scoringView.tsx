@@ -185,9 +185,37 @@ export default function ScoringView({
     if (storedAts?.analyzing) {
       atsRemounted = true;
       analyzingCountRef.current = storedAts.itemCount;
-      // Reload partial results from DB so user sees progress after navigating back
+      // Reload partial results AND check if batch job is still active on the server.
+      // If the job completed while we were away, clear the stale in-memory state
+      // so the UI doesn't flash a progress bar then immediately hide it.
       ATSJobService.getJobDetail(interviewId).then((detail) => {
         if (detail.results?.length > 0) setResults(detail.results);
+
+        if (!detail.activeBatchJob && storedAts.batchJobActive) {
+          // Job finished while we were away — clear stale processing state
+          setAnalyzing(false);
+          setBatchJobActive(false);
+          isAnalyzingRef.current = false;
+          setAnalyzeProgress({ current: 0, total: 0 });
+          clearProcessingState(atsKey);
+          // Auto-trigger company finder if resumes are available
+          try {
+            const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+            if (stored && !isRunningCFRef.current) {
+              const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+              if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+            }
+          } catch { /* ignore */ }
+        } else if (detail.activeBatchJob) {
+          // Job still running — update progress from server truth
+          const done = detail.activeBatchJob.processedItems + detail.activeBatchJob.failedItems;
+          setAnalyzeProgress({ current: done, total: detail.activeBatchJob.totalItems });
+          setBatchTotal(detail.activeBatchJob.totalItems);
+          setProcessingState(atsKey, {
+            ...storedAts,
+            progress: { current: done, total: detail.activeBatchJob.totalItems },
+          });
+        }
       }).catch(() => {});
     }
 
@@ -335,6 +363,79 @@ export default function ScoringView({
   const [cfTypeFilter, setCfTypeFilter] = useState<"all" | "service_provider" | "service_consumer">("all");
   const [cfSortBy, setCfSortBy] = useState<"frequency" | "name">("frequency");
   const [selectedCFCompanies, setSelectedCFCompanies] = useState<Set<string>>(new Set());
+
+  // Lightweight polling: when analysis is active, poll getJobDetail every 10s
+  // to keep progress updated. This is critical when ATSBatchProcessor's workers
+  // time out (MAX_WAITING) due to long-running server-side OpenAI calls returning 202s.
+  // This poll keeps the progress bar alive and detects completion reliably.
+  useEffect(() => {
+    if (!analyzing) return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const detail = await ATSJobService.getJobDetail(interviewId);
+        if (detail.results?.length > 0) setResults(detail.results);
+
+        if (detail.activeBatchJob) {
+          const done = detail.activeBatchJob.processedItems + detail.activeBatchJob.failedItems;
+          const total = detail.activeBatchJob.totalItems;
+          setAnalyzeProgress({ current: done, total });
+          setBatchTotal(total);
+          analyzingCountRef.current = total;
+
+          // Check if all items are actually done even though job status is still "processing".
+          // This happens when ATSBatchProcessor workers timed out and no client polls /process
+          // to trigger the status transition from "processing" to "completed".
+          if (total > 0 && done >= total) {
+            // Fire a final /process call to trigger the server-side status transition
+            fetch(`/api/ats-scoring/jobs/${interviewId}/process`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ batchSize: 1 }),
+            }).catch(() => {});
+            // Clear state — job is effectively done
+            clearInterval(pollInterval);
+            if (detail.results?.length > 0) backfillResumeUrls(detail.results);
+            setBatchJobActive(false);
+            setAnalyzing(false);
+            isAnalyzingRef.current = false;
+            setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
+            clearProcessingState(`ats_${interviewId}`);
+            // Auto-trigger company finder
+            try {
+              const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+              if (stored && !isRunningCFRef.current) {
+                const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+                if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+              }
+            } catch { /* ignore */ }
+            return;
+          }
+        } else {
+          // Job completed — load results and clear state
+          clearInterval(pollInterval);
+          // Backfill missing resume URLs
+          if (detail.results?.length > 0) backfillResumeUrls(detail.results);
+          setBatchJobActive(false);
+          setAnalyzing(false);
+          isAnalyzingRef.current = false;
+          setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
+          clearProcessingState(`ats_${interviewId}`);
+          // Auto-trigger company finder
+          try {
+            const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+            if (stored && !isRunningCFRef.current) {
+              const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+              if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore poll errors */ }
+    }, 10000);
+
+    return () => clearInterval(pollInterval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzing, interviewId]);
 
   // Build resume URL lookup from scored results (memoized to avoid re-computation on every render)
   const resumeUrlMap = useMemo(() => {
@@ -867,6 +968,11 @@ export default function ScoringView({
     });
 
     try {
+      // Wait for all blob uploads to finish so resume URLs are available for the queue
+      if (uploadPromisesRef.current.size > 0) {
+        await Promise.all(Array.from(uploadPromisesRef.current.values()));
+      }
+
       // 1. Queue resumes in chunks (Production safeguard for high volume)
       // Sending 6,000 in one POST would cause '413 Request Entity Too Large'
       const CHUNK_SIZE = 200; // ~1-2MB per chunk
@@ -878,7 +984,7 @@ export default function ScoringView({
 
         const response = await ATSJobService.startBatchAnalysis(
           interviewId,
-          chunk.map(r => ({ name: r.name, text: r.text }))
+          chunk.map(r => ({ name: r.name, text: r.text, url: previewUrlsRef.current[r.name] || undefined }))
         );
 
         if (!activeJobId) activeJobId = response.jobId;
@@ -926,6 +1032,30 @@ export default function ScoringView({
     }
   };
 
+  // Backfill missing resume_url in ats_score_items using previewUrls from blob uploads.
+  // The batch process route doesn't save resume_url, so we patch it after scoring completes.
+  // This makes CF resume badges clickable on subsequent page loads.
+  const backfillResumeUrls = async (scoredResults: ATSScoreResult[]) => {
+    const urlUpdates: { resumeName: string; resumeUrl: string }[] = [];
+    for (const r of scoredResults) {
+      if (!r.resumeUrl) {
+        const url = previewUrlsRef.current[r.resumeName];
+        if (url) urlUpdates.push({ resumeName: r.resumeName, resumeUrl: url });
+      }
+    }
+    if (urlUpdates.length === 0) return;
+
+    try {
+      await fetch(`/api/ats-scoring/jobs/${interviewId}/urls`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: urlUpdates }),
+      });
+    } catch {
+      // Non-critical — URLs will just remain unclickable until next upload
+    }
+  };
+
   const handleBatchComplete = () => {
     // If the component is unmounted (user navigated away), do NOT clear the processing store.
     // Clearing it would prevent the next mount from restoring the batch processor.
@@ -933,16 +1063,46 @@ export default function ScoringView({
     // and call onComplete() again — this time with the component mounted.
     if (!mountedRef.current) return;
 
-    setBatchJobActive(false);
-    setAnalyzing(false);
-    isAnalyzingRef.current = false;
-    // Clear persisted batch state
-    setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
-    clearProcessingState(`ats_${interviewId}`);
-    // Reload results then auto-run company finder
+    // Check server truth before clearing state. ATSBatchProcessor might have timed out
+    // (MAX_WAITING) while the server-side OpenAI calls are still running. In that case,
+    // keep batchJobActive=true so the polling effect continues tracking progress.
     ATSJobService.getJobDetail(interviewId).then(data => {
-       setResults(data.results || []);
+       if (data.results?.length > 0) setResults(data.results);
        if (data.pagination) setPagination(data.pagination);
+
+       if (data.activeBatchJob) {
+         // Job is STILL running on server — ATSBatchProcessor timed out (MAX_WAITING)
+         // but server-side OpenAI calls are still processing.
+         // Unmount ATSBatchProcessor (its workers keep failing with 202s) but keep
+         // analyzing=true so the simple progress bar shows instead.
+         // The polling effect will continue tracking progress via getJobDetail.
+         const done = data.activeBatchJob.processedItems + data.activeBatchJob.failedItems;
+         setBatchJobActive(false); // unmount ATSBatchProcessor
+         setAnalyzing(true);       // keep progress bar visible
+         isAnalyzingRef.current = true;
+         setBatchTotal(data.activeBatchJob.totalItems);
+         analyzingCountRef.current = data.activeBatchJob.totalItems;
+         setAnalyzeProgress({ current: done, total: data.activeBatchJob.totalItems });
+         setProcessingState(`ats_${interviewId}`, {
+           analyzing: true,
+           batchJobActive: false,
+           batchTotal: data.activeBatchJob.totalItems,
+           itemCount: data.activeBatchJob.totalItems,
+           progress: { current: done, total: data.activeBatchJob.totalItems },
+         });
+         return;
+       }
+
+       // Backfill any missing resume URLs before clearing state
+       if (data.results?.length > 0) backfillResumeUrls(data.results);
+
+       // Job truly completed — safe to clear state
+       setBatchJobActive(false);
+       setAnalyzing(false);
+       isAnalyzingRef.current = false;
+       setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
+       clearProcessingState(`ats_${interviewId}`);
+
        // Auto-trigger company finder with the resumes we saved before clearing state
        const resumesForCF = cfPendingResumesRef.current;
        if (resumesForCF.length > 0 && !isRunningCFRef.current) {
@@ -2215,7 +2375,7 @@ export default function ScoringView({
       )}
 
       {/* Results Section */}
-      {((results && results.length > 0) || batchJobActive) && (
+      {((results && results.length > 0) || batchJobActive || analyzing) && (
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "ats" | "companies")}>
           <TabsList>
             <TabsTrigger value="ats" className="gap-1.5">
