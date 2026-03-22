@@ -114,15 +114,26 @@ export async function POST(
       return NextResponse.json({ message: "No job description found. Please upload a JD first." }, { status: 400 });
     }
 
-    // 3. Reset stale "processing" tasks — tasks stuck for >6 min mean the Vercel fn timed out
-    //    (maxDuration=300s=5min, so anything still "processing" after 6min is orphaned)
-    const staleThreshold = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-    await supabase
+    // 3. Reset stale "processing" tasks — tasks stuck for >7 min mean the Vercel fn timed out.
+    //    Use updated_at (set when task is claimed) NOT created_at (set when task is queued).
+    //    Using created_at would reset ALL tasks once they're >7min old, even active ones.
+    const staleThreshold = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+    const { error: staleError } = await supabase
       .from("ats_job_tasks")
       .update({ status: "pending" })
       .eq("job_id", job.id)
       .eq("status", "processing")
-      .lt("created_at", staleThreshold);
+      .lt("updated_at", staleThreshold);
+
+    // Fallback: if updated_at column doesn't exist yet, use created_at
+    if (staleError && staleError.message?.includes("updated_at")) {
+      await supabase
+        .from("ats_job_tasks")
+        .update({ status: "pending" })
+        .eq("job_id", job.id)
+        .eq("status", "processing")
+        .lt("created_at", staleThreshold);
+    }
 
     // 4. Fetch next batch of pending tasks
     const { data: tasks, error: tasksError } = await supabase
@@ -168,11 +179,10 @@ export async function POST(
       return NextResponse.json({ message: "All tasks processed", processedCount: 0, failedCount: 0 });
     }
 
-    // 4. Atomically claim tasks — only update rows still "pending" to avoid race conditions
-    //    between parallel workers that may have SELECTed the same rows simultaneously.
+    // 4. Atomically claim tasks — set updated_at so stale detection knows when processing started
     const { data: claimedTasks } = await supabase
       .from("ats_job_tasks")
-      .update({ status: "processing" })
+      .update({ status: "processing", updated_at: new Date().toISOString() })
       .in("id", tasks.map((t: any) => t.id))
       .eq("status", "pending") // only claim if still pending — prevents duplicate processing
       .select("id");

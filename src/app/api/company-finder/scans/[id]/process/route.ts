@@ -56,6 +56,10 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Global deadline — leave 20s buffer before Vercel's 300s maxDuration kills the fn
+  const DEADLINE_MS = Date.now() + 280_000;
+  const timeLeft = () => DEADLINE_MS - Date.now();
+
   try {
     const { id: scanId } = await params;
     const { batchSize = 10 } = await request.json().catch(() => ({}));
@@ -75,14 +79,25 @@ export async function POST(
       return NextResponse.json({ message: "No active job" }, { status: 404 });
     }
 
-    // 2. Reset stale tasks (processing for >10 min = likely timed out)
-    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    await supabase
+    // 2. Reset stale tasks — use updated_at (set when claiming) not created_at.
+    //    Threshold: 7 min (> Vercel maxDuration=5min, so only orphaned tasks are reset).
+    const staleThreshold = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+    const { error: staleError } = await supabase
       .from("cf_job_tasks")
       .update({ status: "pending" })
       .eq("job_id", job.id)
       .eq("status", "processing")
-      .lt("created_at", staleThreshold);
+      .lt("updated_at", staleThreshold);
+
+    // Fallback: if updated_at column doesn't exist yet, use created_at
+    if (staleError && staleError.message?.includes("updated_at")) {
+      await supabase
+        .from("cf_job_tasks")
+        .update({ status: "pending" })
+        .eq("job_id", job.id)
+        .eq("status", "processing")
+        .lt("created_at", staleThreshold);
+    }
 
     // 3. Fetch pending tasks
     const { data: tasks } = await supabase
@@ -122,10 +137,10 @@ export async function POST(
       return NextResponse.json({ message: "All tasks processed", processedCount: 0, failedCount: 0 });
     }
 
-    // 4. Claim tasks atomically
+    // 4. Claim tasks atomically — set updated_at so stale detection knows when processing started
     const { data: claimedTasks } = await supabase
       .from("cf_job_tasks")
-      .update({ status: "processing" })
+      .update({ status: "processing", updated_at: new Date().toISOString() })
       .in("id", tasks.map((t: any) => t.id))
       .eq("status", "pending")
       .select("id");
@@ -137,7 +152,7 @@ export async function POST(
     const claimedIds = new Set(claimedTasks.map((t: any) => t.id));
     const actualTasks = tasks.filter((t: any) => claimedIds.has(t.id));
 
-    logger.info(`[CF Process] Processing ${actualTasks.length} resumes for scan ${scanId}`);
+    logger.info(`[CF Process] Processing ${actualTasks.length} resumes for scan ${scanId} (${Math.round(timeLeft() / 1000)}s remaining)`);
 
     let processedCount = 0;
     let failedCount = 0;
@@ -154,7 +169,10 @@ export async function POST(
 
       const extractResult = await callWithRetry(async () => {
         const abortController = new AbortController();
-        const timer = setTimeout(() => abortController.abort(), 240_000);
+        // Respect global deadline — give extract at most 90s (or time left minus buffer)
+        const extractMs = Math.min(90_000, timeLeft() - 30_000);
+        if (extractMs <= 0) throw new Error("No time left for extraction");
+        const timer = setTimeout(() => abortController.abort(), extractMs);
         try {
           return await openai.chat.completions.create(
             {
@@ -172,6 +190,7 @@ export async function POST(
         }
       });
 
+      logger.info(`[CF Process] Extract done (${Math.round(timeLeft() / 1000)}s remaining)`);
       const extractRaw = extractResult.choices[0]?.message?.content || "{}";
       const extractJson = extractRaw.match(/\{[\s\S]*\}/);
       let extractedNames: { companyName: string; resumeName: string; context: string }[] = [];
@@ -202,6 +221,8 @@ export async function POST(
         model: EXTRACT_MODEL,
         metadata: { stage: "extraction", resumeCount: resumes.length, serverSide: true },
       }).catch(() => {});
+
+      logger.info(`[CF Process] Extracted ${extractedNames.length} company mentions from ${resumes.length} resumes`);
 
       // ── STAGE B: Cache lookup ──
       const uniqueNames = Array.from(new Set(extractedNames.map(c => c.companyName.trim()))).filter(Boolean);
@@ -237,160 +258,20 @@ export async function POST(
         }
       }
 
-      // ── STAGE C: Enrich cache misses via web search (with retry) ──
-      let enrichedCompanies: any[] = [];
-      if (cacheMisses.length > 0) {
-        const ENRICH_BATCH = 5;
-        const openaiDirect = getOpenAIClientDirect();
+      logger.info(`[CF Process] Cache: ${cachedCompanies.length} hits, ${cacheMisses.length} misses (${Math.round(timeLeft() / 1000)}s remaining)`);
 
-        for (let i = 0; i < cacheMisses.length; i += ENRICH_BATCH) {
-          const batch = cacheMisses.slice(i, i + ENRICH_BATCH);
-          try {
-            const enrichPrompt = generateEnrichmentPrompt(batch);
-
-            const enrichResult = await callWithRetry(async () => {
-              const ac = new AbortController();
-              const timer = setTimeout(() => ac.abort(), 290_000);
-              try {
-                return await openaiDirect.responses.create(
-                  {
-                    model: CF_MODEL,
-                    instructions: COMPANY_FINDER_SYSTEM_PROMPT,
-                    tools: [{ type: "web_search" as any }],
-                    input: enrichPrompt,
-                    max_output_tokens: 65536,
-                  } as any,
-                  { signal: ac.signal }
-                );
-              } finally {
-                clearTimeout(timer);
-              }
-            });
-
-            const enrichRaw = (enrichResult as any).output_text || "{}";
-            const enrichJson = enrichRaw.match(/\{[\s\S]*\}/);
-            if (enrichJson) {
-              try {
-                const parsed = JSON.parse(enrichJson[0]);
-                const companies = (parsed.companies || []).map((c: any) => {
-                  // Normalize countriesWorkedIn
-                  if (typeof c.countriesWorkedIn === "string") {
-                    c.countriesWorkedIn = c.countriesWorkedIn.split(/,\s*/).map((s: string) => s.trim()).filter(Boolean);
-                  } else if (!Array.isArray(c.countriesWorkedIn)) {
-                    c.countriesWorkedIn = [];
-                  }
-                  return c;
-                });
-                enrichedCompanies.push(...companies);
-              } catch {
-                // JSON parse failed for this batch
-              }
-            }
-
-            // Track enrich usage
-            const enrichUsage = (enrichResult as any).usage;
-            ApiUsageService.saveOpenAIUsage({
-              category: "company_finder",
-              inputTokens: enrichUsage?.input_tokens || 0,
-              outputTokens: enrichUsage?.output_tokens || 0,
-              totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
-              model: CF_MODEL,
-              metadata: { stage: "enrichment", companyCount: batch.length, serverSide: true },
-            }).catch(() => {});
-          } catch (err) {
-            logger.error(`[CF Process] Enrichment batch failed:`, err instanceof Error ? err.message : String(err));
-          }
-        }
-
-        // Auto-cache enriched companies
-        if (enrichedCompanies.length > 0) {
-          const now = new Date().toISOString();
-          const seen = new Set<string>();
-          const cacheRows = enrichedCompanies
-            .filter((c: any) => {
-              const key = normalizeKey(c.companyName);
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            })
-            .map((c: any) => ({
-              company_name: c.companyName,
-              normalized_key: normalizeKey(c.companyName),
-              company_type: c.companyType || "unknown",
-              company_info: c.companyInfo || null,
-              headquarters: c.headquarters || null,
-              founded_year: c.foundedYear || null,
-              countries_worked_in: c.countriesWorkedIn || [],
-              is_relevant: c.isRelevant ?? false,
-              enriched_at: now,
-              created_at: now,
-            }));
-          supabase
-            .from("company_cache")
-            .upsert(cacheRows, { onConflict: "normalized_key" })
-            .then(({ error }) => { if (error) logger.error("[CF Process] Cache upsert failed", error.message); });
-        }
-      }
-
-      // ── MERGE: Build aggregated companies ──
-      const enrichedMap = new Map<string, any>();
-      for (const c of [...cachedCompanies, ...enrichedCompanies]) {
-        enrichedMap.set(normalizeKey(c.companyName), c);
-      }
-
-      const companyMap = new Map<string, any>();
-      const scannedAt = new Date().toISOString();
-      for (const ext of extractedNames) {
-        const key = normalizeKey(ext.companyName);
-        const enriched = enrichedMap.get(key);
-        const existing = companyMap.get(key);
-
-        if (existing) {
-          existing.contexts.push(ext.context);
-          if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
-            existing.sourceResumes.push(ext.resumeName);
-          }
-          existing.frequency = existing.sourceResumes.length;
-        } else {
-          companyMap.set(key, {
-            companyName: enriched?.companyName || ext.companyName,
-            companyType: enriched?.companyType || "unknown",
-            companyInfo: enriched?.companyInfo || "",
-            headquarters: enriched?.headquarters || "",
-            foundedYear: enriched?.foundedYear || "",
-            countriesWorkedIn: enriched?.countriesWorkedIn || [],
-            technologies: [],
-            relevantDomains: [],
-            sourceResumes: ext.resumeName ? [ext.resumeName] : [],
-            frequency: 1,
-            contexts: [ext.context],
-            scannedAt,
-          });
-        }
-      }
-
-      const newCompanies = Array.from(companyMap.values());
-
-      // ── SAVE INCREMENTALLY: Merge with existing scan results ──
+      // ── Pre-load scan state once for incremental saves ──
       const { data: scanData } = await supabase
         .from("company_finder_scan")
         .select("results, resume_names, resume_urls")
         .eq("id", scanId)
         .single();
 
-      const existingResults: any[] = scanData?.results || [];
+      let existingResults: any[] = scanData?.results || [];
       const existingNames: string[] = scanData?.resume_names || [];
       const existingUrls: Record<string, string> = scanData?.resume_urls || {};
 
-      // Merge companies
-      const newKeys = new Set(newCompanies.map(c => normalizeKey(c.companyName)));
-      const merged = [
-        ...existingResults.filter((c: any) => !newKeys.has(normalizeKey(c.companyName))),
-        ...newCompanies,
-      ];
-      merged.sort((a: any, b: any) => (b.frequency || 0) - (a.frequency || 0));
-
-      // Merge resume names and URLs
+      // Build resume name + URL updates (same for every save)
       const batchResumeNames = actualTasks.map((t: any) => t.resume_name);
       const allResumeNames = Array.from(new Set([...existingNames, ...batchResumeNames]));
       const urlUpdates: Record<string, string> = { ...existingUrls };
@@ -398,15 +279,177 @@ export async function POST(
         if (t.resume_url) urlUpdates[t.resume_name] = t.resume_url;
       }
 
-      await supabase
-        .from("company_finder_scan")
-        .update({
+      /** Merge extractedNames with the given enrichment map and save to DB immediately */
+      const saveProgress = async (enrichedSoFar: any[]) => {
+        const enrichedMap = new Map<string, any>();
+        for (const c of [...cachedCompanies, ...enrichedSoFar]) {
+          enrichedMap.set(normalizeKey(c.companyName), c);
+        }
+        const companyMap = new Map<string, any>();
+        const scannedAt = new Date().toISOString();
+        for (const ext of extractedNames) {
+          const key = normalizeKey(ext.companyName);
+          const enriched = enrichedMap.get(key);
+          const existing = companyMap.get(key);
+          if (existing) {
+            existing.contexts.push(ext.context);
+            if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
+              existing.sourceResumes.push(ext.resumeName);
+            }
+            existing.frequency = existing.sourceResumes.length;
+          } else {
+            companyMap.set(key, {
+              companyName: enriched?.companyName || ext.companyName,
+              companyType: enriched?.companyType || "unknown",
+              companyInfo: enriched?.companyInfo || "",
+              headquarters: enriched?.headquarters || "",
+              foundedYear: enriched?.foundedYear || "",
+              countriesWorkedIn: enriched?.countriesWorkedIn || [],
+              technologies: [],
+              relevantDomains: [],
+              sourceResumes: ext.resumeName ? [ext.resumeName] : [],
+              frequency: 1,
+              contexts: [ext.context],
+              scannedAt,
+            });
+          }
+        }
+        const newCompanies = Array.from(companyMap.values());
+        const newKeys = new Set(newCompanies.map((c: any) => normalizeKey(c.companyName)));
+        const merged = [
+          ...existingResults.filter((c: any) => !newKeys.has(normalizeKey(c.companyName))),
+          ...newCompanies,
+        ];
+        merged.sort((a: any, b: any) => (b.frequency || 0) - (a.frequency || 0));
+        await supabase.from("company_finder_scan").update({
           results: merged,
           resume_names: allResumeNames,
           resume_urls: urlUpdates,
           updated_at: new Date().toISOString(),
-        })
-        .eq("id", scanId);
+        }).eq("id", scanId);
+        existingResults = merged; // keep for next save so we don't regress
+        return merged;
+      };
+
+      // ── STAGE C: Enrich cache misses — 3 concurrent batches of 5, save after each round ──
+      const enrichedCompanies: any[] = [];
+
+      if (cacheMisses.length > 0) {
+        const ENRICH_BATCH = 5;
+        const ENRICH_CONCURRENCY = 3;
+        const openaiDirect = getOpenAIClientDirect();
+
+        // Split into batches of 5
+        const allBatches: string[][] = [];
+        for (let i = 0; i < cacheMisses.length; i += ENRICH_BATCH) {
+          allBatches.push(cacheMisses.slice(i, i + ENRICH_BATCH));
+        }
+
+        const totalRounds = Math.ceil(allBatches.length / ENRICH_CONCURRENCY);
+        logger.info(`[CF Process] Enriching ${cacheMisses.length} companies: ${allBatches.length} batches × ${ENRICH_BATCH}, ${ENRICH_CONCURRENCY} concurrent = ${totalRounds} rounds`);
+
+        for (let r = 0; r < allBatches.length; r += ENRICH_CONCURRENCY) {
+          if (timeLeft() < 50_000) {
+            logger.warn(`[CF Process] Deadline approaching — stopping after round ${Math.floor(r / ENRICH_CONCURRENCY)} of ${totalRounds}`);
+            break;
+          }
+
+          const roundBatches = allBatches.slice(r, r + ENRICH_CONCURRENCY);
+          const roundNum = Math.floor(r / ENRICH_CONCURRENCY) + 1;
+          logger.info(`[CF Process] Round ${roundNum}/${totalRounds}: ${roundBatches.length} parallel batches (${Math.round(timeLeft() / 1000)}s left)`);
+
+          // Timeout per batch — divide remaining time evenly across remaining rounds,
+          // leaving 45s for DB saves. Cap at 180s (web search rarely needs more).
+          const remainingRounds = totalRounds - (roundNum - 1);
+          const enrichMs = Math.max(60_000, Math.min(180_000, Math.floor((timeLeft() - 45_000) / remainingRounds)));
+
+          const roundResults = await Promise.allSettled(
+            roundBatches.map(async (batch) => {
+              const ac = new AbortController();
+              const timer = setTimeout(() => ac.abort(), enrichMs);
+              try {
+                return await callWithRetry(async () =>
+                  openaiDirect.responses.create({
+                    model: CF_MODEL,
+                    instructions: COMPANY_FINDER_SYSTEM_PROMPT,
+                    tools: [{ type: "web_search" as any }],
+                    input: generateEnrichmentPrompt(batch),
+                    max_output_tokens: 65536,
+                  } as any, { signal: ac.signal })
+                );
+              } finally {
+                clearTimeout(timer);
+              }
+            })
+          );
+
+          // Parse results from this round
+          const roundCompanies: any[] = [];
+          for (const result of roundResults) {
+            if (result.status === "fulfilled") {
+              const enrichRaw = (result.value as any).output_text || "{}";
+              const enrichJson = enrichRaw.match(/\{[\s\S]*\}/);
+              if (enrichJson) {
+                try {
+                  const parsed = JSON.parse(enrichJson[0]);
+                  const companies = (parsed.companies || []).map((c: any) => {
+                    if (typeof c.countriesWorkedIn === "string") {
+                      c.countriesWorkedIn = c.countriesWorkedIn.split(/,\s*/).map((s: string) => s.trim()).filter(Boolean);
+                    } else if (!Array.isArray(c.countriesWorkedIn)) {
+                      c.countriesWorkedIn = [];
+                    }
+                    return c;
+                  });
+                  roundCompanies.push(...companies);
+                } catch { /* JSON parse failed */ }
+              }
+              const enrichUsage = (result.value as any).usage;
+              ApiUsageService.saveOpenAIUsage({
+                category: "company_finder",
+                inputTokens: enrichUsage?.input_tokens || 0,
+                outputTokens: enrichUsage?.output_tokens || 0,
+                totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
+                model: CF_MODEL,
+                metadata: { stage: "enrichment", round: roundNum, serverSide: true },
+              }).catch(() => {});
+            } else {
+              logger.error(`[CF Process] Round ${roundNum} batch failed:`, result.reason?.message || String(result.reason));
+            }
+          }
+
+          if (roundCompanies.length > 0) {
+            enrichedCompanies.push(...roundCompanies);
+
+            // Cache this round's companies immediately
+            const now = new Date().toISOString();
+            const seen = new Set<string>();
+            const cacheRows = roundCompanies
+              .filter((c: any) => { const k = normalizeKey(c.companyName); if (seen.has(k)) return false; seen.add(k); return true; })
+              .map((c: any) => ({
+                company_name: c.companyName,
+                normalized_key: normalizeKey(c.companyName),
+                company_type: c.companyType || "unknown",
+                company_info: c.companyInfo || null,
+                headquarters: c.headquarters || null,
+                founded_year: c.foundedYear || null,
+                countries_worked_in: c.countriesWorkedIn || [],
+                is_relevant: c.isRelevant ?? false,
+                enriched_at: now,
+                created_at: now,
+              }));
+            supabase.from("company_cache")
+              .upsert(cacheRows, { onConflict: "normalized_key" })
+              .then(({ error }) => { if (error) logger.error("[CF Process] Cache upsert failed", error.message); });
+
+            // Save partial results to DB so the UI can show them immediately
+            await saveProgress(enrichedCompanies);
+            logger.info(`[CF Process] Round ${roundNum} saved: ${roundCompanies.length} companies enriched (${enrichedCompanies.length} total so far)`);
+          }
+        }
+      }
+
+      // ── Final save — includes unenriched companies (those that ran out of time) ──
+      await saveProgress(enrichedCompanies);
 
       processedCount = actualTasks.length;
 
@@ -436,7 +479,7 @@ export async function POST(
       });
     } catch { /* non-critical */ }
 
-    logger.info(`[CF Process] Batch done: ${processedCount} processed, ${failedCount} failed`);
+    logger.info(`[CF Process] Batch done: ${processedCount} processed, ${failedCount} failed (${Math.round(timeLeft() / 1000)}s remaining)`);
 
     return NextResponse.json({ processedCount, failedCount });
   } catch (error: any) {

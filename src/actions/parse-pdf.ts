@@ -95,7 +95,7 @@ export async function parsePdf(formData: FormData) {
         // Use pdfjs-dist legacy build for better Node.js compatibility
         // pdfjs-dist is externalized in next.config.js to prevent bundling issues
         const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-        
+
         // Disable worker to avoid standard Next.js bundling issues with workers
         // We cast to any because disableWorker is sometimes missing from types but useful at runtime
         const loadingTask = pdfjs.getDocument({
@@ -105,21 +105,34 @@ export async function parsePdf(formData: FormData) {
           disableFontFace: true,
           verbosity: 0
         } as any);
-        
+
         const doc = await loadingTask.promise;
         let textContent = "";
-        
+
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
           const content = await page.getTextContent();
           // @ts-ignore
           textContent += content.items.map((item: any) => item.str).join(" ") + "\n";
         }
-        
+
         fullText = textContent;
       } catch (pdfErr: any) {
         console.error(`[Parse] pdfjs-dist failed for ${file.name}:`, pdfErr.message);
-        throw new Error(`PDF extraction failed: ${pdfErr.message}`);
+        // Fall through to pdf-parse fallback below
+      }
+
+      // Fallback: pdf-parse handles fonts/encodings that pdfjs-dist sometimes misses
+      if (!fullText.trim()) {
+        try {
+          console.log(`[Parse] pdfjs returned empty for ${file.name}, trying pdf-parse fallback`);
+          const pdfParse = (await import("pdf-parse")).default;
+          const parsed = await pdfParse(Buffer.from(uint8Array));
+          fullText = parsed.text || "";
+        } catch (fallbackErr: any) {
+          console.error(`[Parse] pdf-parse fallback also failed for ${file.name}:`, fallbackErr.message);
+          throw new Error(`PDF extraction failed: ${fallbackErr.message}`);
+        }
       }
     } else {
       const fileType = file.type || "unknown";

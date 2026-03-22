@@ -136,6 +136,10 @@ export default function CompanyFinderView({
       setAnalyzing(true);
       setAnalyzeProgress(stored.progress);
       analyzingCountRef.current = stored.itemCount;
+      if (stored.batchJobActive) {
+        setCfBatchActive(true);
+        setCfBatchTotal(stored.batchTotal || stored.itemCount);
+      }
       // Reload partial results from DB so user sees progress after navigating back
       CompanyFinderService.getScanDetail(scanId).then((detail) => {
         if (detail?.results?.length > 0) setResults(detail.results);
@@ -146,6 +150,7 @@ export default function CompanyFinderView({
       // Always process analyzing=false to avoid stuck spinners
       if (!s.analyzing) {
         setAnalyzing(false);
+        setCfBatchActive(false);
         setAnalyzeProgress({ current: 0, total: 0 });
         remountedIntoAnalysisRef.current = false;
         return;
@@ -153,6 +158,10 @@ export default function CompanyFinderView({
       setAnalyzing(s.analyzing);
       setAnalyzeProgress(s.progress);
       analyzingCountRef.current = s.itemCount;
+      if (s.batchJobActive) {
+        setCfBatchActive(true);
+        setCfBatchTotal(s.batchTotal || s.itemCount);
+      }
       // If we remounted into an ongoing analysis, reload results from DB
       // (the old closure's setResults targets the dead component instance).
       // Delay slightly to let the DB write from the old closure complete.
@@ -417,9 +426,30 @@ export default function CompanyFinderView({
     );
   };
 
-  // Batch job state for server-side CF processing
-  const [cfBatchActive, setCfBatchActive] = useState(false);
-  const [cfBatchTotal, setCfBatchTotal] = useState(0);
+  // Batch job state for server-side CF processing — restore from processing store on remount
+  const [cfBatchActive, setCfBatchActive] = useState(() => {
+    const stored = getProcessingState(scanId);
+    return stored?.batchJobActive ?? false;
+  });
+  const [cfBatchTotal, setCfBatchTotal] = useState(() => {
+    const stored = getProcessingState(scanId);
+    return stored?.batchTotal ?? 0;
+  });
+
+  // Poll scan detail every 15s while batch is active — picks up partial results
+  // saved by the server after each concurrent enrichment round.
+  useEffect(() => {
+    if (!cfBatchActive) return;
+    const interval = setInterval(() => {
+      CompanyFinderService.getScanDetail(scanId)
+        .then((detail) => {
+          if (detail?.results?.length > 0) setResults(detail.results);
+          if (detail?.resumeUrls) setResumeUrls((prev) => ({ ...prev, ...detail.resumeUrls }));
+        })
+        .catch(() => {});
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, [cfBatchActive, scanId]);
 
   // ---------- Analysis (Server-side queue: Parse → Queue → Process) ----------
 

@@ -1,0 +1,272 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { logger } from "@/lib/logger";
+import { getOpenAIClient, MODELS } from "@/lib/openai-client";
+import {
+  EXTRACTION_ONLY_SYSTEM_PROMPT,
+  generateExtractionOnlyPrompt,
+} from "@/lib/prompts/company-finder";
+import { ApiUsageService } from "@/services/api-usage.service";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — matches Vercel max
+
+const EXTRACT_MODEL = MODELS.GPT5_MINI;
+
+function getSupabaseClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
+
+function normalizeKey(name: string): string {
+  return name.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+/**
+ * POST /api/company-finder/scans/[id]/extract
+ *
+ * Stage A of the split pipeline:
+ *   1. Claims up to `batchSize` (default 25) pending resume tasks from cf_job_tasks
+ *   2. Extracts company names via Azure OpenAI (NLP only — no web search)
+ *   3. Inserts mentions into cf_company_mentions (one row per resume×company)
+ *   4. Inserts unique company names into cf_enrich_queue (ON CONFLICT DO NOTHING)
+ *   5. Marks resume tasks as completed
+ *
+ * Returns:
+ *   200 { processedCount, companiesQueued }          — batch processed
+ *   200 { extractionDone: true, processedCount: 0 }  — all resume tasks complete
+ *   202 { waiting: true }                            — tasks in-flight, wait and retry
+ *   404 { message }                                  — no active job
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  // 280s hard deadline — leaves 20s buffer before Vercel kills the fn at 300s
+  const DEADLINE_MS = Date.now() + 280_000;
+  const timeLeft = () => DEADLINE_MS - Date.now();
+
+  try {
+    const { id: scanId } = await params;
+    const { batchSize = 5 } = await request.json().catch(() => ({}));
+    const supabase = getSupabaseClient();
+
+    // 1. Find active job
+    const { data: job } = await supabase
+      .from("cf_batch_jobs")
+      .select("id, total_items")
+      .eq("scan_id", scanId)
+      .eq("status", "processing")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!job) {
+      return NextResponse.json({ message: "No active job" }, { status: 404 });
+    }
+
+    // 2. Reset stale tasks (stuck in "processing" for >3 min means the fn timed out)
+    const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const { error: staleErr } = await supabase
+      .from("cf_job_tasks")
+      .update({ status: "pending" })
+      .eq("job_id", job.id)
+      .eq("status", "processing")
+      .lt("updated_at", staleThreshold);
+
+    // Fallback if updated_at column not yet added
+    if (staleErr?.message?.includes("updated_at")) {
+      await supabase
+        .from("cf_job_tasks")
+        .update({ status: "pending" })
+        .eq("job_id", job.id)
+        .eq("status", "processing")
+        .lt("created_at", staleThreshold);
+    }
+
+    // 3. Claim pending tasks
+    const { data: tasks } = await supabase
+      .from("cf_job_tasks")
+      .select("id, resume_name, resume_text, resume_url")
+      .eq("job_id", job.id)
+      .eq("status", "pending")
+      .limit(batchSize);
+
+    if (!tasks || tasks.length === 0) {
+      const { count: inFlight } = await supabase
+        .from("cf_job_tasks")
+        .select("*", { count: "exact", head: true })
+        .eq("job_id", job.id)
+        .eq("status", "processing");
+
+      if (inFlight && inFlight > 0) {
+        return NextResponse.json({ waiting: true, processedCount: 0, companiesQueued: 0 }, { status: 202 });
+      }
+
+      // All resume tasks are done — signal to client that extraction is complete
+      return NextResponse.json({ extractionDone: true, processedCount: 0, companiesQueued: 0 });
+    }
+
+    // 4. Atomically claim tasks (set updated_at so stale detection tracks when we started)
+    const { data: claimed } = await supabase
+      .from("cf_job_tasks")
+      .update({ status: "processing", updated_at: new Date().toISOString() })
+      .in("id", tasks.map((t: any) => t.id))
+      .eq("status", "pending")
+      .select("id");
+
+    if (!claimed || claimed.length === 0) {
+      return NextResponse.json({ waiting: true, processedCount: 0, companiesQueued: 0 }, { status: 202 });
+    }
+
+    const claimedIds = new Set(claimed.map((t: any) => t.id));
+    const actualTasks = tasks.filter((t: any) => claimedIds.has(t.id));
+
+    logger.info(`[CF Extract] Processing ${actualTasks.length} resumes for scan ${scanId}`);
+
+    // 5. Extract company names via Azure OpenAI (NLP only — no web search)
+    // 30k chars is enough to find all company names — we don't need full resume text for NLP
+    const resumes = actualTasks.map((t: any) => ({
+      name: t.resume_name,
+      text: (t.resume_text || "").slice(0, 30_000),
+    }));
+
+    let extractedMentions: { companyName: string; resumeName: string; context: string }[] = [];
+
+    try {
+      const ac = new AbortController();
+      const extractMs = Math.min(250_000, timeLeft() - 20_000);
+      if (extractMs <= 0) throw new Error("No time left for extraction");
+      const timer = setTimeout(() => ac.abort(), extractMs);
+
+      const result = await getOpenAIClient().chat.completions.create(
+        {
+          model: EXTRACT_MODEL,
+          max_completion_tokens: 16384,
+          messages: [
+            { role: "system", content: EXTRACTION_ONLY_SYSTEM_PROMPT },
+            { role: "user", content: generateExtractionOnlyPrompt({ resumes }) },
+          ],
+        } as any,
+        { signal: ac.signal }
+      );
+      clearTimeout(timer);
+
+      const raw = result.choices[0]?.message?.content || "{}";
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          extractedMentions = JSON.parse(match[0]).companies || [];
+        } catch {
+          let repaired = match[0].replace(/,\s*([\]}])/g, "$1");
+          const ob = (repaired.match(/\{/g) || []).length;
+          const cb = (repaired.match(/\}/g) || []).length;
+          repaired += "}".repeat(Math.max(0, ob - cb));
+          try { extractedMentions = JSON.parse(repaired).companies || []; } catch { /* give up */ }
+        }
+      }
+
+      ApiUsageService.saveOpenAIUsage({
+        category: "company_finder",
+        inputTokens: result.usage?.prompt_tokens || 0,
+        outputTokens: result.usage?.completion_tokens || 0,
+        totalTokens: result.usage?.total_tokens || 0,
+        model: EXTRACT_MODEL,
+        metadata: { stage: "extraction", resumeCount: resumes.length, serverSide: true },
+      }).catch(() => {});
+
+    } catch (extractErr: any) {
+      logger.error(`[CF Extract] Extraction failed: ${extractErr.message}`);
+      await supabase
+        .from("cf_job_tasks")
+        .update({ status: "failed", error_message: extractErr.message })
+        .in("id", actualTasks.map((t: any) => t.id));
+      return NextResponse.json({ processedCount: 0, companiesQueued: 0, failedCount: actualTasks.length });
+    }
+
+    logger.info(`[CF Extract] Extracted ${extractedMentions.length} company mentions from ${actualTasks.length} resumes`);
+
+    // 6. Save mentions + queue unique companies
+    let companiesQueued = 0;
+
+    if (extractedMentions.length > 0) {
+      // Build a URL lookup from the tasks we just processed
+      const urlMap: Record<string, string> = {};
+      for (const t of actualTasks) {
+        if (t.resume_url) urlMap[t.resume_name] = t.resume_url;
+      }
+
+      // Insert one row per mention into cf_company_mentions
+      const mentionRows = extractedMentions
+        .filter((e: any) => e.companyName?.trim())
+        .map((e: any) => ({
+          scan_id: scanId,
+          normalized_key: normalizeKey(e.companyName),
+          company_name: e.companyName.trim(),
+          resume_name: e.resumeName || "",
+          resume_url: urlMap[e.resumeName] || null,
+          context: e.context || "",
+        }));
+
+      if (mentionRows.length > 0) {
+        const { error: mentionErr } = await supabase
+          .from("cf_company_mentions")
+          .insert(mentionRows);
+        if (mentionErr) logger.error(`[CF Extract] Mentions insert error: ${mentionErr.message}`);
+      }
+
+      // Insert unique company names into cf_enrich_queue (skip if already queued)
+      const seen = new Set<string>();
+      const queueRows = extractedMentions
+        .filter((e: any) => {
+          if (!e.companyName?.trim()) return false;
+          const key = normalizeKey(e.companyName);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((e: any) => ({
+          scan_id: scanId,
+          company_name: e.companyName.trim(),
+          normalized_key: normalizeKey(e.companyName),
+          status: "pending",
+        }));
+
+      if (queueRows.length > 0) {
+        const { error: queueErr } = await supabase
+          .from("cf_enrich_queue")
+          .upsert(queueRows, { onConflict: "scan_id,normalized_key", ignoreDuplicates: true });
+        if (queueErr) {
+          logger.error(`[CF Extract] Queue upsert error: ${queueErr.message}`);
+        } else {
+          companiesQueued = queueRows.length;
+        }
+      }
+    }
+
+    // 7. Mark resume tasks as completed
+    await supabase
+      .from("cf_job_tasks")
+      .update({ status: "completed" })
+      .in("id", actualTasks.map((t: any) => t.id));
+
+    // 8. Update job progress
+    try {
+      await supabase.rpc("increment_cf_job_progress", {
+        job_uuid: job.id,
+        processed_inc: actualTasks.length,
+        failed_inc: 0,
+      });
+    } catch { /* non-critical */ }
+
+    logger.info(`[CF Extract] Done: ${actualTasks.length} resumes processed, ${companiesQueued} unique companies queued`);
+
+    return NextResponse.json({ processedCount: actualTasks.length, companiesQueued });
+
+  } catch (err: any) {
+    logger.error("[CF Extract] Fatal:", err?.message);
+    return NextResponse.json({ error: err?.message || "Extract failed" }, { status: 500 });
+  }
+}
