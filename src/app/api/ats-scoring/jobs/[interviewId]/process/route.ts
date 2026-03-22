@@ -210,7 +210,7 @@ export async function POST(
         jobData.jd_text,
         actualTasks.map((t: any) => ({ name: t.resume_name, text: t.resume_text || "" }))
       );
-      aiResults = Array.isArray(batchResults) ? batchResults : (batchResults?.results || []);
+      aiResults = batchResults;
 
       // Track API usage for this batch
       if (batchUsage) {
