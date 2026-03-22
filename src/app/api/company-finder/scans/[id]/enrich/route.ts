@@ -197,7 +197,7 @@ export async function POST(
     }
 
     const cacheMissNames = companyNames.filter(n => !cachedMap.has(normalizeKey(n)));
-    const enrichedCompanies: any[] = [...cachedMap.values()].filter(c =>
+    const enrichedCompanies: any[] = Array.from(cachedMap.values()).filter(c =>
       companyNames.map(normalizeKey).includes(normalizeKey(c.companyName))
     );
 
