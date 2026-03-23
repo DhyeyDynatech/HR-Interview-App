@@ -9,6 +9,37 @@ export const maxDuration = 300; // 5 minutes — matches Vercel max
 const OPENAI_TIMEOUT_MS = 270_000; // 4.5 minutes — leaves 30s for DB ops before Vercel kills the fn
 const MAX_RESUME_TEXT_LENGTH = 80_000; // ~80K chars per resume
 
+/** Retry wrapper — skips quota-exceeded 429s immediately, retries other 429/5xx with backoff */
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const status = err?.status || err?.response?.status;
+      const isQuotaExceeded =
+        status === 429 &&
+        (err?.message?.toLowerCase().includes("quota") ||
+          err?.message?.toLowerCase().includes("exceeded") ||
+          err?.message?.toLowerCase().includes("billing"));
+
+      if (isQuotaExceeded) {
+        console.error(`[ATS Process] Quota exceeded (429) — skipping, not retrying.`);
+        throw err;
+      }
+
+      const isRetryable = status === 429 || (status >= 500 && status < 600);
+      if (isRetryable && attempt < maxRetries) {
+        const delay = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
+        console.warn(`[ATS Process] Retrying after ${Math.round(delay)}ms (attempt ${attempt + 1}, status=${status})`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Unreachable");
+}
+
 function getSupabaseClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -206,9 +237,11 @@ export async function POST(
     const actualTaskIds = actualTasks.map((t: any) => t.id);
 
     try {
-      const { results: batchResults, usage: batchUsage } = await callOpenAIForBatch(
-        jobData.jd_text,
-        actualTasks.map((t: any) => ({ name: t.resume_name, text: t.resume_text || "" }))
+      const { results: batchResults, usage: batchUsage } = await callWithRetry(() =>
+        callOpenAIForBatch(
+          jobData.jd_text,
+          actualTasks.map((t: any) => ({ name: t.resume_name, text: t.resume_text || "" }))
+        )
       );
       aiResults = batchResults;
 

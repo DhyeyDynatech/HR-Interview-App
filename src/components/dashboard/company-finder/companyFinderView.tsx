@@ -204,6 +204,7 @@ export default function CompanyFinderView({
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"frequency" | "name">("frequency");
   const [typeFilter, setTypeFilter] = useState<"all" | CompanyType>("all");
+  const [relevantOnly, setRelevantOnly] = useState(true);
 
   // ---------- Load saved data on mount ----------
 
@@ -660,7 +661,7 @@ export default function CompanyFinderView({
   // ---------- Export CSV ----------
 
   const exportCSV = () => {
-    if (!results) return;
+    if (!filteredResults || filteredResults.length === 0) return;
 
     const headers = [
       "Company",
@@ -672,9 +673,15 @@ export default function CompanyFinderView({
       "Frequency",
       "Source Resumes",
       "Description",
+      "Is Dynatech Relevant",
     ];
 
-    const rows = results.map((c) => [
+    const isDynaTechRelevant = (c: AggregatedCompany) => {
+      const fields = [c.companyName, c.companyInfo || "", ...(c.technologies || []), ...(c.contexts || [])].join(" ").toLowerCase();
+      return /\bdynamics\b/.test(fields) || /\bsap\b/.test(fields);
+    };
+
+    const rows = filteredResults.map((c) => [
       `"${c.companyName.replace(/"/g, '""')}"`,
       c.companyType === "service_provider" ? "Service Provider" : c.companyType === "service_consumer" ? "Service Consumer" : "Unknown",
       `"${(c.companyInfo || "").replace(/"/g, '""')}"`,
@@ -684,6 +691,7 @@ export default function CompanyFinderView({
       c.frequency,
       `"${(c.sourceResumes || []).join(", ").replace(/"/g, '""')}"`,
       `"${c.contexts.join(" | ").replace(/"/g, '""')}"`,
+      isDynaTechRelevant(c) ? "True" : "False",
     ]);
 
     const csvContent = [headers, ...rows]
@@ -706,6 +714,18 @@ export default function CompanyFinderView({
   const filteredResults = results
     ? results
         .filter((c) => {
+          // Relevant filter: only show companies related to Dynamics or SAP
+          if (relevantOnly) {
+            const searchFields = [
+              c.companyName,
+              c.companyInfo || "",
+              ...(c.technologies || []),
+              ...(c.contexts || []),
+            ].join(" ").toLowerCase();
+            const isDynamicsOrSAP = /\bdynamics\b/.test(searchFields) || /\bsap\b/.test(searchFields);
+            if (!isDynamicsOrSAP) return false;
+          }
+
           if (typeFilter !== "all" && c.companyType !== typeFilter) return false;
           if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
@@ -801,11 +821,11 @@ export default function CompanyFinderView({
 
   // ---------- Stats ----------
 
-  const totalCompanies = results?.length || 0;
+  const totalCompanies = filteredResults?.length || 0;
   // Count all analyzed resumes (not just those with companies found)
-  // During active analysis, show only the resumes processed so far (completed batches × batch size)
+  // During active analysis, show only the resumes processed so far (analyzeProgress.current)
   const resumeCountDisplay = analyzing
-    ? savedResumeNames.length + analyzingCountRef.current
+    ? savedResumeNames.length + analyzeProgress.current
     : savedResumeNames.length > 0
       ? savedResumeNames.length
       : resumes.length;
@@ -1104,6 +1124,17 @@ export default function CompanyFinderView({
 
           {/* Filter Bar */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            <button
+              onClick={() => setRelevantOnly((v) => !v)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                relevantOnly
+                  ? "bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700"
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${relevantOnly ? "bg-white" : "bg-slate-400"}`} />
+              Dynatech Relevant
+            </button>
             <div className="relative flex-1 w-full sm:max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
               <Input

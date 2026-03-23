@@ -565,31 +565,44 @@ function CostAnalysisPage() {
         return (
           <div className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {metadata.resumeCount && (
+              {(metadata.resumeCount || metadata.companyCount) && (
                 <div className="flex items-center gap-2">
                   <Hash className="h-4 w-4 text-cyan-500" />
                   <div>
-                    <p className="text-xs text-gray-500">Resumes Processed</p>
-                    <p className="text-sm font-medium">{metadata.resumeCount}</p>
+                    <p className="text-xs text-gray-500">{metadata.stage === "enrichment" ? "Companies Enriched" : "Resumes Processed"}</p>
+                    <p className="text-sm font-medium">{metadata.companyCount || metadata.resumeCount}</p>
                   </div>
                 </div>
               )}
-              <div className="flex items-center gap-2">
-                <DollarSign className="h-4 w-4 text-cyan-500" />
-                <div>
-                  <p className="text-xs text-gray-500">Cost per Resume</p>
-                  <p className="text-sm font-medium">
-                    ${metadata.resumeCount ? (item.cost / metadata.resumeCount).toFixed(4) : item.cost.toFixed(4)}
-                  </p>
+              {metadata.stage && (
+                <div className="flex items-center gap-2">
+                  <Cpu className="h-4 w-4 text-cyan-500" />
+                  <div>
+                    <p className="text-xs text-gray-500">Stage</p>
+                    <p className="text-sm font-medium capitalize">{metadata.stage}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Cpu className="h-4 w-4 text-cyan-500" />
-                <div>
-                  <p className="text-xs text-gray-500">Model</p>
-                  <p className="text-sm font-medium">{item.model || "gpt-5-mini"}</p>
+              )}
+              {metadata.searchCalls != null && (
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4 text-cyan-500" />
+                  <div>
+                    <p className="text-xs text-gray-500">Web Search Calls</p>
+                    <p className="text-sm font-medium">{metadata.searchCalls} × ${PRICING.WEB_SEARCH_PER_CALL}/call</p>
+                  </div>
                 </div>
-              </div>
+              )}
+              {metadata.searchCalls != null && (
+                <div className="flex items-center gap-2">
+                  <DollarSign className="h-4 w-4 text-cyan-500" />
+                  <div>
+                    <p className="text-xs text-gray-500">Cost Breakdown</p>
+                    <p className="text-sm font-medium">
+                      Tokens: ${(metadata.tokenCost ?? 0).toFixed(4)} + Search: ${(metadata.searchCost ?? 0).toFixed(4)}
+                    </p>
+                  </div>
+                </div>
+              )}
               {item.inputTokens && item.outputTokens && (
                 <div className="flex items-center gap-2">
                   <Hash className="h-4 w-4 text-cyan-500" />
@@ -699,9 +712,16 @@ function CostAnalysisPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">{formatCurrency(summary.gptCost)}</div>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {summary.totalTokens.toLocaleString()} tokens
-                  </p>
+                  <div className="flex flex-col gap-0.5 mt-1">
+                    <p className="text-xs text-gray-500">
+                      <span className="text-purple-600 font-medium">gpt-5-mini:</span>{" "}
+                      {formatCurrency(summary.tokenCost ?? summary.gptCost)} &middot; {summary.totalTokens.toLocaleString()} tokens
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      <span className="text-cyan-600 font-medium">Web Search:</span>{" "}
+                      {formatCurrency(summary.webSearchCost ?? 0)}
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
 

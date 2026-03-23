@@ -24,6 +24,37 @@ function normalizeKey(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
+/** Retry wrapper — skips quota-exceeded 429s immediately, retries other 429/5xx with backoff */
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const status = err?.status || err?.response?.status;
+      const isQuotaExceeded =
+        status === 429 &&
+        (err?.message?.toLowerCase().includes("quota") ||
+          err?.message?.toLowerCase().includes("exceeded") ||
+          err?.message?.toLowerCase().includes("billing"));
+
+      if (isQuotaExceeded) {
+        logger.error(`[CF Extract] Quota exceeded (429) — skipping, not retrying.`);
+        throw err;
+      }
+
+      const isRetryable = status === 429 || (status >= 500 && status < 600);
+      if (isRetryable && attempt < maxRetries) {
+        const delay = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
+        logger.warn(`[CF Extract] Retrying after ${Math.round(delay)}ms (attempt ${attempt + 1}, status=${status})`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Unreachable");
+}
+
 /**
  * POST /api/company-finder/scans/[id]/extract
  *
@@ -66,6 +97,14 @@ export async function POST(
     if (!job) {
       return NextResponse.json({ message: "No active job" }, { status: 404 });
     }
+
+    // Look up organization_id from the scan for usage tracking
+    const { data: scan } = await supabase
+      .from("company_finder_scan")
+      .select("organization_id")
+      .eq("id", scanId)
+      .single();
+    const organizationId: string | undefined = scan?.organization_id || undefined;
 
     // 2. Reset stale tasks (stuck in "processing" for >3 min means the fn timed out)
     const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
@@ -141,16 +180,18 @@ export async function POST(
       if (extractMs <= 0) throw new Error("No time left for extraction");
       const timer = setTimeout(() => ac.abort(), extractMs);
 
-      const result = await getOpenAIClient().chat.completions.create(
-        {
-          model: EXTRACT_MODEL,
-          max_completion_tokens: 16384,
-          messages: [
-            { role: "system", content: EXTRACTION_ONLY_SYSTEM_PROMPT },
-            { role: "user", content: generateExtractionOnlyPrompt({ resumes }) },
-          ],
-        } as any,
-        { signal: ac.signal }
+      const result = await callWithRetry(() =>
+        getOpenAIClient().chat.completions.create(
+          {
+            model: EXTRACT_MODEL,
+            max_completion_tokens: 16384,
+            messages: [
+              { role: "system", content: EXTRACTION_ONLY_SYSTEM_PROMPT },
+              { role: "user", content: generateExtractionOnlyPrompt({ resumes }) },
+            ],
+          } as any,
+          { signal: ac.signal }
+        )
       );
       clearTimeout(timer);
 
@@ -170,6 +211,7 @@ export async function POST(
 
       ApiUsageService.saveOpenAIUsage({
         category: "company_finder",
+        organizationId,
         inputTokens: result.usage?.prompt_tokens || 0,
         outputTokens: result.usage?.completion_tokens || 0,
         totalTokens: result.usage?.total_tokens || 0,

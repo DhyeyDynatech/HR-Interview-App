@@ -400,18 +400,29 @@ export class CostService {
       ? Number((interviewCost / interviewCycles).toFixed(6))
       : 0;
 
+    const totalGptCost = Number(gptCategories.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6));
+    // Sum web search costs stored in metadata.searchCost by the enrichment routes
+    const totalWebSearchCost = Number(
+      filteredRecords
+        .reduce((sum: number, r: any) => sum + (Number(r.metadata?.searchCost) || 0), 0)
+        .toFixed(6)
+    );
+    const totalTokenCost = Number(Math.max(0, totalGptCost - totalWebSearchCost).toFixed(6));
+
     const summary: EnhancedCostSummary = {
       totalCost: Number(byCategory.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6)),
       totalInterviews: new Set(filteredRecords.map((r: any) => r.interview_id).filter(Boolean)).size,
       // interview-only cost (voice + analytics + communication + question gen + insights)
       avgCostPerInterview: avgInterviewCost,
-      gptCost: Number(gptCategories.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6)),
+      gptCost: totalGptCost,
       voiceCost: Number(voiceCategories.reduce((sum, b) => sum + b.totalCost, 0).toFixed(6)),
       totalTokens: byCategory.reduce((sum, b) => sum + b.totalTokens, 0),
       totalMinutes: Number(voiceCategories.reduce((sum, b) => sum + b.totalDurationMinutes, 0).toFixed(2)),
       byCategory,
       avgInterviewCost,
       totalInterviewCycles: interviewCycles,
+      tokenCost: totalTokenCost,
+      webSearchCost: totalWebSearchCost,
       avgCostPerResumeATS: atsResumes > 0
         ? Number((atsCost / atsResumes).toFixed(6))
         : 0,

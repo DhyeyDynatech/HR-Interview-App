@@ -63,6 +63,10 @@ export const PRICING = {
   // This flat rate is only used as fallback when API cost is unavailable
   RETELL_VOICE_PER_MIN: 0.07,
 
+  // OpenAI Web Search tool — per search call (flat fee, context size = medium/default)
+  // gpt-4o-mini / gpt-5-mini: $25/1k (low) | $27.50/1k (medium) | $30/1k (high)
+  WEB_SEARCH_PER_CALL: 0.0275,  // $0.0275 per call (medium context, default)
+
   // Vercel Blob storage
   VERCEL_BLOB_STORAGE_PER_GB: 0.023,   // $0.023 per GB stored per month
   VERCEL_BLOB_TRANSFER_PER_GB: 0.05,   // $0.05 per GB data transfer
@@ -123,6 +127,9 @@ export interface EnhancedCostSummary extends CostSummary {
   // Avg cost per resume for standalone Company Finder
   avgCostPerResumeCF: number;
   totalCFResumes: number;
+  // GPT cost split: token cost vs web search call cost
+  tokenCost: number;       // Pure LLM token cost (input + output)
+  webSearchCost: number;   // Web search call fees ($0.0275/call)
 }
 
 // Interface for API usage records

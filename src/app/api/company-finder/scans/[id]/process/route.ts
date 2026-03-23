@@ -27,13 +27,26 @@ function normalizeKey(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
-/** Retry wrapper with exponential backoff for OpenAI 429/5xx errors */
+/** Retry wrapper with exponential backoff for OpenAI 5xx errors.
+ *  429 quota-exceeded errors are NOT retried — they are thrown immediately. */
 async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err: any) {
       const status = err?.status || err?.response?.status;
+      const isQuotaExceeded =
+        status === 429 &&
+        (err?.message?.toLowerCase().includes("quota") ||
+          err?.message?.toLowerCase().includes("exceeded") ||
+          err?.message?.toLowerCase().includes("billing"));
+
+      // Skip immediately on quota errors — retrying won't help
+      if (isQuotaExceeded) {
+        logger.error(`[CF Process] Quota exceeded (429) — skipping, not retrying.`);
+        throw err;
+      }
+
       const isRetryable = status === 429 || (status >= 500 && status < 600);
       if (isRetryable && attempt < maxRetries) {
         const delay = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
@@ -78,6 +91,14 @@ export async function POST(
     if (!job) {
       return NextResponse.json({ message: "No active job" }, { status: 404 });
     }
+
+    // Look up organization_id from the scan for usage tracking
+    const { data: scanRow } = await supabase
+      .from("company_finder_scan")
+      .select("organization_id")
+      .eq("id", scanId)
+      .single();
+    const organizationId: string | undefined = scanRow?.organization_id || undefined;
 
     // 2. Reset stale tasks — use updated_at (set when claiming) not created_at.
     //    Threshold: 7 min (> Vercel maxDuration=5min, so only orphaned tasks are reset).
@@ -215,6 +236,7 @@ export async function POST(
       const extractUsage = extractResult.usage;
       ApiUsageService.saveOpenAIUsage({
         category: "company_finder",
+        organizationId,
         inputTokens: extractUsage?.prompt_tokens || 0,
         outputTokens: extractUsage?.completion_tokens || 0,
         totalTokens: extractUsage?.total_tokens || 0,
@@ -404,12 +426,15 @@ export async function POST(
                 } catch { /* JSON parse failed */ }
               }
               const enrichUsage = (result.value as any).usage;
+              const searchCalls = ((result.value as any).output || []).filter((o: any) => o.type === "web_search_call").length;
               ApiUsageService.saveOpenAIUsage({
                 category: "company_finder",
+                organizationId,
                 inputTokens: enrichUsage?.input_tokens || 0,
                 outputTokens: enrichUsage?.output_tokens || 0,
                 totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
                 model: CF_MODEL,
+                searchCalls,
                 metadata: { stage: "enrichment", round: roundNum, serverSide: true },
               }).catch(() => {});
             } else {

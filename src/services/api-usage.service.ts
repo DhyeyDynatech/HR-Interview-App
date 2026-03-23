@@ -26,6 +26,7 @@ export interface SaveOpenAIUsageParams {
   totalTokens: number;
   model?: string;
   requestId?: string;
+  searchCalls?: number;  // Number of web_search_call tool invocations (Responses API)
   metadata?: Record<string, any>;
 }
 
@@ -135,14 +136,15 @@ function getSupabaseClient(): SupabaseClient {
 
 export class ApiUsageService {
   /**
-   * Calculate cost for OpenAI usage based on token counts and model
+   * Calculate cost for OpenAI usage based on token counts, model, and web search calls
    */
-  static calculateOpenAICost(inputTokens: number, outputTokens: number, model?: string): number {
+  static calculateOpenAICost(inputTokens: number, outputTokens: number, model?: string, searchCalls = 0): number {
     const modelKey = model?.toLowerCase() || PRICING.OPENAI_DEFAULT_MODEL;
     const rates = PRICING.OPENAI_MODELS[modelKey] || PRICING.OPENAI_MODELS[PRICING.OPENAI_DEFAULT_MODEL];
     const inputCost = (inputTokens / 1000) * rates.input;
     const outputCost = (outputTokens / 1000) * rates.output;
-    return Number((inputCost + outputCost).toFixed(6));
+    const searchCost = searchCalls * PRICING.WEB_SEARCH_PER_CALL;
+    return Number((inputCost + outputCost + searchCost).toFixed(6));
   }
 
   /**
@@ -159,7 +161,8 @@ export class ApiUsageService {
   static async saveOpenAIUsage(params: SaveOpenAIUsageParams): Promise<void> {
     const supabase = getSupabaseClient();
 
-    const cost = this.calculateOpenAICost(params.inputTokens, params.outputTokens, params.model);
+    const searchCalls = params.searchCalls || 0;
+    const cost = this.calculateOpenAICost(params.inputTokens, params.outputTokens, params.model, searchCalls);
 
     const { error } = await supabase.from("api_usage").insert({
       organization_id: params.organizationId || null,
@@ -175,7 +178,14 @@ export class ApiUsageService {
       cost_usd: cost,
       model: params.model || "gpt-5-mini",
       request_id: params.requestId || null,
-      metadata: params.metadata || null,
+      metadata: {
+        ...params.metadata,
+        ...(searchCalls > 0 ? {
+          searchCalls,
+          searchCost: Number((searchCalls * PRICING.WEB_SEARCH_PER_CALL).toFixed(6)),
+          tokenCost: Number((cost - searchCalls * PRICING.WEB_SEARCH_PER_CALL).toFixed(6)),
+        } : {}),
+      } || null,
     });
 
     if (error) {

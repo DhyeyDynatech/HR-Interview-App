@@ -26,13 +26,26 @@ function normalizeKey(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, " ");
 }
 
-/** Retry wrapper — handles OpenAI 429 / 5xx */
+/** Retry wrapper — handles OpenAI 5xx errors.
+ *  429 quota-exceeded errors are NOT retried — they are thrown immediately. */
 async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err: any) {
       const status = err?.status || err?.response?.status;
+      const isQuotaExceeded =
+        status === 429 &&
+        (err?.message?.toLowerCase().includes("quota") ||
+          err?.message?.toLowerCase().includes("exceeded") ||
+          err?.message?.toLowerCase().includes("billing"));
+
+      // Skip immediately on quota errors — retrying won't help
+      if (isQuotaExceeded) {
+        logger.error(`[CF Enrich] Quota exceeded (429) — skipping, not retrying.`);
+        throw err;
+      }
+
       const isRetryable = status === 429 || (status >= 500 && status < 600);
       if (isRetryable && attempt < maxRetries) {
         const delay = 2000 * Math.pow(2, attempt) + Math.random() * 1000;
@@ -89,6 +102,14 @@ export async function POST(
     if (!job) {
       return NextResponse.json({ message: "No active job" }, { status: 404 });
     }
+
+    // Look up organization_id from the scan for usage tracking
+    const { data: scan } = await supabase
+      .from("company_finder_scan")
+      .select("organization_id")
+      .eq("id", scanId)
+      .single();
+    const organizationId: string | undefined = scan?.organization_id || undefined;
 
     // 2. Reset stale enrich queue items (stuck > 8 min means the fn timed out)
     const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS).toISOString();
@@ -251,12 +272,15 @@ export async function POST(
         }
 
         const enrichUsage = (response as any).usage;
+        const searchCalls = ((response as any).output || []).filter((o: any) => o.type === "web_search_call").length;
         ApiUsageService.saveOpenAIUsage({
           category: "company_finder",
+          organizationId,
           inputTokens: enrichUsage?.input_tokens || 0,
           outputTokens: enrichUsage?.output_tokens || 0,
           totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
           model: CF_MODEL,
+          searchCalls,
           metadata: { stage: "enrichment", companyCount: cacheMissNames.length, serverSide: true },
         }).catch(() => {});
 
