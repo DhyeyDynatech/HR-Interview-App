@@ -1,3 +1,4 @@
+import { normalizeCompanyKey } from "@/lib/normalize-company-key";
 import {
   CFScanCard,
   CFScanDetail,
@@ -259,7 +260,7 @@ async function enrichAndCache(
   // Map enrichment response to CachedCompany shape
   return (data.companies || []).map((c: any) => ({
     companyName: c.companyName,
-    normalizedKey: c.companyName.toLowerCase().trim().replace(/\s+/g, " "),
+    normalizedKey: normalizeCompanyKey(c.companyName),
     companyType: c.companyType || "unknown",
     companyInfo: c.companyInfo || undefined,
     headquarters: c.headquarters || undefined,

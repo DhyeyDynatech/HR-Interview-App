@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
 import { getOpenAIClientDirect, DIRECT_MODELS } from "@/lib/openai-client";
+import { normalizeCompanyKey } from "@/lib/normalize-company-key";
 import {
   COMPANY_FINDER_SYSTEM_PROMPT,
   generateEnrichmentPrompt,
@@ -22,9 +23,7 @@ function getSupabaseClient() {
   );
 }
 
-function normalizeKey(name: string): string {
-  return name.toLowerCase().trim().replace(/\s+/g, " ");
-}
+const normalizeKey = normalizeCompanyKey;
 
 /** Retry wrapper — handles OpenAI 5xx errors.
  *  429 quota-exceeded errors are NOT retried — they are thrown immediately. */

@@ -1,6 +1,7 @@
 import { getOpenAIClientDirect, DIRECT_MODELS } from "@/lib/openai-client";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { normalizeCompanyKey } from "@/lib/normalize-company-key";
 import {
   COMPANY_FINDER_SYSTEM_PROMPT,
   generateCompanyFinderPrompt,
@@ -183,7 +184,7 @@ export async function POST(req: Request) {
           })
           .map((c: any) => ({
             company_name: c.companyName,
-            normalized_key: c.companyName.toLowerCase().trim().replace(/\s+/g, " "),
+            normalized_key: normalizeCompanyKey(c.companyName),
             company_type: c.companyType || "unknown",
             company_info: c.companyInfo || null,
             headquarters: c.headquarters || null,

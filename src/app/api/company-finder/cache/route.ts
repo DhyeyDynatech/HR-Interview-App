@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/logger";
 import { CachedCompany } from "@/types/company-finder";
+import { normalizeCompanyKey } from "@/lib/normalize-company-key";
 
 const CACHE_TTL_DAYS = 30;
 
@@ -12,9 +13,7 @@ function getSupabaseClient() {
   );
 }
 
-function normalizeKey(name: string): string {
-  return name.toLowerCase().trim().replace(/\s+/g, " ");
-}
+const normalizeKey = normalizeCompanyKey;
 
 // POST: Lookup companies in cache
 export async function POST(req: Request) {

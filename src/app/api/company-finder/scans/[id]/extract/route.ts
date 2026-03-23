@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { logger } from "@/lib/logger";
 import { getOpenAIClient, MODELS } from "@/lib/openai-client";
+import { normalizeCompanyKey } from "@/lib/normalize-company-key";
 import {
   EXTRACTION_ONLY_SYSTEM_PROMPT,
   generateExtractionOnlyPrompt,
@@ -20,9 +21,7 @@ function getSupabaseClient() {
   );
 }
 
-function normalizeKey(name: string): string {
-  return name.toLowerCase().trim().replace(/\s+/g, " ");
-}
+const normalizeKey = normalizeCompanyKey;
 
 /** Retry wrapper — skips quota-exceeded 429s immediately, retries other 429/5xx with backoff */
 async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
