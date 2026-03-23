@@ -164,6 +164,14 @@ export class ApiUsageService {
     const searchCalls = params.searchCalls || 0;
     const cost = this.calculateOpenAICost(params.inputTokens, params.outputTokens, params.model, searchCalls);
 
+    const searchMeta = searchCalls > 0 ? {
+      searchCalls,
+      searchCost: Number((searchCalls * PRICING.WEB_SEARCH_PER_CALL).toFixed(6)),
+      tokenCost: Number((cost - searchCalls * PRICING.WEB_SEARCH_PER_CALL).toFixed(6)),
+    } : {};
+    const metadataObj = { ...params.metadata, ...searchMeta };
+    const metadata = Object.keys(metadataObj).length > 0 ? metadataObj : null;
+
     const { error } = await supabase.from("api_usage").insert({
       organization_id: params.organizationId || null,
       user_id: params.userId || null,
@@ -178,14 +186,7 @@ export class ApiUsageService {
       cost_usd: cost,
       model: params.model || "gpt-5-mini",
       request_id: params.requestId || null,
-      metadata: {
-        ...params.metadata,
-        ...(searchCalls > 0 ? {
-          searchCalls,
-          searchCost: Number((searchCalls * PRICING.WEB_SEARCH_PER_CALL).toFixed(6)),
-          tokenCost: Number((cost - searchCalls * PRICING.WEB_SEARCH_PER_CALL).toFixed(6)),
-        } : {}),
-      } || null,
+      metadata,
     });
 
     if (error) {
