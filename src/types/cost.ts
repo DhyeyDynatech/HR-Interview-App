@@ -48,24 +48,23 @@ export interface CostFilters {
 export const PRICING = {
   // OpenAI model pricing (per 1K tokens) — only models actively used in code
   OPENAI_MODELS: {
-    "gpt-5":      { input: 0.00125,  output: 0.01    },  // $1.25 / $10.00 per 1M
     "gpt-5-mini": { input: 0.00025,  output: 0.002   },  // $0.25 / $2.00 per 1M
   } as Record<string, { input: number; output: number }>,
 
   // Default model for cost calculation when model is unknown
   OPENAI_DEFAULT_MODEL: "gpt-5-mini",
 
-  // Legacy flat rates (used by cost.service.ts estimated view) — matches gpt-5 pricing
-  GPT5_INPUT_PER_1K: 0.00125,
-  GPT5_OUTPUT_PER_1K: 0.01,
+  // Legacy flat rates (used by cost.service.ts estimated view) — matches gpt-5-mini pricing
+  GPT5_INPUT_PER_1K: 0.00025,
+  GPT5_OUTPUT_PER_1K: 0.002,
 
   // Retell Voice — cost comes from Retell API (call_cost.combined_cost)
   // This flat rate is only used as fallback when API cost is unavailable
   RETELL_VOICE_PER_MIN: 0.07,
 
-  // OpenAI Web Search tool — per search call (flat fee, context size = medium/default)
-  // gpt-4o-mini / gpt-5-mini: $25/1k (low) | $27.50/1k (medium) | $30/1k (high)
-  WEB_SEARCH_PER_CALL: 0.0275,  // $0.0275 per call (medium context, default)
+  // OpenAI Web Search tool — per search call (flat fee)
+  // gpt-5-mini: $10 / 1,000 calls = $0.01 per call
+  WEB_SEARCH_PER_CALL: 0.01,  // $0.01 per call
 
   // Vercel Blob storage
   VERCEL_BLOB_STORAGE_PER_GB: 0.023,   // $0.023 per GB stored per month
@@ -129,7 +128,7 @@ export interface EnhancedCostSummary extends CostSummary {
   totalCFResumes: number;
   // GPT cost split: token cost vs web search call cost
   tokenCost: number;       // Pure LLM token cost (input + output)
-  webSearchCost: number;   // Web search call fees ($0.0275/call)
+  webSearchCost: number;   // Web search call fees ($0.01/call)
 }
 
 // Interface for API usage records

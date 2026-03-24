@@ -260,6 +260,7 @@ HR-Interviewer/
 │   │   ├── enum.tsx
 │   │   ├── utils.ts
 │   │   ├── logger.ts
+│   │   ├── normalize-company-key.ts  # Company name normalisation for deduplication
 │   │   ├── processing-store.ts       # Module-level processing state (pub/sub)
 │   │   ├── openai-client.ts          # Azure OpenAI + OpenAI Direct clients
 │   │   ├── ai-handler.ts             # Concurrency + retry handler
@@ -857,6 +858,7 @@ Session Check → GET /api/auth/session
 | `auth.ts` | JWT token generation/verification, password hashing, Supabase client factory |
 | `openai-client.ts` | Azure OpenAI client (`getOpenAIClient`), OpenAI Direct client (`getOpenAIClientDirect`), `MODELS` constants |
 | `ai-handler.ts` | Singleton concurrency limiter + retry handler with quota-exceeded skip logic |
+| `normalize-company-key.ts` | Normalises company names to a consistent deduplication key — strips legal suffixes (Ltd, Limited, Pvt, Inc, Corp, GmbH, LLC, etc.), lowercases, collapses whitespace. Used by Company Finder to deduplicate across `cf_company_mentions`, `cf_enrich_queue`, and `company_cache`. |
 | `constants.ts` | AI interviewer personality configs (Lisa, Bob), Retell system prompts |
 | `logger.ts` | Structured application logging |
 | `processing-store.ts` | Module-level pub/sub state — persists ATS/CF processing state across navigation |
@@ -1054,7 +1056,8 @@ Combined — POST /api/company-finder/scans/[id]/process
 
 - **Vercel Blob uploads:** Enabled — files uploaded in background immediately on drop; also awaited before analysis starts so resume URLs are available
 - **Stale task recovery:** Tasks stuck >3 min (CF extract) or >7 min (process) reset to pending
-- **Company cache:** `cf_company_cache` prevents re-enriching already-known companies across scans
+- **Company cache:** `company_cache` prevents re-enriching already-known companies across scans
+- **Company name deduplication:** `normalizeCompanyKey()` strips legal suffixes (Ltd, Limited, Pvt, Inc, Corp, GmbH, LLC, SA, AG, etc.) to produce a consistent key used for upsert conflict detection — e.g. `"Infosys Limited"`, `"Infosys Ltd."`, `"Infosys Pvt Ltd"` all resolve to `"infosys"`
 - **Retry:** All OpenAI calls wrapped in `callWithRetry()` — quota 429 skipped, other errors retry with backoff
 
 ---
@@ -1416,4 +1419,4 @@ Upload Resumes ──▶ Parse (browser) ──▶ Upload to Blob ──▶ POST
 
 ---
 
-*Last updated: March 23, 2026*
+*Last updated: March 24, 2026*

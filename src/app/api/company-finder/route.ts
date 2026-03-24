@@ -147,6 +147,7 @@ export async function POST(req: Request) {
       });
 
     // Track API usage
+    const searchCalls = ((response as any).output || []).filter((o: any) => o.type === "web_search_call").length;
     ApiUsageService.saveOpenAIUsage({
       userId: body.userId,
       organizationId: body.organizationId,
@@ -155,9 +156,11 @@ export async function POST(req: Request) {
       outputTokens: usage?.output_tokens || 0,
       totalTokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0),
       model: CF_MODEL,
+      searchCalls,
       metadata: {
         resumeCount: resumes.length,
         resumeNames: resumes.map((r) => r.name),
+        enrichOnly: !!body.enrichOnly,
       },
     }).catch((err) => {
       logger.error("Failed to save API usage for company finder", { error: err });

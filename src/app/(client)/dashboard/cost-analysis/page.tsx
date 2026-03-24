@@ -853,9 +853,10 @@ function CostAnalysisPage() {
               <span className="text-sm font-medium text-gray-700">Current Pricing Rates</span>
             </div>
             <div className="space-y-3 text-sm text-gray-600">
+              {/* OpenAI Models */}
               <div>
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">OpenAI Models (per 1M tokens)</span>
-                <div className="grid grid-cols-2 md:grid-cols-2 gap-3 mt-1.5">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-1.5">
                   {Object.entries(PRICING.OPENAI_MODELS).map(([model, rates]) => (
                     <div key={model} className="p-2 bg-white rounded border">
                       <span className="font-medium text-xs text-gray-800">{model}</span>
@@ -865,14 +866,29 @@ function CostAnalysisPage() {
                       </div>
                     </div>
                   ))}
+                  {/* Web Search */}
+                  <div className="p-2 bg-white rounded border">
+                    <span className="font-medium text-xs text-gray-800">Web Search (gpt-5-mini)</span>
+                    <div className="flex gap-2 mt-0.5 text-xs">
+                      <span className="text-cyan-600">${PRICING.WEB_SEARCH_PER_CALL}/call</span>
+                      <span className="text-gray-400">($10 / 1K calls)</span>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <span className="font-medium">Voice (Retell):</span> ~$0.07+/min (varies by LLM &amp; voice engine)
+              {/* Voice + Storage */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="p-2 bg-white rounded border">
+                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Voice (Retell)</span>
+                  <div className="text-xs mt-0.5 text-gray-600">~$0.07+/min <span className="text-gray-400">(varies by LLM &amp; voice engine)</span></div>
                 </div>
-                <div>
-                  <span className="font-medium">Blob Storage:</span> ${PRICING.VERCEL_BLOB_STORAGE_PER_GB}/GB/month
+                <div className="p-2 bg-white rounded border">
+                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Vercel Blob Storage (Pro)</span>
+                  <div className="text-xs mt-0.5 text-gray-600">
+                    <span className="text-emerald-600 font-medium">5 GB free/month</span>
+                    <span className="text-gray-400"> storage · then </span>
+                    <span className="text-blue-600">${PRICING.VERCEL_BLOB_STORAGE_PER_GB}/GB/month</span>
+                  </div>
                 </div>
               </div>
             </div>

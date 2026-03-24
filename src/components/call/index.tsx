@@ -558,6 +558,21 @@ function Call({ interview }: InterviewProps) {
           registerCallResponse?.data?.registerCallResponse?.call_id;
         setCallId(newCallId);
 
+        // Lock the link immediately — prevent retake as soon as interview starts
+        try {
+          const startedAssignee = await assigneeService.getAssigneeByEmailAndInterview(
+            email.toLowerCase(),
+            interview.id,
+          );
+          if (startedAssignee?.id) {
+            await assigneeService.updateAssignee(startedAssignee.id, {
+              allow_retake: false,
+            });
+          }
+        } catch {
+          // Non-critical — retake lock will still be set when interview ends
+        }
+
         await createResponse({
           interview_id: interview.id,
           call_id: newCallId,
