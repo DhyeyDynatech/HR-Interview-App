@@ -39,6 +39,13 @@ export async function POST(request: NextRequest) {
     const body: BulkAssigneeImportRequest = await request.json();
     const { users: usersToImport, organization_id } = body;
 
+    if (!organization_id) {
+      return NextResponse.json(
+        { error: "organization_id is required" },
+        { status: 400 }
+      );
+    }
+
     if (!usersToImport || !Array.isArray(usersToImport) || usersToImport.length === 0) {
 
       return NextResponse.json(
@@ -92,18 +99,13 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // Check if assignee already exists
-        let existingAssigneeQuery = supabase
+        // Check if assignee already exists in this org
+        const { data: existingAssignee } = await supabase
           .from('interview_assignee')
           .select('id')
-          .eq('email', userData.email);
-        
-        // Filter by organization_id only if it's provided
-        if (organization_id) {
-          existingAssigneeQuery = existingAssigneeQuery.eq('organization_id', organization_id);
-        }
-        
-        const { data: existingAssignee } = await existingAssigneeQuery.single();
+          .eq('email', userData.email)
+          .eq('organization_id', organization_id)
+          .single();
           
         if (existingAssignee) {
           result.failed++;

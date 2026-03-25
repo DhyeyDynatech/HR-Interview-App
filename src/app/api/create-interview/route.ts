@@ -16,9 +16,6 @@ export async function POST(req: NextRequest) {
 
     const payload = body.interviewData;
 
-    // Remove organization_id from payload if it exists
-    const { organization_id, ...interviewPayload } = payload;
-
     let readableSlug = null;
     if (payload.name) {
       const interviewNameSlug = payload.name?.toLowerCase().replace(/\s/g, "-");
@@ -26,7 +23,7 @@ export async function POST(req: NextRequest) {
     }
 
     const newInterview = await InterviewService.createInterview({
-      ...interviewPayload,
+      ...payload,
       url: url,
       id: url_id,
       readable_slug: readableSlug,

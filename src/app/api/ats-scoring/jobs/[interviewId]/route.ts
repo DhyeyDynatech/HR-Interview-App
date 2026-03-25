@@ -73,7 +73,8 @@ export async function GET(
     const { count, error: countError } = await supabase
       .from("ats_score_items")
       .select("*", { count: "exact", head: true })
-      .eq("interview_id", interviewId);
+      .eq("interview_id", interviewId)
+      .eq("organization_id", auth.organizationId);
 
     if (countError) throw countError;
 
@@ -83,7 +84,8 @@ export async function GET(
        const { data: statsData } = await supabase
          .from("ats_score_items")
          .select("overall_score")
-         .eq("interview_id", interviewId);
+         .eq("interview_id", interviewId)
+         .eq("organization_id", auth.organizationId);
        
        const avgScore = statsData && statsData.length > 0
          ? Math.round(statsData.reduce((sum, r) => sum + r.overall_score, 0) / statsData.length)
@@ -105,6 +107,7 @@ export async function GET(
       .from("ats_score_items")
       .select("*")
       .eq("interview_id", interviewId)
+      .eq("organization_id", auth.organizationId)
       .order("overall_score", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -204,6 +207,7 @@ export async function PUT(
           .from("ats_score_items")
           .delete()
           .eq("interview_id", interviewId)
+          .eq("organization_id", auth.organizationId)
           .not("resume_name", "in", `(${keepNames.map(n => `"${n.replace(/"/g, '\\"')}"`).join(",")})`);
         if (deleteError) throw deleteError;
       } else {
@@ -211,7 +215,8 @@ export async function PUT(
         const { error: deleteError } = await supabase
           .from("ats_score_items")
           .delete()
-          .eq("interview_id", interviewId);
+          .eq("interview_id", interviewId)
+          .eq("organization_id", auth.organizationId);
         if (deleteError) throw deleteError;
       }
 

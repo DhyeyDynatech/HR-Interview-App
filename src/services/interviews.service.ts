@@ -94,18 +94,32 @@ const updateInterview = async (payload: any, id: string) => {
 };
 
 const deleteInterview = async (id: string) => {
+  if (typeof window !== "undefined") {
+    // Browser context — call API route so ownership check is enforced
+    const token = localStorage.getItem("auth_token");
+    const response = await fetch(`${window.location.origin}/api/interviews/${id}`, {
+      method: "DELETE",
+      headers: {
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    }
+    return await response.json();
+  }
+
+  // Server context — direct Supabase call (caller is trusted API route)
   const { error, data } = await supabase
     .from("interview")
     .delete()
     .eq("id", id);
   if (error) {
     console.log(error);
-
-
     return [];
   }
-
-
   return data;
 };
 

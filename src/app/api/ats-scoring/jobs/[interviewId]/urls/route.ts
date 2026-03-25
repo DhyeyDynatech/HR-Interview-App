@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { verifyToken, getUserById } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,17 @@ function getSupabaseClient() {
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
+}
+
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user) return null;
+  return { userId, organizationId: user.organization_id || user.id };
 }
 
 /**
@@ -22,6 +34,11 @@ export async function PATCH(
   { params }: { params: Promise<{ interviewId: string }> }
 ) {
   try {
+    const auth = await extractAuth(request);
+    if (!auth) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const { interviewId } = await params;
     const { updates } = await request.json();
 
