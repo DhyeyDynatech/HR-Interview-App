@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScanSearch, Plus, Search } from "lucide-react";
@@ -8,6 +8,9 @@ import { Interview } from "@/types/interview";
 import { ATSJobCardData } from "@/types/ats-scoring";
 import JobCard from "./jobCard";
 import AddJobDialog from "./addJobDialog";
+import { PaginationControls } from "@/components/ui/pagination-controls";
+
+const PAGE_SIZE = 12;
 
 interface JobGridProps {
   jobs: ATSJobCardData[];
@@ -28,12 +31,20 @@ export default function JobGrid({
 }: JobGridProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
 
   const filteredJobs = searchQuery
     ? jobs.filter((j) =>
         j.interviewName.toLowerCase().includes(searchQuery.toLowerCase())
       )
     : jobs;
+
+  useEffect(() => { setCurrentPage(1); }, [searchQuery]);
+
+  const pagedJobs = filteredJobs.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE
+  );
 
   return (
     <main className="p-8 pt-0 ml-12 mr-auto space-y-6">
@@ -93,21 +104,29 @@ export default function JobGrid({
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filteredJobs.map((job) => (
-            <JobCard
-              key={job.interviewId}
-              interviewId={job.interviewId}
-              interviewName={job.interviewName}
-              hasJd={job.hasJd}
-              jdFilename={job.jdFilename}
-              resultCount={job.resultCount}
-              avgScore={job.avgScore}
-              onClick={() => onSelectJob(job.interviewId)}
-              onRemove={() => onRemoveJob(job.interviewId)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {pagedJobs.map((job) => (
+              <JobCard
+                key={job.interviewId}
+                interviewId={job.interviewId}
+                interviewName={job.interviewName}
+                hasJd={job.hasJd}
+                jdFilename={job.jdFilename}
+                resultCount={job.resultCount}
+                avgScore={job.avgScore}
+                onClick={() => onSelectJob(job.interviewId)}
+                onRemove={() => onRemoveJob(job.interviewId)}
+              />
+            ))}
+          </div>
+          <PaginationControls
+            currentPage={currentPage}
+            totalItems={filteredJobs.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setCurrentPage}
+          />
+        </>
       )}
 
       {/* Add Job Dialog */}

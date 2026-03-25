@@ -1,10 +1,13 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import ATSResultCard from "./atsResultCard";
 import { ATSScoreResult } from "@/types/ats-scoring";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PaginationControls } from "@/components/ui/pagination-controls";
+
+const PAGE_SIZE = 10;
 
 interface ATSResultsListProps {
   results: ATSScoreResult[];
@@ -28,6 +31,11 @@ export const ATSResultsList: React.FC<ATSResultsListProps> = ({
   previewUrls,
   uploadingFiles,
 }) => {
+  const [currentPage, setCurrentPage] = useState(1);
+
+  useEffect(() => { setCurrentPage(1); }, [results.length]);
+
+  const pagedResults = results.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const isAllSelected = results.length > 0 && selectedResults.size === results.length;
 
   return (
@@ -68,7 +76,7 @@ export const ATSResultsList: React.FC<ATSResultsListProps> = ({
 
       {/* List — no fixed height; page scroll handles overflow */}
       <div className="w-full space-y-3">
-        {results.map((result, index) => (
+        {pagedResults.map((result, index) => (
           <div key={result.resumeName} className="flex items-start gap-3">
             <input
               type="checkbox"
@@ -79,7 +87,7 @@ export const ATSResultsList: React.FC<ATSResultsListProps> = ({
             <div className="flex-1 min-w-0">
               <ATSResultCard
                 result={result}
-                rank={index + 1}
+                rank={(currentPage - 1) * PAGE_SIZE + index + 1}
                 onDelete={handleDeleteResult}
                 previewUrl={previewUrls[result.resumeName]}
                 isUploading={uploadingFiles.has(result.resumeName)}
@@ -88,6 +96,13 @@ export const ATSResultsList: React.FC<ATSResultsListProps> = ({
           </div>
         ))}
       </div>
+
+      <PaginationControls
+        currentPage={currentPage}
+        totalItems={results.length}
+        pageSize={PAGE_SIZE}
+        onPageChange={setCurrentPage}
+      />
     </div>
   );
 };

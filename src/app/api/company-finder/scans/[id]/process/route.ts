@@ -434,7 +434,7 @@ export async function POST(
                 totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
                 model: CF_MODEL,
                 searchCalls,
-                metadata: { stage: "enrichment", round: roundNum, serverSide: true },
+                metadata: { stage: "enrichment", companyCount: batch.length, round: roundNum, serverSide: true },
               }).catch(() => {});
             } else {
               logger.error(`[CF Process] Round ${roundNum} batch failed:`, result.reason?.message || String(result.reason));

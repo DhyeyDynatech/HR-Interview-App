@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { ResponseService } from '@/services/responses.service';
 import { useToast } from '@/components/ui/use-toast';
+import { PaginationControls } from '@/components/ui/pagination-controls';
 
 export default function AssigneesPage() {
   const { assignees, assigneesLoading, refreshAssignees, searchAssignees, getAssigneesByStatus, deleteAssignee } = useAssignees();
@@ -71,6 +72,8 @@ export default function AssigneesPage() {
   const [isBulkTagModalOpen, setIsBulkTagModalOpen] = useState(false);
   const [isBulkDeleteConfirmOpen, setIsBulkDeleteConfirmOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   const isModalOpenRef = React.useRef(false);
   
@@ -212,12 +215,22 @@ export default function AssigneesPage() {
     return filtered;
   }, [assignees, searchTerm, statusFilter, interviewFilter, tagFilter, reviewFilter, interviewStatusFilter]);
 
+  // Reset to first page whenever filters or search change
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, interviewFilter, tagFilter, reviewFilter, interviewStatusFilter]);
+
+  const pagedAssignees = React.useMemo(
+    () => filteredAssignees.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [filteredAssignees, currentPage, pageSize]
+  );
+
   // Group filtered assignees by interview name (merge same-named interviews into one group)
   const groupedAssignees = React.useMemo(() => {
     const groups: { interviewId: string | null; interviewName: string; assignees: InterviewAssignee[] }[] = [];
     const groupMap = new Map<string, InterviewAssignee[]>();
 
-    for (const assignee of filteredAssignees) {
+    for (const assignee of pagedAssignees) {
       const interviewName = assignee.interview_id
         ? (typedInterviews.find((i) => i.id === assignee.interview_id)?.name || assignee.interview_id)
         : null;
@@ -250,7 +263,7 @@ export default function AssigneesPage() {
     }
 
     return groups;
-  }, [filteredAssignees, typedInterviews]);
+  }, [pagedAssignees, typedInterviews]);
 
   function toggleGroupCollapse(groupKey: string) {
     setCollapsedGroups(prev => {
@@ -1017,8 +1030,15 @@ export default function AssigneesPage() {
               })}
             </>
           )}
+          <PaginationControls
+            currentPage={currentPage}
+            totalItems={filteredAssignees.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+          />
         </TabsContent>
-        
+
         <TabsContent value="table" className="space-y-4">
           <Card>
             <CardHeader>
@@ -1245,6 +1265,13 @@ export default function AssigneesPage() {
               </div>
             </CardContent>
           </Card>
+          <PaginationControls
+            currentPage={currentPage}
+            totalItems={filteredAssignees.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+          />
         </TabsContent>
       </Tabs>
 

@@ -123,6 +123,8 @@ export interface EnhancedCostSummary extends CostSummary {
   // Avg cost per resume for ATS Scoring + Company Finder combined
   avgCostPerResumeATS: number;
   totalATSResumes: number;
+  // Cost breakdown for ATS avg card (components of the per-resume cost)
+  atsBreakdown: { atsCost: number; cfExtractionCost: number; cfEnrichmentCost: number; cfWebSearchCost: number };
   // Avg cost per resume for standalone Company Finder
   avgCostPerResumeCF: number;
   totalCFResumes: number;

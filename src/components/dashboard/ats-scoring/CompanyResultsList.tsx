@@ -1,10 +1,13 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { AggregatedCompany } from "@/types/company-finder";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar, MapPin, Globe, Eye, FileText, Trash2 } from "lucide-react";
+import { PaginationControls } from "@/components/ui/pagination-controls";
+
+const PAGE_SIZE = 20;
 
 interface CompanyResultsListProps {
   companies: AggregatedCompany[];
@@ -27,9 +30,15 @@ export const CompanyResultsList: React.FC<CompanyResultsListProps> = ({
   onToggleSelectAll,
   onDeleteCompany,
 }) => {
+  const [currentPage, setCurrentPage] = useState(1);
+
+  useEffect(() => { setCurrentPage(1); }, [companies.length]);
+
+  const pagedCompanies = companies.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const allSelected = companies.length > 0 && selectedCompanies.size === companies.length;
 
   return (
+    <div className="flex flex-col gap-3">
     <div className="border rounded-xl bg-white shadow-sm overflow-hidden">
       <table className="w-full text-sm">
         <thead>
@@ -50,7 +59,7 @@ export const CompanyResultsList: React.FC<CompanyResultsListProps> = ({
           </tr>
         </thead>
         <tbody>
-          {companies.map((company, index) => {
+          {pagedCompanies.map((company, index) => {
             const key = company.companyName.trim().toLowerCase();
             const isSelected = selectedCompanies.has(key);
 
@@ -182,6 +191,13 @@ export const CompanyResultsList: React.FC<CompanyResultsListProps> = ({
           })}
         </tbody>
       </table>
+    </div>
+    <PaginationControls
+      currentPage={currentPage}
+      totalItems={companies.length}
+      pageSize={PAGE_SIZE}
+      onPageChange={setCurrentPage}
+    />
     </div>
   );
 };

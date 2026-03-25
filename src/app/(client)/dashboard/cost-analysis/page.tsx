@@ -58,6 +58,7 @@ import {
   UsageCategory,
   CATEGORY_LABELS,
 } from "@/types/cost";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 
 // Category icon mapping
 const CATEGORY_ICONS: Record<UsageCategory, React.ReactNode> = {
@@ -103,6 +104,8 @@ function CostAnalysisPage() {
   const [minCost, setMinCost] = useState("");
   const [maxCost, setMaxCost] = useState("");
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   // Use organization_id if available, otherwise fall back to user id
   const orgId = user?.organization_id || user?.id;
@@ -153,6 +156,7 @@ function CostAnalysisPage() {
           (item: any) => item.category !== "call_creation"
         );
         setCostData(filteredData);
+        setCurrentPage(1);
         const summaryData = result.summary as EnhancedCostSummary | null;
         if (summaryData?.byCategory) {
           summaryData.byCategory = summaryData.byCategory.filter(
@@ -270,6 +274,11 @@ function CostAnalysisPage() {
     const secs = seconds % 60;
     return `${minutes}m ${secs}s`;
   };
+
+  const pagedCostData = costData.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
 
   const SortIcon = ({ field }: { field: string }) => {
     if (filters.sortBy !== field) return <ArrowUpDown className="h-4 w-4 ml-1" />;
@@ -772,8 +781,24 @@ function CostAnalysisPage() {
                     {formatCurrency(summary.avgCostPerResumeATS)}
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
-                    {summary.totalATSResumes.toLocaleString()} resume{summary.totalATSResumes !== 1 ? "s" : ""} scored
+                    {summary.totalATSResumes.toLocaleString()} resume{summary.totalATSResumes !== 1 ? "s" : ""} · GPT + CF
                   </p>
+                  {summary.atsBreakdown && summary.totalATSResumes > 0 && (
+                    <div className="mt-2 space-y-0.5 text-[11px] text-gray-400 border-t pt-2">
+                      <div className="flex justify-between">
+                        <span>ATS scoring</span>
+                        <span className="text-emerald-600">{formatCurrency(summary.atsBreakdown.atsCost)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>CF extraction</span>
+                        <span className="text-indigo-500">{formatCurrency(summary.atsBreakdown.cfExtractionCost)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>CF enrichment</span>
+                        <span className="text-indigo-500">{formatCurrency(summary.atsBreakdown.cfEnrichmentCost)}</span>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -791,6 +816,18 @@ function CostAnalysisPage() {
                   <p className="text-xs text-gray-500 mt-1">
                     {summary.totalCFResumes.toLocaleString()} resume{summary.totalCFResumes !== 1 ? "s" : ""} scanned
                   </p>
+                  {summary.atsBreakdown && summary.totalCFResumes > 0 && (
+                    <div className="mt-2 space-y-0.5 text-[11px] text-gray-400 border-t pt-2">
+                      <div className="flex justify-between">
+                        <span>CF extraction</span>
+                        <span className="text-indigo-500">{formatCurrency(summary.atsBreakdown.cfExtractionCost)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>CF enrichment</span>
+                        <span className="text-indigo-500">{formatCurrency(summary.atsBreakdown.cfEnrichmentCost)}</span>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>}
@@ -1051,7 +1088,7 @@ function CostAnalysisPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {costData.map(item => (
+                  {pagedCostData.map(item => (
                     <React.Fragment key={item.id}>
                       <TableRow
                         className="cursor-pointer hover:bg-gray-50"
@@ -1174,7 +1211,7 @@ function CostAnalysisPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {costData.map(item => (
+                  {pagedCostData.map(item => (
                     <TableRow key={item.id}>
                       <TableCell className="font-medium">
                         {new Date(item.date).toLocaleDateString()}
@@ -1224,6 +1261,14 @@ function CostAnalysisPage() {
             )}
           </CardContent>
         </Card>
+
+        <PaginationControls
+          currentPage={currentPage}
+          totalItems={costData.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+          onPageSizeChange={setPageSize}
+        />
       </div>
     </main>
   );

@@ -142,6 +142,7 @@ export async function POST(req: Request) {
       ApiUsageService.saveOpenAIUsage({
         userId: body.userId,
         organizationId: body.organizationId,
+        interviewId: body.interviewId,
         category: "ats_scoring",
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,

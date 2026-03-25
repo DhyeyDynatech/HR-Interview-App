@@ -258,16 +258,28 @@ export async function POST(
         if (mentionErr) logger.error(`[CF Extract] Mentions insert error: ${mentionErr.message}`);
       }
 
-      // Insert unique company names into cf_enrich_queue (skip if already queued)
+      // Deduplicate extracted companies by normalized key
       const seen = new Set<string>();
-      const queueRows = extractedMentions
-        .filter((e: any) => {
-          if (!e.companyName?.trim()) return false;
-          const key = normalizeKey(e.companyName);
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        })
+      const uniqueCompanies = extractedMentions.filter((e: any) => {
+        if (!e.companyName?.trim()) return false;
+        const key = normalizeKey(e.companyName);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      // Check company_cache for all unique companies in this batch
+      const uniqueKeys = uniqueCompanies.map((e: any) => normalizeKey(e.companyName));
+      const { data: cachedRows } = await supabase
+        .from("company_cache")
+        .select("*")
+        .in("normalized_key", uniqueKeys);
+
+      const cachedKeySet = new Set((cachedRows || []).map((r: any) => r.normalized_key));
+
+      // Only queue cache misses — cached companies are handled below without web search
+      const queueRows = uniqueCompanies
+        .filter((e: any) => !cachedKeySet.has(normalizeKey(e.companyName)))
         .map((e: any) => ({
           scan_id: scanId,
           company_name: e.companyName.trim(),
@@ -284,6 +296,82 @@ export async function POST(
         } else {
           companiesQueued = queueRows.length;
         }
+      }
+
+      // For cache hits: build result objects immediately and save to scan (no web search needed)
+      if (cachedRows && cachedRows.length > 0) {
+        const cachedKeys = cachedRows.map((r: any) => r.normalized_key);
+
+        const { data: mentionData } = await supabase
+          .from("cf_company_mentions")
+          .select("normalized_key, company_name, resume_name, resume_url, context")
+          .eq("scan_id", scanId)
+          .in("normalized_key", cachedKeys);
+
+        const mentionMap = new Map<string, { sourceResumes: any[]; frequency: number }>();
+        for (const m of (mentionData || [])) {
+          const existing = mentionMap.get(m.normalized_key) || { sourceResumes: [], frequency: 0 };
+          existing.sourceResumes.push({ resumeName: m.resume_name, resumeUrl: m.resume_url, context: m.context });
+          existing.frequency = existing.sourceResumes.length;
+          mentionMap.set(m.normalized_key, existing);
+        }
+
+        const { data: scanData } = await supabase
+          .from("company_finder_scan")
+          .select("results, resume_names, resume_urls")
+          .eq("id", scanId)
+          .single();
+
+        const existingResults: any[] = scanData?.results || [];
+        const existingUrls: Record<string, string> = scanData?.resume_urls || {};
+        const existingNames = new Set<string>(scanData?.resume_names || []);
+
+        const scannedAt = new Date().toISOString();
+        const cachedResultObjects = cachedRows.map((row: any) => {
+          const mentionInfo = mentionMap.get(row.normalized_key) || { sourceResumes: [], frequency: 1 };
+          return {
+            companyName: row.company_name,
+            companyType: row.company_type || "unknown",
+            companyInfo: row.company_info || "",
+            headquarters: row.headquarters || "",
+            foundedYear: row.founded_year || "",
+            countriesWorkedIn: row.countries_worked_in || [],
+            isRelevant: row.is_relevant ?? false,
+            sourceResumes: mentionInfo.sourceResumes.map((s: any) => s.resumeName),
+            resumeUrls: Object.fromEntries(
+              mentionInfo.sourceResumes
+                .filter((s: any) => s.resumeUrl)
+                .map((s: any) => [s.resumeName, s.resumeUrl])
+            ),
+            contexts: mentionInfo.sourceResumes.map((s: any) => s.context).filter(Boolean),
+            frequency: mentionInfo.frequency,
+            scannedAt,
+          };
+        });
+
+        const urlUpdates: Record<string, string> = { ...existingUrls };
+        for (const m of (mentionData || [])) {
+          if (m.resume_url) urlUpdates[m.resume_name] = m.resume_url;
+          existingNames.add(m.resume_name);
+        }
+
+        const newKeys = new Set(cachedResultObjects.map((r: any) => normalizeKey(r.companyName)));
+        const merged = [
+          ...existingResults.filter((r: any) => !newKeys.has(normalizeKey(r.companyName))),
+          ...cachedResultObjects,
+        ].sort((a: any, b: any) => (b.frequency || 0) - (a.frequency || 0));
+
+        await supabase
+          .from("company_finder_scan")
+          .update({
+            results: merged,
+            resume_names: Array.from(existingNames),
+            resume_urls: urlUpdates,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", scanId);
+
+        logger.info(`[CF Extract] ${cachedRows.length} companies resolved from cache immediately`);
       }
     }
 
@@ -302,7 +390,7 @@ export async function POST(
       });
     } catch { /* non-critical */ }
 
-    logger.info(`[CF Extract] Done: ${actualTasks.length} resumes processed, ${companiesQueued} unique companies queued`);
+    logger.info(`[CF Extract] Done: ${actualTasks.length} resumes processed, ${companiesQueued} companies queued for web search`);
 
     return NextResponse.json({ processedCount: actualTasks.length, companiesQueued });
 

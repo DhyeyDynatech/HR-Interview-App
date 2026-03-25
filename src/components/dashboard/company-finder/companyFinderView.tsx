@@ -41,6 +41,7 @@ import {
   subscribeProcessing,
   clearProcessingState,
 } from "@/lib/processing-store";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 
 const PARSE_CONCURRENCY = 5;
 
@@ -205,6 +206,12 @@ export default function CompanyFinderView({
   const [sortBy, setSortBy] = useState<"frequency" | "name">("frequency");
   const [typeFilter, setTypeFilter] = useState<"all" | CompanyType>("all");
   const [relevantOnly, setRelevantOnly] = useState(true);
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  useEffect(() => { setCurrentPage(1); }, [searchQuery, typeFilter, relevantOnly, sortBy]);
 
   // ---------- Load saved data on mount ----------
 
@@ -742,6 +749,10 @@ export default function CompanyFinderView({
         })
     : null;
 
+  const pagedResults = filteredResults
+    ? filteredResults.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    : null;
+
   // ---------- Delete company ----------
 
   const handleDeleteCompany = useCallback(
@@ -1237,7 +1248,7 @@ export default function CompanyFinderView({
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredResults?.map((company, index) => (
+                    {pagedResults?.map((company, index) => (
                       <tr
                         key={index}
                         className={`border-b last:border-0 hover:bg-slate-50 transition-colors ${
@@ -1383,6 +1394,16 @@ export default function CompanyFinderView({
               </div>
             </CardContent>
           </Card>
+
+          {filteredResults && filteredResults.length > pageSize && (
+            <PaginationControls
+              currentPage={currentPage}
+              totalItems={filteredResults.length}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setPageSize}
+            />
+          )}
         </>
       )}
 

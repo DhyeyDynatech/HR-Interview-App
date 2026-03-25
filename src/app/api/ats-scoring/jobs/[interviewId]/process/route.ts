@@ -249,6 +249,7 @@ export async function POST(
       if (batchUsage) {
         ApiUsageService.saveOpenAIUsage({
           organizationId: jobData.organization_id,
+          interviewId,
           category: "ats_scoring",
           inputTokens: batchUsage.prompt_tokens,
           outputTokens: batchUsage.completion_tokens,
@@ -257,7 +258,6 @@ export async function POST(
           metadata: {
             resumeCount: actualTasks.length,
             resumeNames: actualTasks.map((t: any) => t.resume_name),
-            interviewId,
           },
         }).catch((err: any) => {
           console.error("[Process] Failed to save API usage:", err.message);

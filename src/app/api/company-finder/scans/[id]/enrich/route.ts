@@ -189,39 +189,11 @@ export async function POST(
 
     logger.info(`[CF Enrich] Enriching ${companyNames.length} companies for scan ${scanId} (${Math.round(timeLeft() / 1000)}s remaining)`);
 
-    // 5. Check company_cache
+    // All companies reaching this point are guaranteed cache misses —
+    // the extract route pre-filters cached companies and resolves them directly.
     const normalizedKeys = companyNames.map(normalizeKey);
-    const { data: cacheRows } = await supabase
-      .from("company_cache")
-      .select("*")
-      .in("normalized_key", normalizedKeys);
-
-    const staleCutoff = new Date();
-    staleCutoff.setDate(staleCutoff.getDate() - 30);
-
-    const cachedMap = new Map<string, any>();
-    if (cacheRows) {
-      for (const row of cacheRows) {
-        if (new Date(row.enriched_at) >= staleCutoff) {
-          cachedMap.set(row.normalized_key, {
-            companyName: row.company_name,
-            companyType: row.company_type || "unknown",
-            companyInfo: row.company_info || "",
-            headquarters: row.headquarters || "",
-            foundedYear: row.founded_year || "",
-            countriesWorkedIn: row.countries_worked_in || [],
-            isRelevant: row.is_relevant ?? false,
-          });
-        }
-      }
-    }
-
-    const cacheMissNames = companyNames.filter(n => !cachedMap.has(normalizeKey(n)));
-    const enrichedCompanies: any[] = Array.from(cachedMap.values()).filter(c =>
-      companyNames.map(normalizeKey).includes(normalizeKey(c.companyName))
-    );
-
-    logger.info(`[CF Enrich] Cache: ${cachedMap.size} hits, ${cacheMissNames.length} misses`);
+    const cacheMissNames = companyNames;
+    const enrichedCompanies: any[] = [];
 
     // 6. Enrich cache misses — single web search call, 5 companies max.
     //    Parallelism is handled by 3 concurrent client workers, each calling this route independently.
@@ -411,10 +383,10 @@ export async function POST(
     // 9. Mark claimed items as completed (or failed for ones that weren't enriched)
     const enrichedKeys = new Set(enrichedCompanies.map((c: any) => normalizeKey(c.companyName)));
     const completedIds = actualItems
-      .filter((q: any) => enrichedKeys.has(q.normalized_key) || cachedMap.has(q.normalized_key))
+      .filter((q: any) => enrichedKeys.has(q.normalized_key))
       .map((q: any) => q.id);
     const failedIds = actualItems
-      .filter((q: any) => !enrichedKeys.has(q.normalized_key) && !cachedMap.has(q.normalized_key))
+      .filter((q: any) => !enrichedKeys.has(q.normalized_key))
       .map((q: any) => q.id);
 
     if (completedIds.length > 0) {

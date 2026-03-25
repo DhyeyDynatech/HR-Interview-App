@@ -94,6 +94,7 @@ export interface ATSAnalysisRequest {
   resumes: { name: string; text: string }[];
   userId?: string;
   organizationId?: string;
+  interviewId?: string;
 }
 
 export interface ATSAnalysisResponse {
