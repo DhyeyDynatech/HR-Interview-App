@@ -131,6 +131,8 @@ export interface EnhancedCostSummary extends CostSummary {
   // GPT cost split: token cost vs web search call cost
   tokenCost: number;       // Pure LLM token cost (input + output)
   webSearchCost: number;   // Web search call fees ($0.01/call)
+  // Current month total cost (always Jan 1 – today, independent of filters)
+  monthlyTotalCost: number;
 }
 
 // Interface for API usage records

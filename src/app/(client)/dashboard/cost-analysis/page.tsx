@@ -98,8 +98,13 @@ function CostAnalysisPage() {
     sortBy: "date",
     sortOrder: "desc",
   });
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const now = new Date();
+  const [startDate, setStartDate] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`
+  );
+  const [endDate, setEndDate] = useState(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+  );
   const [selectedInterview, setSelectedInterview] = useState<string>("all");
   const [minCost, setMinCost] = useState("");
   const [maxCost, setMaxCost] = useState("");
@@ -133,7 +138,8 @@ function CostAnalysisPage() {
       const appliedFilters: CostFilters = {
         ...filters,
         startDate: startDate || undefined,
-        endDate: endDate || undefined,
+        // Append end-of-day time so records from the selected date are fully included
+        endDate: endDate ? `${endDate}T23:59:59` : undefined,
         interviewId: selectedInterview !== "all" ? selectedInterview : undefined,
         minCost: minCost ? parseFloat(minCost) : undefined,
         maxCost: maxCost ? parseFloat(maxCost) : undefined,
@@ -145,6 +151,7 @@ function CostAnalysisPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           organizationId: orgId,
+          userId: user?.id,
           filters: appliedFilters,
         }),
       });
@@ -695,6 +702,19 @@ function CostAnalysisPage() {
         {/* Summary Cards */}
         {summary && (
           <>
+            {/* Monthly Cost Banner */}
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-5 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-blue-600" />
+                <span className="text-sm font-medium text-blue-700">
+                  This Month ({new Date().toLocaleString("default", { month: "long", year: "numeric" })})
+                </span>
+              </div>
+              <span className="text-xl font-bold text-blue-700">
+                {formatCurrency(summary.monthlyTotalCost ?? 0)}
+              </span>
+            </div>
+
             {/* Row 1: Total Cost + GPT Cost + Voice Cost */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Card>

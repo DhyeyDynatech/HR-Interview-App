@@ -225,7 +225,8 @@ export class CostService {
    */
   static async getCostAnalyticsWithCategories(
     organizationId: string,
-    filters?: CostFilters
+    filters?: CostFilters,
+    userId?: string
   ): Promise<{ data: any[]; summary: EnhancedCostSummary }> {
     const supabase = getSupabaseClient();
 
@@ -252,7 +253,18 @@ export class CostService {
         model,
         request_id,
         metadata
-      `);
+      `)
+      // Filter at DB level covering all ID combinations:
+      // - org records saved with organization_id
+      // - user records saved with user_id (may differ from organization_id)
+      .or([
+        `organization_id.eq.${organizationId}`,
+        `user_id.eq.${organizationId}`,
+        ...(userId && userId !== organizationId ? [
+          `user_id.eq.${userId}`,
+          `organization_id.eq.${userId}`,
+        ] : []),
+      ].join(","));
 
     // Apply server-side sorting where possible
     if (sortBy === "date") {
@@ -278,23 +290,37 @@ export class CostService {
       query = query.eq("category", filters.category);
     }
 
-    const { data: usageRecords, error } = await query;
+    const { data: usageRecords, error } = await query.limit(10000);
 
     if (error) {
       console.error("Error fetching api_usage data:", error);
       // Fall back to legacy method if api_usage table doesn't exist or errors
-
       return this.getCostAnalytics(organizationId, filters) as any;
     }
 
-    // Filter by organization_id or user_id
-    const filteredRecords = (usageRecords || []).filter((r: any) => {
-      if (r.organization_id) {
-        return r.organization_id === organizationId;
-      }
+    const filteredRecords = usageRecords || [];
 
-      return r.user_id === organizationId;
-    });
+    // Always fetch current-month total independent of user filters
+    const now = new Date();
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const monthEnd = now.toISOString();
+    const { data: monthlyRecords } = await supabase
+      .from("api_usage")
+      .select("cost_usd")
+      .or([
+        `organization_id.eq.${organizationId}`,
+        `user_id.eq.${organizationId}`,
+        ...(userId && userId !== organizationId ? [
+          `user_id.eq.${userId}`,
+          `organization_id.eq.${userId}`,
+        ] : []),
+      ].join(","))
+      .gte("created_at", monthStart)
+      .lte("created_at", monthEnd)
+      .limit(10000);
+    const monthlyTotalCost = Number(
+      (monthlyRecords || []).reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0).toFixed(6)
+    );
 
     // Fetch interview names for records that have interview_id
     const interviewIds = Array.from(new Set(filteredRecords.map((r: any) => r.interview_id).filter(Boolean)));
@@ -459,6 +485,7 @@ export class CostService {
         ? Number((cfCost / cfResumes).toFixed(6))
         : 0,
       totalCFResumes: cfResumes,
+      monthlyTotalCost,
     };
 
     // Transform records into display format with interview details
@@ -497,13 +524,20 @@ export class CostService {
    * Check if api_usage table has data for this organization
    * Used to determine whether to use new or legacy cost calculation
    */
-  static async hasApiUsageData(organizationId: string): Promise<boolean> {
+  static async hasApiUsageData(organizationId: string, userId?: string): Promise<boolean> {
     const supabase = getSupabaseClient();
 
     const { count, error } = await supabase
       .from("api_usage")
       .select("*", { count: "exact", head: true })
-      .or(`organization_id.eq.${organizationId},user_id.eq.${organizationId}`)
+      .or([
+        `organization_id.eq.${organizationId}`,
+        `user_id.eq.${organizationId}`,
+        ...(userId && userId !== organizationId ? [
+          `user_id.eq.${userId}`,
+          `organization_id.eq.${userId}`,
+        ] : []),
+      ].join(","))
       .limit(1);
 
     if (error) {

@@ -28,7 +28,37 @@ export async function POST(req: Request, res: Response) {
     body.id,
   );
   
-  if (callDetails && callDetails.is_analysed) {
+  // If is_analysed but analytics is missing, regenerate using existing DB transcript
+  if (callDetails && callDetails.is_analysed && !callDetails.analytics) {
+    const existingDetails = callDetails.details;
+    const interviewId = callDetails.interview_id;
+    const existingTranscript = existingDetails?.transcript;
+
+    if (existingTranscript && interviewId) {
+      const result = await generateInterviewAnalytics({
+        callId: body.id,
+        interviewId,
+        transcript: existingTranscript,
+      });
+
+      if (result.analytics) {
+        await ResponseService.saveResponse(
+          { analytics: result.analytics },
+          body.id,
+        );
+        return NextResponse.json(
+          {
+            callResponse: existingDetails,
+            analytics: result.analytics,
+            duration: callDetails.duration || 0,
+          },
+          { status: 200 },
+        );
+      }
+    }
+  }
+
+  if (callDetails && callDetails.is_analysed && callDetails.analytics) {
     let callResponse = callDetails.details;
     let duration = callDetails.duration || 0;
 

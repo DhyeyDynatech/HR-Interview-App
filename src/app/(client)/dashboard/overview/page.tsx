@@ -54,6 +54,7 @@ function DashboardOverview() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           organizationId: user.organization_id || user.id,
+          userId: user.id,
           filters: { startDate: startOfMonth },
         }),
       });
@@ -64,6 +65,7 @@ function DashboardOverview() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           organizationId: user.organization_id || user.id,
+          userId: user.id,
           filters: { startDate: startOfToday, endDate: endOfToday },
         }),
       });
@@ -73,7 +75,7 @@ function DashboardOverview() {
 
       if (monthlyResponse.ok) {
         const monthlyResult = await monthlyResponse.json();
-        monthlyCost = monthlyResult.summary?.totalCost || 0;
+        monthlyCost = monthlyResult.summary?.monthlyTotalCost ?? monthlyResult.summary?.totalCost ?? 0;
       }
 
       if (todayResponse.ok) {
