@@ -5,16 +5,17 @@ const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const getAllInterviews = async (userId: string, userRole?: string) => {
+const getAllInterviews = async (userId: string, userRole?: string, organizationId?: string | null) => {
   try {
     let query = supabase
       .from("interview")
       .select(`*`);
 
-    // If user is admin, show all interviews. Otherwise, show only their own
-    if (userRole === 'admin') {
-      // Admin can see all interviews - no filter
+    if (organizationId) {
+      // All users in the same org see the same interviews
+      query = query.eq("organization_id", organizationId);
     } else {
+      // Fallback for accounts without an org: show only their own interviews
       query = query.eq("user_id", userId);
     }
 
@@ -126,12 +127,9 @@ const getAllRespondents = async (interviewId: string) => {
 };
 
 const createInterview = async (payload: any) => {
-  // Remove organization_id from payload if it exists
-  const { organization_id, ...interviewPayload } = payload;
-  
   const { error, data } = await supabase
     .from("interview")
-    .insert({ ...interviewPayload });
+    .insert({ ...payload });
   if (error) {
     console.log(error);
 

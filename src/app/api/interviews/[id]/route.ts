@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { InterviewService } from "@/services/interviews.service";
 import { logActivityFromRequest } from "@/lib/user-activity-log";
-import { verifyToken } from "@/lib/auth";
+import { verifyToken, getUserById } from "@/lib/auth";
 
 export async function PUT(
   request: NextRequest,
@@ -30,6 +30,18 @@ export async function PUT(
         { error: "Interview not found" },
         { status: 404 }
       );
+    }
+
+    // Verify caller belongs to the same org as the interview
+    if (userId) {
+      const currentUser = await getUserById(userId);
+      if (
+        currentUser?.organization_id &&
+        existingInterview.organization_id &&
+        currentUser.organization_id !== existingInterview.organization_id
+      ) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
     }
 
     // Update interview
@@ -105,6 +117,18 @@ export async function DELETE(
         { error: "Interview not found" },
         { status: 404 }
       );
+    }
+
+    // Verify caller belongs to the same org as the interview
+    if (userId) {
+      const currentUser = await getUserById(userId);
+      if (
+        currentUser?.organization_id &&
+        existingInterview.organization_id &&
+        currentUser.organization_id !== existingInterview.organization_id
+      ) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
     }
 
     // Store interview info before deletion for logging

@@ -41,7 +41,7 @@ export function InterviewProvider({ children }: InterviewProviderProps) {
 
     try {
       setInterviewsLoading(true);
-      const response = await InterviewService.getAllInterviews(user.id, user.role);
+      const response = await InterviewService.getAllInterviews(user.id, user.role, user.organization_id);
       setInterviews(response);
       console.log('✅ Interviews data set, count:', response.length);
       

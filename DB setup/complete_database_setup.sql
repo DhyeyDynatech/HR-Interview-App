@@ -607,14 +607,31 @@ GRANT ALL ON TABLE public.cf_company_mentions   TO anon, authenticated, service_
 GRANT ALL ON TABLE public.cf_enrich_queue       TO anon, authenticated, service_role;
 GRANT ALL ON TABLE public.company_cache         TO anon, authenticated, service_role;
 
--- Serial sequences
-GRANT ALL ON SEQUENCE public.interviewer_id_seq          TO anon, authenticated, service_role;
-GRANT ALL ON SEQUENCE public.interview_assignee_id_seq   TO anon, authenticated, service_role;
-GRANT ALL ON SEQUENCE public.response_id_seq             TO anon, authenticated, service_role;
-GRANT ALL ON SEQUENCE public.feedback_id_seq             TO anon, authenticated, service_role;
-GRANT ALL ON SEQUENCE public.user_activity_log_id_seq    TO anon, authenticated, service_role;
-GRANT ALL ON SEQUENCE public.api_usage_id_seq            TO anon, authenticated, service_role;
-GRANT ALL ON SEQUENCE public.ats_score_items_id_seq      TO anon, authenticated, service_role;
+-- Serial sequences (guarded: only grant if the sequence actually exists)
+DO $$
+DECLARE
+  seq TEXT;
+BEGIN
+  FOREACH seq IN ARRAY ARRAY[
+    'interviewer_id_seq',
+    'interview_assignee_id_seq',
+    'response_id_seq',
+    'feedback_id_seq',
+    'user_activity_log_id_seq',
+    'api_usage_id_seq',
+    'ats_score_items_id_seq'
+  ] LOOP
+    IF EXISTS (
+      SELECT 1 FROM pg_sequences
+      WHERE schemaname = 'public' AND sequencename = seq
+    ) THEN
+      EXECUTE format(
+        'GRANT ALL ON SEQUENCE public.%I TO anon, authenticated, service_role',
+        seq
+      );
+    END IF;
+  END LOOP;
+END$$;
 
 -- Default privileges for any future tables/sequences/functions
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL ON TABLES    TO postgres, anon, authenticated, service_role;

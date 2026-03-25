@@ -9,21 +9,15 @@ const supabase = createBrowserClient(
 );
 
 export const assigneeService = {
-  // Get all assignees - optionally filter by organization_id
+  // Get all assignees - always filtered by organization_id
   async getAllAssignees(organizationId?: string | null): Promise<InterviewAssignee[]> {
+    if (!organizationId) return [];
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from('interview_assignee')
         .select('*')
+        .eq('organization_id', organizationId)
         .order('created_at', { ascending: false });
-
-      // Only filter by organization_id if it's provided
-      if (organizationId) {
-        query = query.eq('organization_id', organizationId);
-      }
-      // If no organization_id, get ALL assignees (don't filter)
-
-      const { data, error } = await query;
 
       if (error) {
   throw error;
@@ -397,21 +391,16 @@ export const assigneeService = {
     }
   },
 
-  // Search assignees - optionally filter by organization_id
+  // Search assignees - always filtered by organization_id
   async searchAssignees(organizationId: string | null | undefined, searchTerm: string): Promise<InterviewAssignee[]> {
+    if (!organizationId) return [];
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from('interview_assignee')
         .select('*')
+        .eq('organization_id', organizationId)
         .or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
         .order('created_at', { ascending: false });
-
-      if (organizationId) {
-        query = query.eq('organization_id', organizationId);
-      }
-      // If no organization_id, get ALL matching assignees
-
-      const { data, error } = await query;
 
       if (error) {
   throw error;
@@ -424,21 +413,16 @@ export const assigneeService = {
     }
   },
 
-  // Get assignees by status - optionally filter by organization_id
+  // Get assignees by status - always filtered by organization_id
   async getAssigneesByStatus(organizationId: string | null | undefined, status: 'active' | 'inactive' | 'pending'): Promise<InterviewAssignee[]> {
+    if (!organizationId) return [];
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from('interview_assignee')
         .select('*')
+        .eq('organization_id', organizationId)
         .eq('status', status)
         .order('created_at', { ascending: false });
-
-      if (organizationId) {
-        query = query.eq('organization_id', organizationId);
-      }
-      // If no organization_id, get ALL assignees with this status
-
-      const { data, error } = await query;
 
       if (error) {
   throw error;
@@ -451,22 +435,17 @@ export const assigneeService = {
     }
   },
 
-  // Get unassigned assignees (no interview_id) - optionally filter by organization_id
+  // Get unassigned assignees (no interview_id) - always filtered by organization_id
   async getUnassignedAssignees(organizationId: string | null | undefined): Promise<InterviewAssignee[]> {
+    if (!organizationId) return [];
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from('interview_assignee')
         .select('*')
+        .eq('organization_id', organizationId)
         .is('interview_id', null)
         .eq('status', 'active')
         .order('created_at', { ascending: false });
-
-      if (organizationId) {
-        query = query.eq('organization_id', organizationId);
-      }
-      // If no organization_id, get ALL unassigned assignees
-
-      const { data, error } = await query;
 
       if (error) {
   throw error;

@@ -6,7 +6,7 @@ import * as UserService from '@/services/users.service';
 import { UpdateAssigneeRequest } from '@/types/user';
 import { logger } from '@/lib/logger';
 import { logActivityFromRequest } from '@/lib/user-activity-log';
-import { verifyToken } from '@/lib/auth';
+import { verifyToken, getUserById } from '@/lib/auth';
 
 export const dynamic = "force-dynamic";
 
@@ -121,6 +121,16 @@ export async function PUT(
     if (!existingAssignee) {
 
       return NextResponse.json({ error: 'Assignee not found' }, { status: 404 });
+    }
+
+    // Verify caller belongs to the same org as the assignee
+    const currentUser = await getUserById(userId);
+    if (
+      currentUser?.organization_id &&
+      existingAssignee.organization_id &&
+      currentUser.organization_id !== existingAssignee.organization_id
+    ) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     // If email is being updated, check for duplicates
@@ -273,6 +283,16 @@ export async function DELETE(
     if (!existingAssignee) {
 
       return NextResponse.json({ error: 'Assignee not found' }, { status: 404 });
+    }
+
+    // Verify caller belongs to the same org as the assignee
+    const currentUserForDelete = await getUserById(userId);
+    if (
+      currentUserForDelete?.organization_id &&
+      existingAssignee.organization_id &&
+      currentUserForDelete.organization_id !== existingAssignee.organization_id
+    ) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     // Store assignee info before deletion for logging
