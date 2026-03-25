@@ -50,13 +50,9 @@ import {
 } from "lucide-react";
 import {
   CostFilters,
-  CostSummary,
-  InterviewCostData,
   PRICING,
-  CategoryCostBreakdown,
   EnhancedCostSummary,
   UsageCategory,
-  CATEGORY_LABELS,
 } from "@/types/cost";
 import { PaginationControls } from "@/components/ui/pagination-controls";
 
@@ -98,13 +94,8 @@ function CostAnalysisPage() {
     sortBy: "date",
     sortOrder: "desc",
   });
-  const now = new Date();
-  const [startDate, setStartDate] = useState(
-    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`
-  );
-  const [endDate, setEndDate] = useState(
-    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
-  );
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [selectedInterview, setSelectedInterview] = useState<string>("all");
   const [minCost, setMinCost] = useState("");
   const [maxCost, setMaxCost] = useState("");
