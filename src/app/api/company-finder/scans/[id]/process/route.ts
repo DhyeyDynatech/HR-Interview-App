@@ -94,10 +94,12 @@ export async function POST(
     // Look up organization_id from the scan for usage tracking
     const { data: scanRow } = await supabase
       .from("company_finder_scan")
-      .select("organization_id")
+      .select("organization_id, name")
       .eq("id", scanId)
       .single();
     const organizationId: string | undefined = scanRow?.organization_id || undefined;
+    // Scans created by the ATS pipeline are named "__ats__{interviewId}" — used to tag cost records
+    const cfSource = scanRow?.name?.startsWith("__ats__") ? "ats_pipeline" : "standalone";
 
     // 2. Reset stale tasks — use updated_at (set when claiming) not created_at.
     //    Threshold: 7 min (> Vercel maxDuration=5min, so only orphaned tasks are reset).
@@ -240,7 +242,7 @@ export async function POST(
         outputTokens: extractUsage?.completion_tokens || 0,
         totalTokens: extractUsage?.total_tokens || 0,
         model: EXTRACT_MODEL,
-        metadata: { stage: "extraction", resumeCount: resumes.length, serverSide: true },
+        metadata: { stage: "extraction", resumeCount: resumes.length, serverSide: true, source: cfSource },
       }).catch(() => {});
 
       logger.info(`[CF Process] Extracted ${extractedNames.length} company mentions from ${resumes.length} resumes`);
@@ -436,7 +438,7 @@ export async function POST(
                 totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
                 model: CF_MODEL,
                 searchCalls,
-                metadata: { stage: "enrichment", companyCount: batchForResult.length, round: roundNum, serverSide: true },
+                metadata: { stage: "enrichment", companyCount: batchForResult.length, round: roundNum, serverSide: true, source: cfSource },
               }).catch(() => {});
             } else {
               logger.error(`[CF Process] Round ${roundNum} batch failed:`, result.reason?.message || String(result.reason));

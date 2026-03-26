@@ -105,10 +105,12 @@ export async function POST(
     // Look up organization_id from the scan for usage tracking
     const { data: scan } = await supabase
       .from("company_finder_scan")
-      .select("organization_id")
+      .select("organization_id, name")
       .eq("id", scanId)
       .single();
     const organizationId: string | undefined = scan?.organization_id || undefined;
+    // Scans created by the ATS pipeline are named "__ats__{interviewId}" — used to tag cost records
+    const cfSource = scan?.name?.startsWith("__ats__") ? "ats_pipeline" : "standalone";
 
     // 2. Reset stale enrich queue items (stuck > 8 min means the fn timed out)
     const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS).toISOString();
@@ -252,7 +254,7 @@ export async function POST(
           totalTokens: (enrichUsage?.input_tokens || 0) + (enrichUsage?.output_tokens || 0),
           model: CF_MODEL,
           searchCalls,
-          metadata: { stage: "enrichment", companyCount: cacheMissNames.length, serverSide: true },
+          metadata: { stage: "enrichment", companyCount: cacheMissNames.length, serverSide: true, source: cfSource },
         }).catch(() => {});
 
       } catch (enrichErr: any) {

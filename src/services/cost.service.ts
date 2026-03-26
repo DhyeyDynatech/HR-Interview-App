@@ -413,36 +413,34 @@ export class CostService {
       (sum: number, r: any) => sum + (r.metadata?.resumeCount || 0), 0
     );
 
-    // --- Company Finder costs (always run alongside ATS: extraction + enrichment + web search) ---
+    // --- Company Finder costs — split by source tag ---
+    // source="ats_pipeline": triggered from ATS flow (scan name starts with "__ats__")
+    // source="standalone":   run independently from Company Finder page
+    // Records without source (pre-fix legacy data) are treated as standalone
     const cfRecords = filteredRecords.filter((r: any) => r.category === "company_finder");
-    const cfExtractionRecords = cfRecords.filter((r: any) => r.metadata?.stage === "extraction");
-    const cfEnrichmentRecords = cfRecords.filter((r: any) => r.metadata?.stage === "enrichment");
-    // Legacy standalone-route records have resumeCount but no stage — treat as combined extraction
-    const cfLegacyRecords = cfRecords.filter((r: any) => !r.metadata?.stage);
+    const atsCFRecords = cfRecords.filter((r: any) => r.metadata?.source === "ats_pipeline");
+    const standaloneCFRecords = cfRecords.filter((r: any) => r.metadata?.source !== "ats_pipeline");
 
-    const cfExtractionCost = cfExtractionRecords.reduce(
-      (sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0
-    );
-    // Web search cost embedded in enrichment records (and legacy records)
-    const cfWebSearchCost =
-      [...cfEnrichmentRecords, ...cfLegacyRecords].reduce(
-        (sum: number, r: any) => sum + (Number(r.metadata?.searchCost) || 0), 0
-      );
-    const cfEnrichmentCost =
-      [...cfEnrichmentRecords, ...cfLegacyRecords].reduce(
-        (sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0
-      );
-    const cfCost = cfExtractionCost + cfEnrichmentCost;
+    // ATS-pipeline CF breakdown
+    const atsCFExtractionRecords = atsCFRecords.filter((r: any) => r.metadata?.stage === "extraction");
+    const atsCFEnrichmentRecords = atsCFRecords.filter((r: any) => r.metadata?.stage === "enrichment");
+    const atsCFExtractionCost = atsCFExtractionRecords.reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0);
+    const atsCFEnrichmentCost = atsCFEnrichmentRecords.reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0);
+    const atsCFWebSearchCost = atsCFEnrichmentRecords.reduce((sum: number, r: any) => sum + (Number(r.metadata?.searchCost) || 0), 0);
+    const atsCFResumes = atsCFExtractionRecords.reduce((sum: number, r: any) => sum + (r.metadata?.resumeCount || 0), 0);
 
-    // Resume count: extraction + legacy records carry resumeCount
-    const cfResumes = [...cfExtractionRecords, ...cfLegacyRecords].reduce(
-      (sum: number, r: any) => sum + (r.metadata?.resumeCount || 0), 0
-    );
+    // Standalone CF breakdown (extraction + legacy no-stage records carry resumeCount)
+    const standaloneCFExtractionRecords = standaloneCFRecords.filter((r: any) => r.metadata?.stage === "extraction" || !r.metadata?.stage);
+    const standaloneCFEnrichmentRecords = standaloneCFRecords.filter((r: any) => r.metadata?.stage === "enrichment");
+    const standaloneCFExtractionCost = standaloneCFExtractionRecords.reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0);
+    const standaloneCFEnrichmentCost = standaloneCFEnrichmentRecords.reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0);
+    const standaloneCFWebSearchCost = standaloneCFEnrichmentRecords.reduce((sum: number, r: any) => sum + (Number(r.metadata?.searchCost) || 0), 0);
+    const standaloneCFCost = standaloneCFExtractionCost + standaloneCFEnrichmentCost;
+    const standaloneCFResumes = standaloneCFExtractionRecords.reduce((sum: number, r: any) => sum + (r.metadata?.resumeCount || 0), 0);
 
-    // Combined ATS + CF cost (CF always runs after ATS: extraction + enrichment + web search)
-    // Denominator: prefer atsResumes (direct ATS count), fall back to cfResumes if ATS not tracked
-    const combinedATSCost = atsCost + cfCost;
-    const combinedATSResumes = atsResumes > 0 ? atsResumes : cfResumes;
+    // ATS avg = ATS scoring + ATS-pipeline CF only
+    const combinedATSCost = atsCost + atsCFExtractionCost + atsCFEnrichmentCost;
+    const combinedATSResumes = atsResumes > 0 ? atsResumes : atsCFResumes;
 
     const avgInterviewCost = interviewCycles > 0
       ? Number((interviewCost / interviewCycles).toFixed(6))
@@ -477,14 +475,19 @@ export class CostService {
       totalATSResumes: combinedATSResumes,
       atsBreakdown: {
         atsCost: Number(atsCost.toFixed(6)),
-        cfExtractionCost: Number(cfExtractionCost.toFixed(6)),
-        cfEnrichmentCost: Number(cfEnrichmentCost.toFixed(6)),
-        cfWebSearchCost: Number(cfWebSearchCost.toFixed(6)),
+        cfExtractionCost: Number(atsCFExtractionCost.toFixed(6)),
+        cfEnrichmentCost: Number(atsCFEnrichmentCost.toFixed(6)),
+        cfWebSearchCost: Number(atsCFWebSearchCost.toFixed(6)),
       },
-      avgCostPerResumeCF: cfResumes > 0
-        ? Number((cfCost / cfResumes).toFixed(6))
+      avgCostPerResumeCF: standaloneCFResumes > 0
+        ? Number((standaloneCFCost / standaloneCFResumes).toFixed(6))
         : 0,
-      totalCFResumes: cfResumes,
+      totalCFResumes: standaloneCFResumes,
+      cfBreakdown: {
+        cfExtractionCost: Number(standaloneCFExtractionCost.toFixed(6)),
+        cfEnrichmentCost: Number(standaloneCFEnrichmentCost.toFixed(6)),
+        cfWebSearchCost: Number(standaloneCFWebSearchCost.toFixed(6)),
+      },
       monthlyTotalCost,
     };
 

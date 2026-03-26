@@ -100,10 +100,12 @@ export async function POST(
     // Look up organization_id from the scan for usage tracking
     const { data: scan } = await supabase
       .from("company_finder_scan")
-      .select("organization_id")
+      .select("organization_id, name")
       .eq("id", scanId)
       .single();
     const organizationId: string | undefined = scan?.organization_id || undefined;
+    // Scans created by the ATS pipeline are named "__ats__{interviewId}" — used to tag cost records
+    const cfSource = scan?.name?.startsWith("__ats__") ? "ats_pipeline" : "standalone";
 
     // 2. Reset stale tasks (stuck in "processing" for >3 min means the fn timed out)
     const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
@@ -215,7 +217,7 @@ export async function POST(
         outputTokens: result.usage?.completion_tokens || 0,
         totalTokens: result.usage?.total_tokens || 0,
         model: EXTRACT_MODEL,
-        metadata: { stage: "extraction", resumeCount: resumes.length, serverSide: true },
+        metadata: { stage: "extraction", resumeCount: resumes.length, serverSide: true, source: cfSource },
       }).catch(() => {});
 
     } catch (extractErr: any) {

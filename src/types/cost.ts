@@ -123,11 +123,13 @@ export interface EnhancedCostSummary extends CostSummary {
   // Avg cost per resume for ATS Scoring + Company Finder combined
   avgCostPerResumeATS: number;
   totalATSResumes: number;
-  // Cost breakdown for ATS avg card (components of the per-resume cost)
+  // Cost breakdown for ATS avg card (ATS scoring + ATS-pipeline CF only)
   atsBreakdown: { atsCost: number; cfExtractionCost: number; cfEnrichmentCost: number; cfWebSearchCost: number };
   // Avg cost per resume for standalone Company Finder
   avgCostPerResumeCF: number;
   totalCFResumes: number;
+  // Cost breakdown for standalone CF avg card
+  cfBreakdown: { cfExtractionCost: number; cfEnrichmentCost: number; cfWebSearchCost: number };
   // GPT cost split: token cost vs web search call cost
   tokenCost: number;       // Pure LLM token cost (input + output)
   webSearchCost: number;   // Web search call fees ($0.01/call)

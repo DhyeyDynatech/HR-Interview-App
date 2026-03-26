@@ -827,15 +827,15 @@ function CostAnalysisPage() {
                   <p className="text-xs text-gray-500 mt-1">
                     {summary.totalCFResumes.toLocaleString()} resume{summary.totalCFResumes !== 1 ? "s" : ""} scanned
                   </p>
-                  {summary.atsBreakdown && summary.totalCFResumes > 0 && (
+                  {summary.cfBreakdown && summary.totalCFResumes > 0 && (
                     <div className="mt-2 space-y-0.5 text-[11px] text-gray-400 border-t pt-2">
                       <div className="flex justify-between">
                         <span>CF extraction</span>
-                        <span className="text-indigo-500">{formatCurrency(summary.atsBreakdown.cfExtractionCost)}</span>
+                        <span className="text-indigo-500">{formatCurrency(summary.cfBreakdown.cfExtractionCost)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>CF enrichment</span>
-                        <span className="text-indigo-500">{formatCurrency(summary.atsBreakdown.cfEnrichmentCost)}</span>
+                        <span className="text-indigo-500">{formatCurrency(summary.cfBreakdown.cfEnrichmentCost)}</span>
                       </div>
                     </div>
                   )}
