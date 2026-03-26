@@ -48,26 +48,22 @@ function DashboardOverview() {
       const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
       const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString();
 
+      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+      const authHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) authHeaders["Authorization"] = `Bearer ${token}`;
+
       // Fetch monthly cost
       const monthlyResponse = await fetch("/api/cost-analysis", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          organizationId: user.organization_id,
-          userId: user.id,
-          filters: { startDate: startOfMonth },
-        }),
+        headers: authHeaders,
+        body: JSON.stringify({ filters: { startDate: startOfMonth } }),
       });
 
       // Fetch today's cost
       const todayResponse = await fetch("/api/cost-analysis", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          organizationId: user.organization_id,
-          userId: user.id,
-          filters: { startDate: startOfToday, endDate: endOfToday },
-        }),
+        headers: authHeaders,
+        body: JSON.stringify({ filters: { startDate: startOfToday, endDate: endOfToday } }),
       });
 
       let monthlyCost = 0;

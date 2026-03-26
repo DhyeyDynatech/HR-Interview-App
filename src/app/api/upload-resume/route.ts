@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { put } from '@vercel/blob';
 import { createClient } from "@supabase/supabase-js";
 import { ApiUsageService } from "@/services/api-usage.service";
+import { verifyToken, getUserById } from "@/lib/auth";
+
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user || !user.organization_id) return null;
+  return { userId, organizationId: user.organization_id };
+}
 
 function getSupabaseClient() {
   return createClient(
@@ -54,11 +66,14 @@ async function extractTextFromResume(file: File): Promise<string | null> {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await extractAuth(request);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const formData = await request.formData();
     const file = formData.get("resume") as File;
-    const organizationId = formData.get("organizationId") as string | null;
-    const userId = formData.get("userId") as string | null;
 
     console.log('Resume upload API called, file received:', file ? `${file.name} (${file.size} bytes)` : 'null');
 
@@ -131,8 +146,8 @@ export async function POST(request: NextRequest) {
 
     // Track blob upload for cost analysis
     ApiUsageService.saveBlobUploadUsage({
-      organizationId: organizationId || undefined,
-      userId: userId || undefined,
+      organizationId: auth.organizationId,
+      userId: auth.userId,
       fileSizeBytes: file.size,
       fileType: 'resume',
       metadata: {

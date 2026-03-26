@@ -1,5 +1,5 @@
 import { getOpenAIClient, MODELS } from "@/lib/openai-client";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ResponseService } from "@/services/responses.service";
 import { InterviewService } from "@/services/interviews.service";
 import { ApiUsageService } from "@/services/api-usage.service";
@@ -8,8 +8,25 @@ import {
   createUserPrompt,
 } from "@/lib/prompts/generate-insights";
 import { logger } from "@/lib/logger";
+import { verifyToken, getUserById } from "@/lib/auth";
 
-export async function POST(req: Request, res: Response) {
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user || !user.organization_id) return null;
+  return { userId, organizationId: user.organization_id };
+}
+
+export async function POST(req: NextRequest) {
+  const auth = await extractAuth(req);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   logger.info("generate-insights request received");
   const body = await req.json();
 
@@ -36,14 +53,8 @@ export async function POST(req: Request, res: Response) {
     const baseCompletion = await openai.chat.completions.create({
       model: MODELS.GPT5_MINI,
       messages: [
-        {
-          role: "system",
-          content: SYSTEM_PROMPT,
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt },
       ],
       response_format: { type: "json_object" },
     });
@@ -57,13 +68,13 @@ export async function POST(req: Request, res: Response) {
       body.interviewId,
     );
 
-    // Track API usage with real token counts
+    // Cost tracking uses DB-sourced org/user from the interview record (most reliable)
     const usage = baseCompletion.usage;
     if (usage) {
       ApiUsageService.saveOpenAIUsage({
         interviewId: body.interviewId,
-        organizationId: interview.organization_id,
-        userId: interview.user_id,
+        organizationId: interview.organization_id || auth.organizationId,
+        userId: interview.user_id || auth.userId,
         category: "insights",
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
@@ -83,19 +94,9 @@ export async function POST(req: Request, res: Response) {
       outputTokens: usage?.completion_tokens,
     });
 
-    return NextResponse.json(
-      {
-        response: content,
-      },
-      { status: 200 },
-    );
+    return NextResponse.json({ response: content }, { status: 200 });
   } catch (error) {
     logger.error("Error generating insights");
-
-
-    return NextResponse.json(
-      { error: "internal server error" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "internal server error" }, { status: 500 });
   }
 }
