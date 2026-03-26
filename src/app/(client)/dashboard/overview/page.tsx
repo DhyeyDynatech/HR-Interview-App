@@ -41,7 +41,7 @@ function DashboardOverview() {
   };
 
   const fetchCostData = useCallback(async () => {
-    if (!user?.organization_id && !user?.id) return;
+    if (!user?.organization_id) return;
     try {
       const now = new Date();
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
