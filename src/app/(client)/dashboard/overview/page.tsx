@@ -53,7 +53,7 @@ function DashboardOverview() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          organizationId: user.organization_id || user.id,
+          organizationId: user.organization_id,
           userId: user.id,
           filters: { startDate: startOfMonth },
         }),
@@ -64,7 +64,7 @@ function DashboardOverview() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          organizationId: user.organization_id || user.id,
+          organizationId: user.organization_id,
           userId: user.id,
           filters: { startDate: startOfToday, endDate: endOfToday },
         }),

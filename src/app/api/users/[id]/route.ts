@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
 import * as UserService from "@/services/users.service";
+import { verifyToken, getUserById } from "@/lib/auth";
+
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user) return null;
+  return { userId, user };
+}
 
 export const dynamic = "force-dynamic";
 
@@ -10,23 +20,8 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-        },
-      }
-    );
-    
-    // Get current user
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -34,15 +29,12 @@ export async function GET(
     const userData = await UserService.getUserById(userId);
 
     if (!userData) {
-
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
-
 
     return NextResponse.json({ user: userData });
   } catch (error) {
     console.error("Error in GET /api/users/[id]:", error);
-
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -52,23 +44,8 @@ export async function PUT(
   { params }: { params: { id: string } }
 ) {
   try {
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-        },
-      }
-    );
-    
-    // Get current user
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -86,18 +63,15 @@ export async function PUT(
     });
 
     if (!updatedUser) {
-
       return NextResponse.json({ error: "Failed to update user" }, { status: 500 });
     }
 
     // Log activity
-    await UserService.logUserActivity(user.id, "user_updated", "user", userId, { updatedFields: Object.keys(body) });
-
+    await UserService.logUserActivity(auth.userId, "user_updated", "user", userId, { updatedFields: Object.keys(body) });
 
     return NextResponse.json({ user: updatedUser });
   } catch (error) {
     console.error("Error in PUT /api/users/[id]:", error);
-
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -107,23 +81,8 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-        },
-      }
-    );
-    
-    // Get current user
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -132,25 +91,21 @@ export async function DELETE(
     // Check if user exists
     const existingUser = await UserService.getUserById(userId);
     if (!existingUser) {
-
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
     const success = await UserService.deleteUser(userId);
 
     if (!success) {
-
       return NextResponse.json({ error: "Failed to delete user" }, { status: 500 });
     }
 
     // Log activity
-    await UserService.logUserActivity(user.id, "user_deleted", "user", userId, { email: existingUser.email });
-
+    await UserService.logUserActivity(auth.userId, "user_deleted", "user", userId, { email: existingUser.email });
 
     return NextResponse.json({ message: "User deleted successfully" });
   } catch (error) {
     console.error("Error in DELETE /api/users/[id]:", error);
-
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -396,7 +396,7 @@ export default function CompanyFinderView({
   // ---------- Upload all resume files for preview immediately after parsing ----------
 
   const uploadFilesForPreview = async (newResumes: CFParsedResume[]) => {
-    const orgId = user?.organization_id || user?.id;
+    const orgId = user?.organization_id;
     const toUpload = newResumes.filter((r) => !resumeUrls[r.name]);
     if (toUpload.length === 0) return;
 
@@ -614,7 +614,7 @@ export default function CompanyFinderView({
     allResumeNames: string[],
     currentResults: AggregatedCompany[]
   ) => {
-    const orgId = user?.organization_id || user?.id;
+    const orgId = user?.organization_id;
 
     // Upload all files in parallel for speed
     const uploadPromises = resumeList

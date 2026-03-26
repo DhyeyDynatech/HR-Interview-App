@@ -1,38 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
 import * as UserService from "@/services/users.service";
+import { verifyToken, getUserById } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user) return null;
+  return { userId, user };
+}
+
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-        },
-      }
-    );
-    
-    // Get current user
-    const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
-    if (authError || !authUser) {
-
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Get current user's data from database to check role
-    const currentUser = await UserService.getUserById(authUser.id);
-    if (!currentUser) {
-
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    const currentUser = auth.user;
 
     // Get organization ID from query params
     const { searchParams } = new URL(request.url);
@@ -73,23 +63,8 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-        },
-      }
-    );
-    
-    // Get current user
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -117,7 +92,7 @@ export async function POST(request: NextRequest) {
       organization_id,
       role: role || "viewer",
       status: status || "active"
-    }, user.id);
+    }, auth.userId);
 
     if (!newUser) {
 
@@ -125,7 +100,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Log activity
-    await UserService.logUserActivity(user.id, "user_created", "user", newUser.id, { email });
+    await UserService.logUserActivity(auth.userId, "user_created", "user", newUser.id, { email });
 
 
     return NextResponse.json({ user: newUser }, { status: 201 });

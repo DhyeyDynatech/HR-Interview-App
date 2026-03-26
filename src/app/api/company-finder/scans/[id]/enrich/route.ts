@@ -370,11 +370,14 @@ export async function POST(
     ].sort((a: any, b: any) => (b.frequency || 0) - (a.frequency || 0));
 
     // 8. Save merged results to scan
+    const allResumeNames = Array.from(newResumeNames);
     await supabase
       .from("company_finder_scan")
       .update({
         results: merged,
-        resume_names: Array.from(newResumeNames),
+        resume_names: allResumeNames,
+        resume_count: allResumeNames.length,
+        company_count: merged.length,
         resume_urls: urlUpdates,
         updated_at: new Date().toISOString(),
       })

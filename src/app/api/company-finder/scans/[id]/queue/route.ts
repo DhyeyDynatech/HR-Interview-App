@@ -19,8 +19,8 @@ async function extractAuth(request: NextRequest) {
   const { valid, userId } = verifyToken(token);
   if (!valid || !userId) return null;
   const user = await getUserById(userId);
-  if (!user) return null;
-  return { userId, organizationId: user.organization_id || user.id };
+  if (!user || !user.organization_id) return null;
+  return { userId, organizationId: user.organization_id };
 }
 
 /**

@@ -1,49 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
 import { assigneeService } from '@/services/users.service';
-import * as UserService from '@/services/users.service';
 import { CreateAssigneeRequest } from '@/types/user';
 import { logger } from '@/lib/logger';
 import { logActivityFromRequest } from '@/lib/user-activity-log';
-import { verifyToken } from '@/lib/auth';
+import { verifyToken, getUserById } from '@/lib/auth';
 
 export const dynamic = "force-dynamic";
 
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user) return null;
+  return { userId, organizationId: user.organization_id, user };
+}
+
 export async function GET(request: NextRequest) {
   try {
-    const cookieStore = cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-        },
-      }
-    );
-    
-    // Get current user and organization
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
-    const organizationId = searchParams.get('organizationId');
+    const organizationId = searchParams.get('organizationId') || auth.organizationId || undefined;
     const search = searchParams.get('search');
     const status = searchParams.get('status') as 'active' | 'inactive' | 'pending' | null;
 
     let assignees;
     if (search) {
-      assignees = await assigneeService.searchAssignees(organizationId || undefined, search);
+      assignees = await assigneeService.searchAssignees(organizationId, search);
     } else if (status) {
-      assignees = await assigneeService.getAssigneesByStatus(organizationId || undefined, status);
+      assignees = await assigneeService.getAssigneesByStatus(organizationId, status);
     } else {
-      assignees = await assigneeService.getAllAssignees(organizationId || undefined);
+      assignees = await assigneeService.getAllAssignees(organizationId);
     }
 
 
@@ -60,49 +53,11 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Try Bearer token authentication first (used by the app)
-    const authHeader = request.headers.get("authorization");
-    let userId: string | null = null;
-    
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const token = authHeader.substring(7);
-      const { valid, userId: tokenUserId } = verifyToken(token);
-      if (valid && tokenUserId) {
-        userId = tokenUserId;
-      }
-    }
-    
-    // If Bearer token not found, try Supabase auth cookies
-    if (!userId) {
-      try {
-        const cookieStore = cookies();
-        const supabase = createServerClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          {
-            cookies: {
-              get(name: string) {
-                return cookieStore.get(name)?.value;
-              },
-            },
-          }
-        );
-        
-        const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
-        if (!authError && authUser) {
-          // Map Supabase auth user ID to user table ID
-          const currentUser = await UserService.getUserById(authUser.id);
-          userId = currentUser?.id || authUser.id;
-        }
-      } catch (error) {
-        console.error("Error with Supabase auth:", error);
-      }
-    }
-    
-    // If still no user ID, return unauthorized
-    if (!userId) {
+    const auth = await extractAuth(request);
+    if (!auth) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    const userId = auth.userId;
 
     const body: CreateAssigneeRequest = await request.json();
     

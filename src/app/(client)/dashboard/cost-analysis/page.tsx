@@ -103,8 +103,7 @@ function CostAnalysisPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  // Use organization_id if available, otherwise fall back to user id
-  const orgId = user?.organization_id || user?.id;
+  const orgId = user?.organization_id;
 
   const toggleRowExpansion = (id: number) => {
     setExpandedRows(prev => {

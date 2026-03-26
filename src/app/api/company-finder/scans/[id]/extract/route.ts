@@ -361,11 +361,14 @@ export async function POST(
           ...cachedResultObjects,
         ].sort((a: any, b: any) => (b.frequency || 0) - (a.frequency || 0));
 
+        const allNames = Array.from(existingNames);
         await supabase
           .from("company_finder_scan")
           .update({
             results: merged,
-            resume_names: Array.from(existingNames),
+            resume_names: allNames,
+            resume_count: allNames.length,
+            company_count: merged.length,
             resume_urls: urlUpdates,
             updated_at: new Date().toISOString(),
           })

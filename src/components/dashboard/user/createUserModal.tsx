@@ -129,7 +129,7 @@ export function CreateAssigneeModal({
       const imageFormData = new FormData();
       imageFormData.append("userImage", userImage);
       // Include organization context for cost tracking
-      const imgOrgId = user?.organization_id || user?.id;
+      const imgOrgId = user?.organization_id;
       if (imgOrgId) {
         imageFormData.append("organizationId", imgOrgId);
       }
@@ -160,7 +160,7 @@ export function CreateAssigneeModal({
       const resumeFormData = new FormData();
       resumeFormData.append("resume", resumeFile);
       // Include organization context for cost tracking and dedup
-      const orgId = user?.organization_id || user?.id;
+      const orgId = user?.organization_id;
       if (orgId) {
         resumeFormData.append("organizationId", orgId);
       }

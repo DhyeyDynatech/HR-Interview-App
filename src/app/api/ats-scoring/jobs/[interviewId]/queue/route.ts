@@ -19,9 +19,9 @@ async function extractAuth(request: NextRequest) {
   if (!valid || !userId) return null;
 
   const user = await getUserById(userId);
-  if (!user) return null;
+  if (!user || !user.organization_id) return null;
 
-  return { userId, organizationId: user.organization_id || user.id, realOrgId: user.organization_id || null };
+  return { userId, organizationId: user.organization_id };
 }
 
 export async function POST(
@@ -71,7 +71,7 @@ export async function POST(
         .insert({
           interview_id: interviewId,
           manager_id: auth.userId,
-          organization_id: auth.realOrgId,
+          organization_id: auth.organizationId,
           status: "processing",
           total_items: resumes.length,
           processed_items: 0,

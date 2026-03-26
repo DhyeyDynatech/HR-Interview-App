@@ -29,7 +29,9 @@ export default function CompanyFinderPage() {
         // Filter out internal ATS-linked scans
         const userScans = scans.filter((s) => !s.name.startsWith("__ats__"));
         if (userScans.length > 0) {
-          setScanId(userScans[0].id);
+          // Pick the scan with the most resumes (falls back to newest if all are empty)
+          const best = userScans.reduce((a, b) => (b.resumeCount > a.resumeCount ? b : a));
+          setScanId(best.id);
         } else {
           const scan = await CompanyFinderService.createScan(DEFAULT_SCAN_NAME);
           setScanId(scan.id);

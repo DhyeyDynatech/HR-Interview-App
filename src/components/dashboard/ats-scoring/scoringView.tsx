@@ -886,7 +886,7 @@ export default function ScoringView({
   // ---------- Upload all resume files for preview immediately after parsing ----------
 
   const uploadFilesForPreview = async (newResumes: ParsedResume[]) => {
-    const orgId = user?.organization_id || user?.id;
+    const orgId = user?.organization_id;
     // Only start uploads for files not already tracked (in-flight or done)
     const toUpload = newResumes.filter((r) => !uploadPromisesRef.current.has(r.name));
     if (toUpload.length === 0) return;
@@ -1296,7 +1296,7 @@ export default function ScoringView({
           try {
             const resumeFormData = new FormData();
             resumeFormData.append("resume", matchingResume.file);
-            const orgId = user?.organization_id || user?.id;
+            const orgId = user?.organization_id;
             if (orgId) {
               resumeFormData.append("organizationId", orgId);
             }

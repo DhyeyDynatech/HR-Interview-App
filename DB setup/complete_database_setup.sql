@@ -283,16 +283,18 @@ COMMENT ON TABLE public.api_usage IS 'Tracks API usage and costs for OpenAI, Ret
 --  6. ATS SCORING TABLES
 -- ────────────────────────────────────────────────────────────
 
--- ats_job_data: one row per interview — stores JD text + aggregate stats.
+-- ats_job_data: one row per (interview, org) — stores JD text + aggregate stats.
 CREATE TABLE IF NOT EXISTS public.ats_job_data (
-  interview_id    TEXT        PRIMARY KEY,
-  organization_id TEXT,
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  interview_id    TEXT        NOT NULL,
+  organization_id TEXT        NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
   jd_text         TEXT,
   jd_filename     TEXT,
   result_count    INTEGER     DEFAULT 0,
-  avg_score       NUMERIC(5, 2) DEFAULT 0
+  avg_score       NUMERIC(5, 2) DEFAULT 0,
+  CONSTRAINT unique_ats_job UNIQUE (interview_id, organization_id)
 );
 
 -- ats_batch_jobs: one batch job per ATS scoring run (one per interview per invocation).
@@ -347,7 +349,7 @@ CREATE TABLE IF NOT EXISTS public.ats_score_items (
   experience_depth_analysis JSONB,  -- { parameters: [{parameter, rating, observation}], keyObservations[] }
   swot_analysis             JSONB,  -- { strengths[], weaknesses[], opportunities[], risks[], finalHiringInsight }
   experience_match          BOOLEAN,
-  CONSTRAINT ats_score_items_interview_resume_unique UNIQUE (interview_id, resume_name)
+  CONSTRAINT ats_score_items_interview_resume_unique UNIQUE (interview_id, organization_id, resume_name)
 );
 
 
@@ -366,7 +368,8 @@ CREATE TABLE IF NOT EXISTS public.company_finder_scan (
   resume_urls     JSONB       DEFAULT '{}'::jsonb,   -- { resumeName: url }
   results         JSONB       DEFAULT '[]'::jsonb,   -- AggregatedCompany[]
   company_count   INTEGER     DEFAULT 0,
-  resume_count    INTEGER     DEFAULT 0
+  resume_count    INTEGER     DEFAULT 0,
+  CONSTRAINT idx_cf_scan_org_name UNIQUE (organization_id, name)
 );
 
 -- cf_batch_jobs: one batch job per CF scan processing run.
