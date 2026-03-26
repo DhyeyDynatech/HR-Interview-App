@@ -137,7 +137,7 @@ export async function POST(
     // 2. Get the JD for this interview
     const { data: jobData, error: jdError } = await supabase
       .from("ats_job_data")
-      .select("jd_text, organization_id")
+      .select("jd_text, organization_id, interview:interview_id(user_id)")
       .eq("interview_id", interviewId)
       .single();
 
@@ -249,6 +249,7 @@ export async function POST(
       if (batchUsage) {
         ApiUsageService.saveOpenAIUsage({
           organizationId: jobData.organization_id,
+          userId: (jobData.interview as any)?.user_id || undefined,
           interviewId,
           category: "ats_scoring",
           inputTokens: batchUsage.prompt_tokens,

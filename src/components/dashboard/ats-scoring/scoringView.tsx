@@ -202,7 +202,10 @@ export default function ScoringView({
           try {
             const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
             if (stored && !isRunningCFRef.current) {
-              const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+              const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+              const restoredUrls: Record<string, string> = {};
+              for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
+              if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
               if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
             }
           } catch { /* ignore */ }
@@ -406,7 +409,10 @@ export default function ScoringView({
             try {
               const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
               if (stored && !isRunningCFRef.current) {
-                const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+                const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+                const restoredUrls: Record<string, string> = {};
+                for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
+                if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
                 if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
               }
             } catch { /* ignore */ }
@@ -426,7 +432,10 @@ export default function ScoringView({
           try {
             const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
             if (stored && !isRunningCFRef.current) {
-              const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+              const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+              const restoredUrls: Record<string, string> = {};
+              for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
+              if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
               if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
             }
           } catch { /* ignore */ }
@@ -603,8 +612,11 @@ export default function ScoringView({
     try {
       const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
       if (!stored) return;
-      const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+      const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
       if (storedResumes.length === 0) return;
+      const restoredUrls: Record<string, string> = {};
+      for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
+      if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
       cfAutoRestartAttempted.current = true;
       setCompanyAnalyzing(true);
       runCompanyFinder(storedResumes as ParsedResume[]);
@@ -887,8 +899,10 @@ export default function ScoringView({
 
   const uploadFilesForPreview = async (newResumes: ParsedResume[]) => {
     const orgId = user?.organization_id;
-    // Only start uploads for files not already tracked (in-flight or done)
-    const toUpload = newResumes.filter((r) => !uploadPromisesRef.current.has(r.name));
+    // Skip resumes already tracked (in-flight/done) OR already stored in DB (resumeUrlMap)
+    const toUpload = newResumes.filter(
+      (r) => !uploadPromisesRef.current.has(r.name) && !resumeUrlMap[r.name] && !previewUrlsRef.current[r.name]
+    );
     if (toUpload.length === 0) return;
 
     setUploadingFiles((prev) => {
@@ -1014,7 +1028,7 @@ export default function ScoringView({
       try {
         sessionStorage.setItem(
           `cf_resumes_${interviewId}`,
-          JSON.stringify(newResumes.map((r) => ({ name: r.name, text: r.text })))
+          JSON.stringify(newResumes.map((r) => ({ name: r.name, text: r.text, url: previewUrlsRef.current[r.name] || undefined })))
         );
       } catch { /* ignore */ }
       setAnalyzeProgress({ current: 0, total: newResumes.length });
@@ -1114,7 +1128,10 @@ export default function ScoringView({
          try {
            const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
            if (stored) {
-             const storedResumes = JSON.parse(stored) as { name: string; text: string }[];
+             const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+             const restoredUrls: Record<string, string> = {};
+             for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
+             if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
              if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
            }
          } catch { /* ignore */ }
@@ -1403,7 +1420,7 @@ export default function ScoringView({
       // Persist resume texts so we can auto-restart if the page is refreshed mid-run
       try {
         sessionStorage.setItem(cfStorageKey, JSON.stringify(
-          resumesToScan.map((r) => ({ name: r.name, text: r.text }))
+          resumesToScan.map((r) => ({ name: r.name, text: r.text, url: previewUrlsRef.current[r.name] || undefined }))
         ));
       } catch { /* ignore storage errors */ }
 

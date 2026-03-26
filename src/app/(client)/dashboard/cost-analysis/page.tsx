@@ -136,14 +136,14 @@ function CostAnalysisPage() {
         category: selectedCategory !== "all" ? selectedCategory as UsageCategory : undefined,
       };
 
+      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
       const response = await fetch("/api/cost-analysis", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          organizationId: orgId,
-          userId: user?.id,
-          filters: appliedFilters,
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ filters: appliedFilters }),
       });
 
       if (response.ok) {
@@ -179,9 +179,10 @@ function CostAnalysisPage() {
     if (!orgId) return;
 
     try {
-      const response = await fetch(
-        `/api/cost-analysis?organizationId=${orgId}`
-      );
+      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+      const response = await fetch("/api/cost-analysis", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (response.ok) {
         const result = await response.json();
         setInterviews(result.interviews || []);
