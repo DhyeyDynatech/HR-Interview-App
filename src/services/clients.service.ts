@@ -48,7 +48,7 @@ const getClientById = async (
       return data ? data[0] : null;
     }
 
-    if (data.length > 0 && data[0].organization_id !== organization_id) {
+    if (data.length > 0 && organization_id && data[0].organization_id !== organization_id) {
       const { error, data } = await supabase
         .from("user")
         .update({ organization_id: organization_id })
