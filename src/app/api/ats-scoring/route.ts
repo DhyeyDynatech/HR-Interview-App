@@ -1,5 +1,5 @@
 import { getOpenAIClient, MODELS } from "@/lib/openai-client";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   ATS_SYSTEM_PROMPT,
   generateATSScoringPrompt,
@@ -7,6 +7,7 @@ import {
 import { logger } from "@/lib/logger";
 import { ApiUsageService } from "@/services/api-usage.service";
 import { ATSAnalysisRequest, ATSAnalysisResponse } from "@/types/ats-scoring";
+import { verifyToken, getUserById } from "@/lib/auth";
 
 export const maxDuration = 300;
 
@@ -15,7 +16,22 @@ const MAX_JD_LENGTH = 50_000; // ~50K chars
 const MAX_RESUME_TEXT_LENGTH = 100_000; // ~100K chars per resume
 const OPENAI_TIMEOUT_MS = 240_000; // 4 minutes
 
-export async function POST(req: Request) {
+async function extractAuth(request: NextRequest) {
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  const { valid, userId } = verifyToken(token);
+  if (!valid || !userId) return null;
+  const user = await getUserById(userId);
+  if (!user || !user.organization_id) return null;
+  return { userId, organizationId: user.organization_id };
+}
+
+export async function POST(req: NextRequest) {
+  const auth = await extractAuth(req);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   logger.info("ats-scoring request received");
 
   let body: ATSAnalysisRequest;
@@ -140,8 +156,8 @@ export async function POST(req: Request) {
     const usage = completion.usage;
     if (usage) {
       ApiUsageService.saveOpenAIUsage({
-        userId: body.userId,
-        organizationId: body.organizationId,
+        userId: auth.userId,
+        organizationId: auth.organizationId,
         interviewId: body.interviewId,
         category: "ats_scoring",
         inputTokens: usage.prompt_tokens,
