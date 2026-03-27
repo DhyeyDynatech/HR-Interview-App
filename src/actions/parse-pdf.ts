@@ -115,12 +115,13 @@ async function extractImagesFromPdf(uint8Array: Uint8Array): Promise<string[]> {
     const ops = await page.getOperatorList();
 
     // Collect unique image object names referenced on this page
-    const imgNames = new Set<string>();
+    const imgNamesSet = new Set<string>();
     for (let i = 0; i < ops.fnArray.length; i++) {
       if (ops.fnArray[i] === OPS.paintImageXObject) {
-        imgNames.add(ops.argsArray[i][0] as string);
+        imgNamesSet.add(ops.argsArray[i][0] as string);
       }
     }
+    const imgNames = Array.from(imgNamesSet);
 
     for (const name of imgNames) {
       try {
