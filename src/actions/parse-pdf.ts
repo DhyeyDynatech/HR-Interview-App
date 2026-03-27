@@ -187,7 +187,7 @@ async function extractImagesFromDocx(buffer: Buffer): Promise<string[]> {
         }
         return { src: "" };
       },
-    }
+    } as any
   );
 
   return base64Images;
