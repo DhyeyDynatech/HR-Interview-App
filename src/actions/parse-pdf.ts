@@ -176,7 +176,7 @@ async function extractImagesFromDocx(buffer: Buffer): Promise<string[]> {
   await mammoth.convertToHtml(
     { buffer },
     {
-      convertImage: mammoth.images.inline(async (element: any) => {
+      convertImage: async (element: any) => {
         if (base64Images.length >= 3) return { src: "" };
         try {
           const imgBuffer = Buffer.from(await element.read());
@@ -186,7 +186,7 @@ async function extractImagesFromDocx(buffer: Buffer): Promise<string[]> {
           // Skip images that sharp can't process
         }
         return { src: "" };
-      }),
+      },
     }
   );
 
