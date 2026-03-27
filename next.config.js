@@ -36,7 +36,7 @@ const nextConfig = {
     swcTraceProfiling: false,
     // Fix ESM module handling for Supabase
     esmExternals: 'loose',
-    serverComponentsExternalPackages: ['mammoth', 'word-extractor', 'pdfjs-dist'],
+    serverComponentsExternalPackages: ['mammoth', 'word-extractor', 'pdfjs-dist', 'canvas', 'mupdf'],
   },
   webpack: (webpackConfig, { webpack, isServer }) => {
     // Remove node: from import specifiers for compatibility

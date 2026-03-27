@@ -81,82 +81,34 @@ async function parseDocFile(file: File): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// OCR helpers — image extraction (no canvas required)
+// OCR helpers — PDF page rendering via MuPDF (WASM)
 // ---------------------------------------------------------------------------
 
 /**
- * Extracts embedded raster images from a PDF using pdfjs-dist operator list.
- * Works without a canvas — reads the raw pixel data already decoded by pdfjs,
- * then re-encodes to JPEG via sharp (already in the project).
- * Returns up to 3 JPEG base64 strings (one per unique image per page).
+ * Renders PDF pages to JPEG images using MuPDF (pure WASM, no workers).
+ * Handles all PDF image compression formats (JPEG, JPEG2000, JBIG2, CCITT, etc.)
+ * without the pdfjs LoopbackPort / WASM-memory detachment issues.
+ * Returns up to 3 JPEG base64 strings (one per page).
  */
-async function extractImagesFromPdf(uint8Array: Uint8Array): Promise<string[]> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const sharp = (await import("sharp")).default;
+async function extractImagesFromPdf(data: Uint8Array): Promise<string[]> {
   const base64Images: string[] = [];
 
-  const doc = await pdfjs.getDocument({
-    data: uint8Array,
-    disableWorker: true,
-    verbosity: 0,
-  } as any).promise;
+  try {
+    const mupdf = (await import("mupdf")).default;
 
-  const OPS = (pdfjs as any).OPS;
-  if (!OPS) {
-    console.warn("[OCR] pdfjs OPS not available — cannot extract images");
-    return base64Images;
-  }
+    const doc = mupdf.Document.openDocument(data, "application/pdf");
+    const pageCount = Math.min(doc.countPages(), 3);
 
-  // Process at most 3 pages to keep token usage bounded
-  const pageCount = Math.min(doc.numPages, 3);
-
-  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-    const page = await doc.getPage(pageNum);
-    const ops = await page.getOperatorList();
-
-    // Collect unique image object names referenced on this page
-    const imgNamesSet = new Set<string>();
-    for (let i = 0; i < ops.fnArray.length; i++) {
-      if (ops.fnArray[i] === OPS.paintImageXObject) {
-        imgNamesSet.add(ops.argsArray[i][0] as string);
-      }
+    for (let i = 0; i < pageCount; i++) {
+      const page = doc.loadPage(i);
+      // 2x scale matrix for better OCR quality
+      const matrix = mupdf.Matrix.scale(2, 2);
+      const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false);
+      const jpegBytes = pixmap.asJPEG(85, false);
+      base64Images.push(Buffer.from(jpegBytes).toString("base64"));
     }
-    const imgNames = Array.from(imgNamesSet);
-
-    for (const name of imgNames) {
-      try {
-        // page.objs.get fires the callback once the image object is ready
-        const img: any = await Promise.race([
-          new Promise<any>((resolve) => {
-            page.objs.get(name, (imgData: any) => resolve(imgData));
-          }),
-          // Safety timeout — skip if image doesn't load within 8 s
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
-        ]);
-
-        if (!img?.data || img.width <= 0 || img.height <= 0) continue;
-
-        const channels = Math.round(img.data.length / (img.width * img.height));
-        if (channels < 1 || channels > 4) continue;
-
-        const jpegBuffer = await sharp(Buffer.from(img.data), {
-          raw: {
-            width: img.width,
-            height: img.height,
-            channels: channels as 1 | 2 | 3 | 4,
-          },
-        })
-          .jpeg({ quality: 85 })
-          .toBuffer();
-
-        base64Images.push(jpegBuffer.toString("base64"));
-
-        // Cap at 3 images total to limit token usage
-        if (base64Images.length >= 3) return base64Images;
-      } catch (imgErr) {
-        console.warn(`[OCR] Could not extract image "${name}" from PDF page ${pageNum}:`, imgErr);
-      }
-    }
+  } catch (e) {
+    console.error("[Parse] MuPDF rendering failed:", e);
   }
 
   return base64Images;
@@ -237,7 +189,7 @@ async function extractTextViaVisionOCR(base64Images: string[]): Promise<{
         ],
       },
     ],
-    max_tokens: 4000,
+    max_completion_tokens: 4000,
   });
 
   const text = response.choices[0]?.message?.content || "";
@@ -324,6 +276,8 @@ export async function parsePdf(formData: FormData) {
     } else if (isPdfFile(file)) {
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
+      // Preserve a copy before pdfjs — its WASM decoders detach the original ArrayBuffer.
+      const uint8ArrayForOCR = new Uint8Array(arrayBuffer.slice(0));
 
       // Primary: pdfjs-dist
       try {
@@ -349,11 +303,11 @@ export async function parsePdf(formData: FormData) {
         console.error(`[Parse] pdfjs-dist failed for ${file.name}:`, pdfErr.message);
       }
 
-      // Fallback: pdf-parse
+      // Fallback: pdf-parse (import via lib path to avoid the test/data ENOENT bug)
       if (!fullText.trim()) {
         try {
           console.log(`[Parse] pdfjs returned empty for ${file.name}, trying pdf-parse fallback`);
-          const pdfParse = (await import("pdf-parse")).default;
+          const pdfParse = (await import("pdf-parse/lib/pdf-parse.js" as any)).default;
           const parsed = await pdfParse(Buffer.from(uint8Array));
           fullText = parsed.text || "";
         } catch (fallbackErr: any) {
@@ -365,7 +319,7 @@ export async function parsePdf(formData: FormData) {
       if (fullText.trim().length < OCR_MIN_TEXT_LENGTH) {
         console.log(`[Parse] Text too short for ${file.name} (${fullText.trim().length} chars), attempting OCR`);
         try {
-          const images = await extractImagesFromPdf(uint8Array);
+          const images = await extractImagesFromPdf(uint8ArrayForOCR);
           if (images.length > 0) {
             const ocr = await extractTextViaVisionOCR(images);
             fullText = ocr.text;

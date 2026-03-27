@@ -311,6 +311,8 @@ export default function CompanyFinderView({
         try {
           const formData = new FormData();
           formData.append("file", file);
+          if (user?.organization_id) formData.append("organizationId", user.organization_id);
+          if (user?.id) formData.append("userId", user.id);
           const result = await parsePdf(formData);
 
           if (result.success && result.text && result.text.trim().length > 0) {

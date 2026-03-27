@@ -1016,6 +1016,7 @@ function CostAnalysisPage() {
                     <SelectItem value="blob_upload">File Upload</SelectItem>
                     <SelectItem value="ats_scoring">ATS Scoring</SelectItem>
                     <SelectItem value="company_finder">Company Finder</SelectItem>
+                    <SelectItem value="resume_parsing">Resume Parsing (OCR)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
