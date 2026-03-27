@@ -66,6 +66,7 @@ const CATEGORY_ICONS: Record<UsageCategory, React.ReactNode> = {
   blob_upload: <Upload className="h-4 w-4" />,
   ats_scoring: <ScanSearch className="h-4 w-4" />,
   company_finder: <ScanSearch className="h-4 w-4" />,
+  resume_parsing: <FileImage className="h-4 w-4" />,
 };
 
 // Category color mapping
@@ -78,6 +79,7 @@ const CATEGORY_COLORS: Record<UsageCategory, string> = {
   blob_upload: "bg-indigo-100 text-indigo-700",
   ats_scoring: "bg-emerald-100 text-emerald-700",
   company_finder: "bg-cyan-100 text-cyan-700",
+  resume_parsing: "bg-rose-100 text-rose-700",
 };
 
 function CostAnalysisPage() {
