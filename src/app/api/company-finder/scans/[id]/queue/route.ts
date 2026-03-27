@@ -64,6 +64,13 @@ export async function POST(
         .update({ total_items: existingJob.total_items + resumes.length, updated_at: new Date().toISOString() })
         .eq("id", jobId);
     } else {
+      // Clean up leftover enrich queue items from previous interrupted runs so the
+      // new job starts from a clean slate and doesn't re-process stale items.
+      await supabase
+        .from("cf_enrich_queue")
+        .delete()
+        .eq("scan_id", scanId);
+
       // Create new job
       const { data: job, error: jobError } = await supabase
         .from("cf_batch_jobs")

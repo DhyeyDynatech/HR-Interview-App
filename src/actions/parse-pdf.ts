@@ -115,32 +115,35 @@ async function extractImagesFromPdf(data: Uint8Array): Promise<string[]> {
 }
 
 /**
- * Extracts embedded images from a DOCX file.
- * DOCX files are ZIP archives; mammoth's convertImage hook gives us the raw
- * image bytes for every image in the document without needing a ZIP library.
+ * Extracts embedded images from a DOCX file by reading it as a ZIP archive.
+ * DOCX files store all media in the word/media/ folder. This avoids using
+ * mammoth's convertToHtml which crashes on unknown node types in some DOCX files.
  * Returns up to 3 JPEG base64 strings.
  */
 async function extractImagesFromDocx(buffer: Buffer): Promise<string[]> {
-  const mammoth = (await import("mammoth")).default;
+  const AdmZip = (await import("adm-zip")).default;
   const sharp = (await import("sharp")).default;
   const base64Images: string[] = [];
 
-  await mammoth.convertToHtml(
-    { buffer },
-    {
-      convertImage: async (element: any) => {
-        if (base64Images.length >= 3) return { src: "" };
-        try {
-          const imgBuffer = Buffer.from(await element.read());
-          const jpegBuffer = await sharp(imgBuffer).jpeg({ quality: 85 }).toBuffer();
-          base64Images.push(jpegBuffer.toString("base64"));
-        } catch {
-          // Skip images that sharp can't process
-        }
-        return { src: "" };
-      },
-    } as any
-  );
+  try {
+    const zip = new AdmZip(buffer);
+    const mediaEntries = zip.getEntries().filter(
+      (e) => e.entryName.startsWith("word/media/") && !e.isDirectory
+    );
+
+    for (const entry of mediaEntries) {
+      if (base64Images.length >= 3) break;
+      try {
+        const imgBuffer = entry.getData();
+        const jpegBuffer = await sharp(imgBuffer).jpeg({ quality: 85 }).toBuffer();
+        base64Images.push(jpegBuffer.toString("base64"));
+      } catch {
+        // Skip entries sharp can't process (e.g. WMF, EMF vector graphics)
+      }
+    }
+  } catch (e) {
+    console.error("[Parse] DOCX image extraction failed:", e);
+  }
 
   return base64Images;
 }
@@ -164,8 +167,8 @@ async function extractTextViaVisionOCR(base64Images: string[]): Promise<{
     throw new Error("No images available for OCR");
   }
 
-  const { getOpenAIClientDirect, DIRECT_MODELS } = await import("@/lib/openai-client");
-  const openai = getOpenAIClientDirect();
+  const { getOpenAIClient, MODELS } = await import("@/lib/openai-client");
+  const openai = getOpenAIClient();
 
   const imageContent = base64Images.slice(0, 3).map((b64) => ({
     type: "image_url" as const,
@@ -176,7 +179,7 @@ async function extractTextViaVisionOCR(base64Images: string[]): Promise<{
   }));
 
   const response = await openai.chat.completions.create({
-    model: DIRECT_MODELS.GPT5_MINI,
+    model: MODELS.GPT5_MINI,
     messages: [
       {
         role: "user",
@@ -199,7 +202,7 @@ async function extractTextViaVisionOCR(base64Images: string[]): Promise<{
     inputTokens: response.usage?.prompt_tokens || 0,
     outputTokens: response.usage?.completion_tokens || 0,
     totalTokens: response.usage?.total_tokens || 0,
-    model: DIRECT_MODELS.GPT5_MINI,
+    model: MODELS.GPT5_MINI,
   };
 }
 

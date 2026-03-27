@@ -39,6 +39,7 @@ export const CFBatchProcessor: React.FC<CFBatchProcessorProps> = ({
   const isProcessingRef     = useRef(isProcessing);
   const extractedRef        = useRef(initialProcessed);
   const extractDoneRef      = useRef(false);
+  const enrichDoneRef       = useRef(false);
   const completedRef        = useRef(false);
   const workersStartedRef   = useRef(false);
 
@@ -111,10 +112,12 @@ export const CFBatchProcessor: React.FC<CFBatchProcessorProps> = ({
   }, [scanId, totalItems, onProgress]);
 
   // ── Enrich worker loop ────────────────────────────────────────────────────
+  // NOTE: workers do NOT call finish() — the IIFE owns finish() so the retry
+  // pass can run after the first enrich pass completes.
   const runEnrichWorker = useCallback(async () => {
     let consecutiveWaiting = 0;
 
-    while (isProcessingRef.current) {
+    while (isProcessingRef.current && !enrichDoneRef.current) {
       let res: Response;
       let data: any;
 
@@ -127,20 +130,20 @@ export const CFBatchProcessor: React.FC<CFBatchProcessorProps> = ({
         data = await res.json();
       } catch {
         consecutiveWaiting++;
-        if (consecutiveWaiting >= ENRICH_MAX_WAIT) { finish(); return; }
+        if (consecutiveWaiting >= ENRICH_MAX_WAIT) { enrichDoneRef.current = true; return; }
         await sleep(ENRICH_WAIT_MS);
         continue;
       }
 
       // 404 = job marked complete by enrich route → all done
       if (res.status === 404 || data.message === "All done") {
-        finish();
+        enrichDoneRef.current = true; // signal other workers to stop
         return;
       }
 
       if (res.status === 202 && data.waiting) {
         consecutiveWaiting++;
-        if (consecutiveWaiting >= ENRICH_MAX_WAIT) { finish(); return; }
+        if (consecutiveWaiting >= ENRICH_MAX_WAIT) { enrichDoneRef.current = true; return; }
         await sleep(ENRICH_WAIT_MS);
         continue;
       }
@@ -151,14 +154,9 @@ export const CFBatchProcessor: React.FC<CFBatchProcessorProps> = ({
         continue;
       }
 
-      const enriched: number = data.enrichedCount || 0;
-      const failed: number   = data.failedCount   || 0;
-
-
-
       await sleep(INTER_BATCH_MS);
     }
-  }, [scanId, finish]);
+  }, [scanId]);
 
   // ── Start both worker groups when isProcessing flips to true ─────────────
   useEffect(() => {
@@ -172,14 +170,38 @@ export const CFBatchProcessor: React.FC<CFBatchProcessorProps> = ({
     // Reset state
     completedRef.current     = false;
     extractDoneRef.current   = false;
+    enrichDoneRef.current    = false;
     extractedRef.current     = initialProcessed;
 
-    // Spawn extract workers (5) + enrich workers (3) concurrently
-    const extractWorkers = Array.from({ length: EXTRACT_CONCUR }, () => runExtractWorker());
-    const enrichWorkers  = Array.from({ length: ENRICH_CONCUR  }, () => runEnrichWorker());
+    // Run extract workers first; only after ALL extraction is done, start enrich
+    (async () => {
+      const extractWorkers = Array.from({ length: EXTRACT_CONCUR }, () => runExtractWorker());
+      await Promise.all(extractWorkers);
 
-    // When ALL workers finish, call finish() as a safety net
-    Promise.all([...extractWorkers, ...enrichWorkers]).then(finish);
+      // Guard: user may have cancelled while extraction was running
+      if (!isProcessingRef.current) { finish(); return; }
+
+      enrichDoneRef.current = false;
+      const enrichWorkers = Array.from({ length: ENRICH_CONCUR }, () => runEnrichWorker());
+      await Promise.all(enrichWorkers);
+
+      // One retry pass — reset any failed enrich items back to pending and try once more
+      if (isProcessingRef.current) {
+        try {
+          const retryRes = await fetch(`/api/company-finder/scans/${scanId}/retry-failed`, { method: "POST" });
+          const retryData = await retryRes.json();
+          if (retryData.resetCount > 0) {
+            enrichDoneRef.current = false; // reset for retry pass
+            const retryWorkers = Array.from({ length: ENRICH_CONCUR }, () => runEnrichWorker());
+            await Promise.all(retryWorkers);
+          }
+        } catch {
+          // Retry fetch failed — proceed to finish
+        }
+      }
+
+      finish();
+    })();
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isProcessing]);

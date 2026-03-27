@@ -157,13 +157,21 @@ export async function POST(
       }
 
       // All extraction done, all enrichment done.
-      // Check if ANY companies were ever queued — if none, extraction failed entirely.
+      // Determine success: either companies were queued (cache misses enriched) OR
+      // the scan already has results (all companies were cache hits — no queue entries needed).
       const { count: totalQueued } = await supabase
         .from("cf_enrich_queue")
         .select("*", { count: "exact", head: true })
         .eq("scan_id", scanId);
 
-      const jobStatus = (totalQueued && totalQueued > 0) ? "completed" : "failed";
+      const { data: scanCheck } = await supabase
+        .from("company_finder_scan")
+        .select("company_count")
+        .eq("id", scanId)
+        .single();
+
+      const hasResults = (scanCheck?.company_count ?? 0) > 0;
+      const jobStatus = ((totalQueued && totalQueued > 0) || hasResults) ? "completed" : "failed";
       await supabase
         .from("cf_batch_jobs")
         .update({ status: jobStatus, updated_at: new Date().toISOString() })
