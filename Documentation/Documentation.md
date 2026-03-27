@@ -187,20 +187,24 @@ HR-Interviewer/
 │   │   │   │   ├── route.ts          # Legacy single-call ATS scoring
 │   │   │   │   └── jobs/
 │   │   │   │       ├── route.ts      # List / create job postings
-│   │   │   │       ├── queue/route.ts         # Queue batch job
 │   │   │   │       └── [interviewId]/
 │   │   │   │           ├── route.ts           # Job CRUD
+│   │   │   │           ├── queue/route.ts     # Queue batch job
+│   │   │   │           ├── urls/route.ts      # Resume URL management
 │   │   │   │           └── process/route.ts   # Process batch tasks
 │   │   │   ├── company-finder/
 │   │   │   │   ├── route.ts          # Legacy single-call CF
 │   │   │   │   ├── extract/route.ts  # Legacy extraction endpoint
+│   │   │   │   ├── cache/route.ts    # Company cache lookup
 │   │   │   │   └── scans/
 │   │   │   │       ├── route.ts      # Create scan
 │   │   │   │       └── [id]/
-│   │   │   │           ├── route.ts           # Scan CRUD
-│   │   │   │           ├── extract/route.ts   # Stage A: NLP extraction
-│   │   │   │           ├── enrich/route.ts    # Stage B: Web enrichment
-│   │   │   │           └── process/route.ts   # Combined pipeline
+│   │   │   │           ├── route.ts            # Scan CRUD
+│   │   │   │           ├── queue/route.ts      # Queue CF batch job
+│   │   │   │           ├── job-status/route.ts # CF job status polling
+│   │   │   │           ├── extract/route.ts    # Stage A: NLP extraction
+│   │   │   │           ├── enrich/route.ts     # Stage B: Web enrichment
+│   │   │   │           └── process/route.ts    # Combined pipeline
 │   │   │   ├── users/                # User management + bulk import
 │   │   │   ├── cost-analysis/        # Cost metrics + diagnostics
 │   │   │   └── ...                   # Webhooks, uploads, AI generation
@@ -221,11 +225,11 @@ HR-Interviewer/
 │   │   │   │   ├── jobGrid.tsx
 │   │   │   │   ├── jobCard.tsx
 │   │   │   │   ├── addJobDialog.tsx
-│   │   │   │   └── atsScoreChart.tsx
+│   │   │   │   ├── ATSResultsList.tsx
+│   │   │   │   └── CompanyResultsList.tsx
 │   │   │   └── company-finder/
 │   │   │       ├── companyFinderView.tsx  # Main CF interface
-│   │   │       ├── CFBatchProcessor.tsx   # Server-side batch job polling
-│   │   │       └── scanGrid.tsx
+│   │   │       └── CFBatchProcessor.tsx   # Server-side batch job polling
 │   │   ├── loaders/
 │   │   ├── navbar.tsx
 │   │   ├── sideMenu.tsx
@@ -263,9 +267,6 @@ HR-Interviewer/
 │   │   ├── normalize-company-key.ts  # Company name normalisation for deduplication
 │   │   ├── processing-store.ts       # Module-level processing state (pub/sub)
 │   │   ├── openai-client.ts          # Azure OpenAI + OpenAI Direct clients
-│   │   ├── ai-handler.ts             # Concurrency + retry handler
-│   │   ├── compose.tsx
-│   │   ├── frontend-activity-log.ts
 │   │   ├── user-activity-log.ts
 │   │   └── prompts/
 │   │       ├── analytics.ts
@@ -278,8 +279,7 @@ HR-Interviewer/
 │   ├── hooks/
 │   │   ├── useCameraDetection.ts
 │   │   ├── useFaceVerification.ts
-│   │   ├── useMultiplePersonDetection.ts
-│   │   └── usePageLoading.ts
+│   │   └── useMultiplePersonDetection.ts
 │   │
 │   ├── types/
 │   │   ├── auth.ts
@@ -291,8 +291,7 @@ HR-Interviewer/
 │   │   ├── ats-scoring.ts
 │   │   ├── company-finder.ts
 │   │   ├── cost.ts
-│   │   ├── pdf-parse.d.ts            # Manual type declaration for pdf-parse
-│   │   └── database.types.ts
+│   │   └── pdf-parse.d.ts            # Manual type declaration for pdf-parse
 │   │
 │   ├── actions/
 │   │   └── parse-pdf.ts
@@ -654,7 +653,6 @@ Session Check → GET /api/auth/session
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/create-interview` | Create new interview |
-| GET | `/api/interviews` | List all interviews |
 | GET/PUT/DELETE | `/api/interviews/[id]` | Single interview CRUD |
 
 ### Candidates / Assignees
@@ -694,7 +692,8 @@ Session Check → GET /api/auth/session
 | POST | `/api/ats-scoring` | Legacy single-call ATS scoring |
 | GET/POST | `/api/ats-scoring/jobs` | List / create job postings |
 | GET/DELETE | `/api/ats-scoring/jobs/[interviewId]` | Single job CRUD |
-| POST | `/api/ats-scoring/jobs/queue` | Queue batch job (creates `ats_batch_jobs` + `ats_job_tasks`) |
+| POST | `/api/ats-scoring/jobs/[interviewId]/queue` | Queue batch job (creates `ats_batch_jobs` + `ats_job_tasks`) |
+| GET/POST | `/api/ats-scoring/jobs/[interviewId]/urls` | Resume URL management for a job |
 | POST | `/api/ats-scoring/jobs/[interviewId]/process` | Process next batch of pending tasks (called repeatedly by client) |
 
 ### Company Finder
@@ -703,8 +702,11 @@ Session Check → GET /api/auth/session
 |--------|----------|-------------|
 | POST | `/api/company-finder` | Legacy single-call enrichment |
 | POST | `/api/company-finder/extract` | Legacy single-call extraction |
+| GET | `/api/company-finder/cache` | Company cache lookup |
 | POST | `/api/company-finder/scans` | Create scan session |
 | GET/DELETE | `/api/company-finder/scans/[id]` | Scan detail & deletion |
+| POST | `/api/company-finder/scans/[id]/queue` | Queue CF batch job (creates `cf_batch_jobs` + `cf_job_tasks`) |
+| GET | `/api/company-finder/scans/[id]/job-status` | Poll CF batch job progress |
 | POST | `/api/company-finder/scans/[id]/extract` | Stage A: NLP extraction (no web search) |
 | POST | `/api/company-finder/scans/[id]/enrich` | Stage B: Web enrichment per company |
 | POST | `/api/company-finder/scans/[id]/process` | Combined extract→enrich pipeline |
@@ -739,11 +741,9 @@ Session Check → GET /api/auth/session
 |--------|----------|-------------|
 | POST | `/api/validate-user` | User validation |
 | POST | `/api/log-activity` | Activity logging |
-| POST | `/api/log-export` | Export interview logs |
 | GET | `/api/get-agent-voice` | Retell agent voice config |
 | POST | `/api/cost-analysis` | Cost metrics (tracked or estimated) |
 | GET | `/api/cost-analysis` | Get interviews list for filter |
-| GET | `/api/cost-analysis/diagnose` | Diagnostic cost analysis |
 
 ---
 
@@ -760,7 +760,7 @@ Session Check → GET /api/auth/session
 | `/dashboard/ats-scoring` | ATS Scoring | Resume scoring with Dynatech Relevant filter |
 | `/dashboard/company-finder` | Company Finder | Company research with Dynatech Relevant filter |
 | `/dashboard/cost-analysis` | Cost & Analysis | API usage, cost tracking by 8 categories |
-| `/dashboard/interviews/[id]` | Interview Detail | Responses, transcripts, analytics |
+| `/interviews/[interviewId]` | Interview Detail | Responses, transcripts, analytics |
 | `/profile` | Profile | User profile management |
 | `/reset-password` | Reset Password | Password change form |
 
@@ -783,10 +783,11 @@ Session Check → GET /api/auth/session
 | `scoringView.tsx` | Main scoring interface — resume upload, batch processing, Companies tab with Dynatech Relevant filter, CSV export |
 | `ATSBatchProcessor.tsx` | Polls `/api/ats-scoring/jobs/[id]/process` repeatedly; handles waiting/retry/completion states; shows progress bar |
 | `atsResultCard.tsx` | Individual resume score card with View Resume button |
+| `ATSResultsList.tsx` | Paginated list of ATS score results |
+| `CompanyResultsList.tsx` | List of company-level results derived from ATS scoring |
 | `jobGrid.tsx` | Job posting grid with selection |
 | `jobCard.tsx` | Individual job posting card |
 | `addJobDialog.tsx` | Create new job posting dialog |
-| `atsScoreChart.tsx` | Score distribution visualization |
 
 ### Company Finder (`src/components/dashboard/company-finder/`)
 
@@ -794,7 +795,6 @@ Session Check → GET /api/auth/session
 |-----------|---------|
 | `companyFinderView.tsx` | Main CF interface — scan management, Dynatech Relevant toggle (default ON), progressive resume count, CSV export of filtered data |
 | `CFBatchProcessor.tsx` | Polls `/api/company-finder/scans/[id]/process` (or extract/enrich routes) repeatedly; handles progress/completion |
-| `scanGrid.tsx` | Scan results grid layout |
 
 ### Call Components (`src/components/call/`)
 
@@ -818,14 +818,14 @@ Session Check → GET /api/auth/session
 | `dataTable.tsx` | Interview responses table with sorting/actions |
 | `editInterview.tsx` | Edit existing interview settings |
 | `sharePopup.tsx` | Shareable interview link modal |
+| `fileUpload.tsx` | Resume/file upload component within interview flow |
 | `VideoRecorder.tsx` | Video recording for video-based interviews |
 
 ### Candidate Management (`src/components/dashboard/user/`)
 
 | Component | Purpose |
 |-----------|---------|
-| `userTable.tsx` | Full candidate data table with sorting, filtering, pagination |
-| `userDetailsModal.tsx` | Detailed candidate profile with resume, history |
+| `userCard.tsx` | Candidate card with status, tags, and actions |
 | `createUserModal.tsx` | Add new candidate form |
 | `bulkImportModal.tsx` | CSV bulk import with column mapping |
 | `BulkActionsModals.tsx` | Bulk delete, status update, tag assignment |
@@ -857,7 +857,6 @@ Session Check → GET /api/auth/session
 |------|---------|
 | `auth.ts` | JWT token generation/verification, password hashing, Supabase client factory |
 | `openai-client.ts` | Azure OpenAI client (`getOpenAIClient`), OpenAI Direct client (`getOpenAIClientDirect`), `MODELS` constants |
-| `ai-handler.ts` | Singleton concurrency limiter + retry handler with quota-exceeded skip logic |
 | `normalize-company-key.ts` | Normalises company names to a consistent deduplication key — strips legal suffixes (Ltd, Limited, Pvt, Inc, Corp, GmbH, LLC, etc.), lowercases, collapses whitespace. Used by Company Finder to deduplicate across `cf_company_mentions`, `cf_enrich_queue`, and `company_cache`. |
 | `constants.ts` | AI interviewer personality configs (Lisa, Bob), Retell system prompts |
 | `logger.ts` | Structured application logging |
@@ -1217,13 +1216,6 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 | 5xx server error | Retry up to 3–4 times with backoff |
 | Timeout / AbortError | Retry if attempts remain |
 
-### AIHandler (`src/lib/ai-handler.ts`)
-
-Singleton utility for concurrency control + retry on one-off API calls:
-- Concurrency limit: 5 concurrent requests
-- Same quota-exceeded skip logic
-- Exponential backoff: `initialDelayMs × 2^attempt`, capped at `maxDelayMs`
-
 ---
 
 ## 21. Configuration Files
@@ -1419,4 +1411,4 @@ Upload Resumes ──▶ Parse (browser) ──▶ Upload to Blob ──▶ POST
 
 ---
 
-*Last updated: March 24, 2026*
+*Last updated: March 27, 2026*

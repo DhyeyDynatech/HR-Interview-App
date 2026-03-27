@@ -10,7 +10,8 @@ export type UsageCategory =
   | "voice_call"
   | "blob_upload"
   | "ats_scoring"
-  | "company_finder";
+  | "company_finder"
+  | "resume_parsing";
 
 export type ServiceType = "openai" | "retell" | "vercel";
 
@@ -113,6 +114,7 @@ const CATEGORY_LABELS: Record<UsageCategory, string> = {
   blob_upload: "File Upload",
   ats_scoring: "ATS Scoring",
   company_finder: "Company Finder",
+  resume_parsing: "Resume Parsing (OCR)",
 };
 
 function getSupabaseClient(): SupabaseClient {

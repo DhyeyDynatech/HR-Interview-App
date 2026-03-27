@@ -84,7 +84,8 @@ export type UsageCategory =
   | "voice_call"             // Retell voice call
   | "blob_upload"            // Vercel blob storage uploads
   | "ats_scoring"            // ATS resume scoring against job description
-  | "company_finder";        // Company extraction from resumes
+  | "company_finder"         // Company extraction from resumes
+  | "resume_parsing";        // Vision OCR for image-based (scanned) resumes
 
 export type ServiceType = "openai" | "retell" | "vercel";
 
@@ -98,6 +99,7 @@ export const CATEGORY_LABELS: Record<UsageCategory, string> = {
   blob_upload: "File Upload",
   ats_scoring: "ATS Scoring",
   company_finder: "Company Finder",
+  resume_parsing: "Resume Parsing (OCR)",
 };
 
 // Interface for category breakdown in summary
