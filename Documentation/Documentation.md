@@ -1072,6 +1072,14 @@ Combined — POST /api/company-finder/scans/[id]/process
 | CF preview files | Client-side `uploadFilesForPreview()` | Background upload for View Resume buttons |
 | CF analysis files | Client-side `uploadResumeFiles()` | Upload before analysis starts |
 
+### Resume Blob Naming & Deduplication
+
+- **Blob path:** `resumes/{candidateEmail}` (e.g. `resumes/john.doe@example.com`)
+- **No file extension** in the blob key — Vercel Blob serves the correct `Content-Type` header regardless; parsers identify format via the original `file.name` and `file.type`, not the blob path
+- **Existence check:** Before uploading, `list({ prefix: fileName })` is called to check if a blob already exists at that path. If found, the existing URL is returned immediately — no re-upload occurs
+- **Fallback key:** If no email can be extracted from the resume text, the sanitized original filename is used as the key
+- **Format-agnostic deduplication:** Since the key is email-only (no extension), the same candidate re-uploading as a different format (e.g. PDF → DOCX) will correctly reuse the existing blob
+
 ### Supported Resume Formats
 
 | Format | Parser |
@@ -1411,4 +1419,4 @@ Upload Resumes ──▶ Parse (browser) ──▶ Upload to Blob ──▶ POST
 
 ---
 
-*Last updated: March 27, 2026*
+*Last updated: March 30, 2026*

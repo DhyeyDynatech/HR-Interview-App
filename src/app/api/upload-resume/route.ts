@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { put } from '@vercel/blob';
+import { put, list } from '@vercel/blob';
 import { createClient } from "@supabase/supabase-js";
 import { ApiUsageService } from "@/services/api-usage.service";
 import { verifyToken, getUserById } from "@/lib/auth";
@@ -129,17 +129,27 @@ export async function POST(request: NextRequest) {
     // Build the blob filename: prefer email-based key, fall back to original name.
     // Always preserve file extension so Office Online / PDF viewers can identify the file type.
     const emailKey = candidateEmail
-      ? candidateEmail.replace(/[^a-zA-Z0-9@._-]/g, '_') + fileExtension // e.g. "john.doe@example.com.docx"
+      ? candidateEmail.replace(/[^a-zA-Z0-9@._-]/g, '_') // e.g. "john.doe@example.com"
       : sanitizedName;
     const fileName = `resumes/${emailKey}`;
 
+    console.log('Checking if resume already exists in Vercel Blob:', fileName);
+
+    // Check if a blob already exists at this path — skip upload if so
+    const { blobs } = await list({ prefix: fileName, limit: 1 });
+    const existing = blobs.find(b => b.pathname === fileName);
+
+    if (existing) {
+      console.log('Resume already exists in Vercel Blob, reusing:', existing.url);
+      return NextResponse.json({ resumeUrl: existing.url }, { status: 200 });
+    }
+
     console.log('Uploading resume to Vercel Blob:', fileName);
 
-    // Always overwrite — same email path replaces the old file with the updated resume
     const blob = await put(fileName, file, {
       access: 'public',
       addRandomSuffix: false,
-      allowOverwrite: true,
+      allowOverwrite: false,
     } as any);
 
     console.log('Resume uploaded successfully to Vercel Blob:', blob.url);
