@@ -17,7 +17,11 @@ function getSupabaseClient(): SupabaseClient {
     throw new Error("Supabase URL is required. Please set NEXT_PUBLIC_SUPABASE_URL in your environment variables.");
   }
 
-  return createClient(supabaseUrl, supabaseKey);
+  return createClient(supabaseUrl, supabaseKey, {
+    global: {
+      fetch: (url: any, options: any = {}) => fetch(url, { ...options, cache: 'no-store' }),
+    },
+  });
 }
 
 // Simple password hashing (in production, use bcrypt)
@@ -129,12 +133,13 @@ export async function getUserByEmail(email: string) {
 
 export async function getUserById(id: string) {
   const supabase = getSupabaseClient();
+  const usingServiceRole = !!process.env.SUPABASE_SERVICE_ROLE_KEY;
   const { data, error } = await supabase
     .from("user")  // Using existing "user" table
     .select("id, email, first_name, last_name, phone, avatar_url, organization_id, role, status, created_at, updated_at")
     .eq("id", id)
     .single();
-  
+
   if (error) {
   throw error;
 }
