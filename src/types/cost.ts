@@ -37,8 +37,6 @@ export interface CostFilters {
   startDate?: string;
   endDate?: string;
   interviewId?: string;
-  minCost?: number;
-  maxCost?: number;
   sortBy?: 'date' | 'cost' | 'duration';
   sortOrder?: 'asc' | 'desc';
   category?: UsageCategory;

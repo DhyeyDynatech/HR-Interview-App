@@ -144,14 +144,6 @@ export class CostService {
       };
     });
 
-    // Apply cost filters
-    if (filters?.minCost !== undefined) {
-      costData = costData.filter(d => d.costBreakdown.total >= filters.minCost!);
-    }
-    if (filters?.maxCost !== undefined) {
-      costData = costData.filter(d => d.costBreakdown.total <= filters.maxCost!);
-    }
-
     // Sort by cost if needed (since we can't do it in the query)
     if (sortBy === "cost") {
       costData.sort((a, b) => {

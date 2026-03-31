@@ -99,8 +99,6 @@ function CostAnalysisPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [selectedInterview, setSelectedInterview] = useState<string>("all");
-  const [minCost, setMinCost] = useState("");
-  const [maxCost, setMaxCost] = useState("");
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -133,8 +131,6 @@ function CostAnalysisPage() {
         // Append end-of-day time so records from the selected date are fully included
         endDate: endDate ? `${endDate}T23:59:59` : undefined,
         interviewId: selectedInterview !== "all" ? selectedInterview : undefined,
-        minCost: minCost ? parseFloat(minCost) : undefined,
-        maxCost: maxCost ? parseFloat(maxCost) : undefined,
         category: selectedCategory !== "all" ? selectedCategory as UsageCategory : undefined,
       };
 
@@ -175,7 +171,7 @@ function CostAnalysisPage() {
     } finally {
       setLoading(false);
     }
-  }, [orgId, filters, startDate, endDate, selectedInterview, minCost, maxCost, selectedCategory]);
+  }, [orgId, filters, startDate, endDate, selectedInterview, selectedCategory]);
 
   const fetchInterviews = useCallback(async () => {
     if (!orgId) return;
@@ -215,8 +211,6 @@ function CostAnalysisPage() {
     setEndDate("");
     setSelectedInterview("all");
     setSelectedCategory("all");
-    setMinCost("");
-    setMaxCost("");
     setFilters({ sortBy: "date", sortOrder: "desc" });
   };
 
@@ -959,7 +953,7 @@ function CostAnalysisPage() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div>
                 <label className="text-sm font-medium text-gray-700 mb-1 block">
                   Start Date
@@ -1019,30 +1013,6 @@ function CostAnalysisPage() {
                     <SelectItem value="resume_parsing">Resume Parsing (OCR)</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-1 block">
-                  Min Cost ($)
-                </label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={minCost}
-                  onChange={e => setMinCost(e.target.value)}
-                  placeholder="0.00"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-700 mb-1 block">
-                  Max Cost ($)
-                </label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={maxCost}
-                  onChange={e => setMaxCost(e.target.value)}
-                  placeholder="10.00"
-                />
               </div>
             </div>
           </CardContent>
