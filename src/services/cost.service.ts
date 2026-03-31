@@ -290,7 +290,7 @@ export class CostService {
       query = query.eq("category", filters.category);
     }
 
-    const { data: usageRecords, error } = await query.limit(10000);
+    const { data: usageRecords, error } = await query.limit(50000);
 
     if (error) {
       console.error("Error fetching api_usage data:", error);
@@ -300,27 +300,39 @@ export class CostService {
 
     const filteredRecords = usageRecords || [];
 
-    // Always fetch current-month total independent of user filters
+    // Always fetch current-month total independent of user filters — use DB-side sum to avoid row limits
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
     const monthEnd = now.toISOString();
-    const { data: monthlyRecords } = await supabase
-      .from("api_usage")
-      .select("cost_usd")
-      .or([
-        `organization_id.eq.${organizationId}`,
-        `user_id.eq.${organizationId}`,
-        ...(userId && userId !== organizationId ? [
-          `user_id.eq.${userId}`,
-          `organization_id.eq.${userId}`,
-        ] : []),
-      ].join(","))
-      .gte("created_at", monthStart)
-      .lte("created_at", monthEnd)
-      .limit(10000);
-    const monthlyTotalCost = Number(
-      (monthlyRecords || []).reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0).toFixed(6)
-    );
+    let monthlyTotalCost = 0;
+    const { data: rpcResult } = await supabase.rpc("sum_api_usage_cost", {
+      org_id: organizationId,
+      uid: userId || organizationId,
+      date_from: monthStart,
+      date_to: monthEnd,
+    });
+    if (typeof rpcResult === "number") {
+      monthlyTotalCost = Number(rpcResult.toFixed(6));
+    } else {
+      // Fallback: client-side sum if RPC not available
+      const { data: monthlyRecords } = await supabase
+        .from("api_usage")
+        .select("cost_usd")
+        .or([
+          `organization_id.eq.${organizationId}`,
+          `user_id.eq.${organizationId}`,
+          ...(userId && userId !== organizationId ? [
+            `user_id.eq.${userId}`,
+            `organization_id.eq.${userId}`,
+          ] : []),
+        ].join(","))
+        .gte("created_at", monthStart)
+        .lte("created_at", monthEnd)
+        .limit(50000);
+      monthlyTotalCost = Number(
+        (monthlyRecords || []).reduce((sum: number, r: any) => sum + (Number(r.cost_usd) || 0), 0).toFixed(6)
+      );
+    }
 
     // Fetch interview names for records that have interview_id
     const interviewIds = Array.from(new Set(filteredRecords.map((r: any) => r.interview_id).filter(Boolean)));
