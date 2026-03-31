@@ -1,11 +1,12 @@
 import { getOpenAIClient, MODELS } from "@/lib/openai-client";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   EXTRACTION_ONLY_SYSTEM_PROMPT,
   generateExtractionOnlyPrompt,
 } from "@/lib/prompts/company-finder";
 import { logger } from "@/lib/logger";
 import { ApiUsageService } from "@/services/api-usage.service";
+import { verifyToken, getUserById } from "@/lib/auth";
 
 export const maxDuration = 300; // max Vercel timeout 
 
@@ -14,7 +15,7 @@ const MAX_RESUME_TEXT_LENGTH = 100_000;
 const OPENAI_TIMEOUT_MS = 240_000; // 4 minutes timeout
 const EXTRACT_MODEL = MODELS.GPT5_MINI;
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   logger.info("company-finder/extract request received");
 
   let body: {
@@ -27,6 +28,23 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
+
+  // Resolve organizationId from auth token, falling back to body
+  let organizationId = body.organizationId;
+  let userId = body.userId;
+  try {
+    const authHeader = req.headers.get("authorization");
+    if (authHeader?.startsWith("Bearer ")) {
+      const { valid, userId: tokenUserId } = verifyToken(authHeader.substring(7));
+      if (valid && tokenUserId) {
+        const user = await getUserById(tokenUserId);
+        if (user?.organization_id) {
+          organizationId = user.organization_id;
+          userId = tokenUserId;
+        }
+      }
+    }
+  } catch { /* fall through to body values */ }
 
   if (!body.resumes || body.resumes.length === 0) {
     return NextResponse.json({ error: "At least one resume is required" }, { status: 400 });
@@ -100,8 +118,8 @@ export async function POST(req: Request) {
 
     const usage = completion.usage;
     ApiUsageService.saveOpenAIUsage({
-      userId: body.userId,
-      organizationId: body.organizationId,
+      userId,
+      organizationId,
       category: "company_finder",
       inputTokens: usage?.prompt_tokens || 0,
       outputTokens: usage?.completion_tokens || 0,

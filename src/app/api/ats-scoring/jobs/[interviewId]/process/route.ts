@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { ATS_SYSTEM_PROMPT, generateATSScoringPrompt } from "@/lib/prompts/ats-scoring";
 import { ApiUsageService } from "@/services/api-usage.service";
+import { getUserById } from "@/lib/auth";
 
 export const maxDuration = 300; // 5 minutes — matches Vercel max
 
@@ -247,9 +248,19 @@ export async function POST(
 
       // Track API usage for this batch
       if (batchUsage) {
+        // Resolve organizationId — fallback to user lookup if ats_job_data has NULL org_id
+        let resolvedOrgId = jobData.organization_id as string | undefined;
+        const resolvedUserId = (jobData.interview as any)?.user_id || undefined;
+        if (!resolvedOrgId && resolvedUserId) {
+          try {
+            const userRec = await getUserById(resolvedUserId);
+            resolvedOrgId = userRec?.organization_id || undefined;
+          } catch { /* best effort */ }
+        }
+
         ApiUsageService.saveOpenAIUsage({
-          organizationId: jobData.organization_id,
-          userId: (jobData.interview as any)?.user_id || undefined,
+          organizationId: resolvedOrgId,
+          userId: resolvedUserId,
           interviewId,
           category: "ats_scoring",
           inputTokens: batchUsage.prompt_tokens,

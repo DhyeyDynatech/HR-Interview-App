@@ -4,6 +4,7 @@ import { getOpenAIClient, MODELS } from "@/lib/openai-client";
 import { ResponseService } from "@/services/responses.service";
 import { InterviewService } from "@/services/interviews.service";
 import { ApiUsageService } from "@/services/api-usage.service";
+import { getUserById } from "@/lib/auth";
 import { Question } from "@/types/interview";
 import { Analytics } from "@/types/response";
 import {
@@ -74,10 +75,19 @@ export const generateInterviewAnalytics = async (payload: {
     // Track API usage with real token counts
     const usage = baseCompletion.usage;
     if (usage) {
+      // Resolve organizationId — fallback to user lookup if interview has NULL org_id
+      let orgId = interview.organization_id;
+      if (!orgId && interview.user_id) {
+        try {
+          const userRec = await getUserById(interview.user_id);
+          orgId = userRec?.organization_id || undefined;
+        } catch { /* best effort */ }
+      }
+
       ApiUsageService.saveOpenAIUsage({
         interviewId: interviewId,
         responseId: response.id,
-        organizationId: interview.organization_id,
+        organizationId: orgId,
         userId: interview.user_id,
         category: "interview_response",
         inputTokens: usage.prompt_tokens,

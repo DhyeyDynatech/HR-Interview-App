@@ -2,10 +2,23 @@ import { logger } from "@/lib/logger";
 import { generateInterviewAnalytics } from "@/services/analytics.service";
 import { ResponseService } from "@/services/responses.service";
 import { InterviewService } from "@/services/interviews.service";
+import { getUserById } from "@/lib/auth";
 import { ApiUsageService } from "@/services/api-usage.service";
 import { Response } from "@/types/response";
 import { NextResponse } from "next/server";
 import Retell from "retell-sdk";
+
+/** Resolve organization_id from interview, falling back to user lookup */
+async function resolveOrgId(interview: any): Promise<string | undefined> {
+  if (interview?.organization_id) return interview.organization_id;
+  if (interview?.user_id) {
+    try {
+      const user = await getUserById(interview.user_id);
+      return user?.organization_id || undefined;
+    } catch { /* best effort */ }
+  }
+  return undefined;
+}
 
 const retell = new Retell({
   apiKey: process.env.RETELL_API_KEY || "",
@@ -102,11 +115,12 @@ export async function POST(req: Request, res: Response) {
     if (duration > 0 && callDetails.interview_id) {
       try {
         const interview = await InterviewService.getInterviewById(callDetails.interview_id);
+        const orgId = await resolveOrgId(interview);
 
         ApiUsageService.saveVoiceUsage({
           interviewId: callDetails.interview_id,
           responseId: callDetails.id ? Number(callDetails.id) : undefined,
-          organizationId: interview?.organization_id,
+          organizationId: orgId,
           userId: interview?.user_id,
           durationSeconds: duration,
           requestId: body.id,
@@ -171,11 +185,12 @@ export async function POST(req: Request, res: Response) {
   if (duration > 0 && interviewId) {
     try {
       const interview = await InterviewService.getInterviewById(interviewId);
+      const orgId = await resolveOrgId(interview);
 
       ApiUsageService.saveVoiceUsage({
         interviewId: interviewId,
         responseId: callDetails?.id ? Number(callDetails.id) : undefined,
-        organizationId: interview?.organization_id,
+        organizationId: orgId,
         userId: interview?.user_id,
         durationSeconds: duration,
         requestId: body.id,

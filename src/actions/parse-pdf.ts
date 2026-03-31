@@ -1,6 +1,7 @@
 "use server";
 
 import { ApiUsageService } from "@/services/api-usage.service";
+import { createClient } from "@supabase/supabase-js";
 
 // Resumes with fewer than this many characters after trimming are treated as
 // image-only (scanned) and trigger the vision OCR fallback.
@@ -222,8 +223,24 @@ async function extractTextViaVisionOCR(base64Images: string[]): Promise<{
  */
 export async function parsePdf(formData: FormData) {
   const file = formData.get("file") as File;
-  const organizationId = (formData.get("organizationId") as string | null) || undefined;
+  let organizationId = (formData.get("organizationId") as string | null) || undefined;
   const userId = (formData.get("userId") as string | null) || undefined;
+
+  // Fallback: if organizationId not provided but userId is, look it up
+  if (!organizationId && userId) {
+    try {
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      );
+      const { data: userRec } = await supabase
+        .from("user")
+        .select("organization_id")
+        .eq("id", userId)
+        .single();
+      organizationId = userRec?.organization_id || undefined;
+    } catch { /* best effort */ }
+  }
 
   if (!file) {
     return { success: false, error: "No file provided" };

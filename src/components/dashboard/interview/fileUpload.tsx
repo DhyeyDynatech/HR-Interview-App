@@ -12,6 +12,8 @@ type Props = {
   fileName: string;
   setFileName: (fileName: string) => void;
   setUploadedDocumentContext: (context: string) => void;
+  organizationId?: string;
+  userId?: string;
 };
 
 function FileUpload({
@@ -20,6 +22,8 @@ function FileUpload({
   fileName,
   setFileName,
   setUploadedDocumentContext,
+  organizationId,
+  userId,
 }: Props) {
   const [uploading, setUploading] = useState(false);
 
@@ -47,6 +51,8 @@ function FileUpload({
         setUploading(true);
         const formData = new FormData();
         formData.append("file", file);
+        if (organizationId) formData.append("organizationId", organizationId);
+        if (userId) formData.append("userId", userId);
 
         const result = await parsePdf(formData);
         if (!result.success) {

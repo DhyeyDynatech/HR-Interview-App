@@ -1,6 +1,6 @@
 import { getOpenAIClientDirect, DIRECT_MODELS } from "@/lib/openai-client";
 import { createClient } from "@supabase/supabase-js";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { normalizeCompanyKey } from "@/lib/normalize-company-key";
 import {
   COMPANY_FINDER_SYSTEM_PROMPT,
@@ -10,6 +10,7 @@ import {
 import { logger } from "@/lib/logger";
 import { ApiUsageService } from "@/services/api-usage.service";
 import { CompanyFinderRequest, CompanyFinderAIResponse } from "@/types/company-finder";
+import { verifyToken, getUserById } from "@/lib/auth";
 
 export const maxDuration = 300;
 
@@ -29,7 +30,24 @@ function stripCitations(val: string): string {
     .trim();
 }
 
-export async function POST(req: Request) {
+/** Extract organizationId from auth token, falling back to request body */
+async function resolveOrgId(req: NextRequest, body: CompanyFinderRequest): Promise<{ organizationId?: string; userId?: string }> {
+  try {
+    const authHeader = req.headers.get("authorization");
+    if (authHeader?.startsWith("Bearer ")) {
+      const { valid, userId } = verifyToken(authHeader.substring(7));
+      if (valid && userId) {
+        const user = await getUserById(userId);
+        if (user?.organization_id) {
+          return { organizationId: user.organization_id, userId };
+        }
+      }
+    }
+  } catch { /* fall through */ }
+  return { organizationId: body.organizationId, userId: body.userId };
+}
+
+export async function POST(req: NextRequest) {
   logger.info("company-finder request received");
 
   let body: CompanyFinderRequest;
@@ -77,6 +95,8 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+
+  const { organizationId: resolvedOrgId, userId: resolvedUserId } = await resolveOrgId(req, body);
 
   const openai = getOpenAIClientDirect();
 
@@ -161,8 +181,8 @@ export async function POST(req: Request) {
     // Track API usage
     const searchCalls = ((response as any).output || []).filter((o: any) => o.type === "web_search_call").length;
     ApiUsageService.saveOpenAIUsage({
-      userId: body.userId,
-      organizationId: body.organizationId,
+      userId: resolvedUserId,
+      organizationId: resolvedOrgId,
       category: body.category || "company_finder",
       inputTokens: usage?.input_tokens || 0,
       outputTokens: usage?.output_tokens || 0,

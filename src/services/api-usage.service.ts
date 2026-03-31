@@ -161,6 +161,10 @@ export class ApiUsageService {
    * Save OpenAI API usage record
    */
   static async saveOpenAIUsage(params: SaveOpenAIUsageParams): Promise<void> {
+    if (!params.organizationId) {
+      console.warn(`[ApiUsage] WARNING: saving OpenAI usage with NULL organizationId (category=${params.category}, model=${params.model})`);
+    }
+
     const supabase = getSupabaseClient();
 
     const searchCalls = params.searchCalls || 0;
@@ -203,6 +207,10 @@ export class ApiUsageService {
    * Uses Retell API's call_cost.combined_cost for accurate pricing
    */
   static async saveVoiceUsage(params: SaveVoiceUsageParams): Promise<void> {
+    if (!params.organizationId) {
+      console.warn(`[ApiUsage] WARNING: saving voice usage with NULL organizationId (interviewId=${params.interviewId})`);
+    }
+
     const supabase = getSupabaseClient();
 
     // Check if we already have a voice_call record for this request_id (call_id)
@@ -265,6 +273,10 @@ export class ApiUsageService {
    * Save Vercel Blob upload record
    */
   static async saveBlobUploadUsage(params: SaveBlobUploadUsageParams): Promise<void> {
+    if (!params.organizationId) {
+      console.warn(`[ApiUsage] WARNING: saving blob usage with NULL organizationId`);
+    }
+
     const supabase = getSupabaseClient();
 
     const cost = this.calculateBlobCost(params.fileSizeBytes);

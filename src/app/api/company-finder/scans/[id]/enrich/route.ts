@@ -118,7 +118,30 @@ export async function POST(
       .select("organization_id, name")
       .eq("id", scanId)
       .single();
-    const organizationId: string | undefined = scan?.organization_id || undefined;
+    let organizationId: string | undefined = scan?.organization_id || undefined;
+
+    // Fallback: if scan has no org_id, look up the job's manager in the user table
+    if (!organizationId) {
+      const { data: jobUser } = await supabase
+        .from("cf_batch_jobs")
+        .select("manager_id")
+        .eq("scan_id", scanId)
+        .eq("status", "processing")
+        .limit(1)
+        .single();
+      if (jobUser?.manager_id) {
+        const { data: userRec } = await supabase
+          .from("user")
+          .select("organization_id")
+          .eq("id", jobUser.manager_id)
+          .single();
+        organizationId = userRec?.organization_id || undefined;
+        if (organizationId) {
+          logger.warn(`[CF Enrich] Scan ${scanId} missing organization_id — resolved from manager ${jobUser.manager_id}`);
+        }
+      }
+    }
+
     // Scans created by the ATS pipeline are named "__ats__{interviewId}" — used to tag cost records
     const cfSource = scan?.name?.startsWith("__ats__") ? "ats_pipeline" : "standalone";
 

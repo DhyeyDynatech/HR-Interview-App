@@ -348,6 +348,8 @@ function DetailsPopup({
             fileName={fileName}
             setFileName={setFileName}
             setUploadedDocumentContext={setUploadedDocumentContext}
+            organizationId={user?.organization_id}
+            userId={user?.id}
           />
           <div className="flex flex-row gap-3 justify-between w-full mt-3">
             <div className="flex flex-row justify-center items-center ">
