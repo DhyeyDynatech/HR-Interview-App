@@ -25,6 +25,16 @@ function getSupabaseClient() {
 
 const normalizeKey = normalizeCompanyKey;
 
+/** Strip OpenAI web_search citation URLs from string values, e.g.
+ *  "...in Herzliya, Israel. ([cdn.example.eu](https://cdn.example.eu/...))" → "...in Herzliya, Israel." */
+function stripCitations(val: string): string {
+  return val
+    .replace(/\s*\(\[.*?\]\(https?:\/\/[^)]*\)\)/g, "")  // ([text](url))
+    .replace(/\s*\[.*?\]\(https?:\/\/[^)]*\)/g, "")       // [text](url)
+    .replace(/\s*https?:\/\/\S+/g, "")                     // bare URLs
+    .trim();
+}
+
 /** Retry wrapper — handles OpenAI 5xx errors.
  *  429 quota-exceeded errors are NOT retried — they are thrown immediately. */
 async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
@@ -242,6 +252,8 @@ export async function POST(
             const parsed = JSON.parse(match[0]);
             const companies = (parsed.companies || []).map((c: any) => ({
               ...c,
+              companyInfo: typeof c.companyInfo === "string" ? stripCitations(c.companyInfo) : c.companyInfo,
+              headquarters: typeof c.headquarters === "string" ? stripCitations(c.headquarters) : c.headquarters,
               countriesWorkedIn: Array.isArray(c.countriesWorkedIn)
                 ? c.countriesWorkedIn
                 : typeof c.countriesWorkedIn === "string"

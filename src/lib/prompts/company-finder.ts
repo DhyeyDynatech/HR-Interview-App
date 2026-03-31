@@ -146,6 +146,8 @@ Return a valid JSON object:
   ]
 }
 
+IMPORTANT: Do NOT include any citation links, source URLs, or references in the output. Return only clean text values — no URLs, no markdown links, no parenthetical citations.
+
 Output only the JSON object. No markdown fences, no explanation.`;
 
 // ---------------------------------------------------------------------------
@@ -191,5 +193,7 @@ Return a valid JSON object:
     }
   ]
 }
+
+IMPORTANT: Do NOT include any citation links, source URLs, or references in the output. Return only clean text values — no URLs, no markdown links, no parenthetical citations.
 
 Output only the JSON object. No markdown fences, no explanation.`;

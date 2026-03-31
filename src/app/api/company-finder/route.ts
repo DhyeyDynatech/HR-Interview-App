@@ -20,6 +20,15 @@ const OPENAI_TIMEOUT_MS = 290_000; // ~5 minutes — web search needs more time
 
 const CF_MODEL = DIRECT_MODELS.GPT5_MINI;
 
+/** Strip OpenAI web_search citation URLs from string values */
+function stripCitations(val: string): string {
+  return val
+    .replace(/\s*\(\[.*?\]\(https?:\/\/[^)]*\)\)/g, "")
+    .replace(/\s*\[.*?\]\(https?:\/\/[^)]*\)/g, "")
+    .replace(/\s*https?:\/\/\S+/g, "")
+    .trim();
+}
+
 export async function POST(req: Request) {
   logger.info("company-finder request received");
 
@@ -143,6 +152,9 @@ export async function POST(req: Request) {
         } else if (!Array.isArray(rawField)) {
           (c as any).countriesWorkedIn = [];
         }
+        // Strip web_search citation URLs from text fields
+        if (typeof (c as any).companyInfo === "string") (c as any).companyInfo = stripCitations((c as any).companyInfo);
+        if (typeof (c as any).headquarters === "string") (c as any).headquarters = stripCitations((c as any).headquarters);
         return c;
       });
 
