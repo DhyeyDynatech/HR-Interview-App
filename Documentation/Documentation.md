@@ -298,8 +298,8 @@ HR-Interviewer/
 │   │
 │   └── middleware.ts
 │
-├── migrations/
-│   └── original_complete_database_setup.sql
+├── DB setup/
+│   └── complete_database_setup.sql
 │
 ├── public/
 ├── Documentation/
