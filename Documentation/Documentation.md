@@ -88,15 +88,20 @@
 | Retell SDK (v4.19.0) | Server-side voice call management |
 | Retell Client SDK (v2.0.0) | Browser-side voice call interface |
 
-### File Processing
+### File Processing & Utilities
 
-| Technology | Purpose |
-|-----------|---------|
-| pdf-parse / pdfjs-dist | PDF resume parsing |
-| mammoth | DOCX to text conversion |
-| word-extractor | Legacy DOC file support |
-| papaparse | CSV parsing for bulk imports |
-| sharp | Image processing |
+| Technology | Version | Purpose |
+|-----------|---------|---------|
+| pdf-parse / pdfjs-dist | 1.1.1 / ^4.10.38 | PDF resume parsing |
+| mammoth | ^1.11.0 | DOCX to text conversion |
+| word-extractor | ^1.0.4 | Legacy DOC file support |
+| papaparse | ^5.5.3 | CSV parsing for bulk imports |
+| sharp | latest | Image processing |
+| adm-zip | ^0.5.16 | ZIP/DOCX archive extraction |
+| canvas | ^3.2.2 | Server-side canvas for image processing |
+| langchain | ^0.1.4 | LLM utility framework |
+| marked | ^13.0.3 | Markdown to HTML rendering |
+| mupdf | ^1.27.0 | Alternative PDF processing engine |
 
 ### Proctoring & Detection
 
@@ -182,6 +187,10 @@ HR-Interviewer/
 │   │   ├── api/                      # 55+ API route handlers
 │   │   │   ├── auth/                 # login, signup, logout, session, password reset
 │   │   │   ├── interviews/           # CRUD + listing
+│   │   │   ├── profile/
+│   │   │   │   ├── route.ts          # GET/PUT user profile
+│   │   │   │   └── password/route.ts # PUT change password
+│   │   │   ├── create-interviewer/route.ts  # GET interviewer creation
 │   │   │   ├── assignees/            # Candidate assignment & bulk operations
 │   │   │   ├── ats-scoring/
 │   │   │   │   ├── route.ts          # Legacy single-call ATS scoring
@@ -204,7 +213,8 @@ HR-Interviewer/
 │   │   │   │           ├── job-status/route.ts # CF job status polling
 │   │   │   │           ├── extract/route.ts    # Stage A: NLP extraction
 │   │   │   │           ├── enrich/route.ts     # Stage B: Web enrichment
-│   │   │   │           └── process/route.ts    # Combined pipeline
+│   │   │   │           ├── process/route.ts    # Combined pipeline
+│   │   │   │           └── retry-failed/route.ts # POST retry failed tasks
 │   │   │   ├── users/                # User management + bulk import
 │   │   │   ├── cost-analysis/        # Cost metrics + diagnostics
 │   │   │   └── ...                   # Webhooks, uploads, AI generation
@@ -227,10 +237,19 @@ HR-Interviewer/
 │   │   │   │   ├── addJobDialog.tsx
 │   │   │   │   ├── ATSResultsList.tsx
 │   │   │   │   └── CompanyResultsList.tsx
-│   │   │   └── company-finder/
-│   │   │       ├── companyFinderView.tsx  # Main CF interface
-│   │   │       └── CFBatchProcessor.tsx   # Server-side batch job polling
+│   │   │   ├── company-finder/
+│   │   │   │   ├── companyFinderView.tsx  # Main CF interface
+│   │   │   │   └── CFBatchProcessor.tsx   # Server-side batch job polling
+│   │   │   ├── interviewer/
+│   │   │   │   ├── interviewerCard.tsx    # AI interviewer profile card
+│   │   │   │   └── interviewerDetailsModal.tsx # Interviewer details modal
+│   │   │   └── Modal.tsx                 # Shared dashboard modal utility
 │   │   ├── loaders/
+│   │   │   ├── loader-with-logo/loaderWithLogo.tsx
+│   │   │   ├── loader-with-text/loaderWithText.tsx
+│   │   │   ├── mini-loader/miniLoader.tsx
+│   │   │   ├── page-loader/PageLoader.tsx
+│   │   │   └── progress-bar/ProgressBar.tsx
 │   │   ├── navbar.tsx
 │   │   ├── sideMenu.tsx
 │   │   ├── NavigationLoader.tsx
@@ -287,7 +306,6 @@ HR-Interviewer/
 │   │   ├── response.ts
 │   │   ├── user.ts
 │   │   ├── interviewer.ts
-│   │   ├── organization.ts
 │   │   ├── ats-scoring.ts
 │   │   ├── company-finder.ts
 │   │   ├── cost.ts
@@ -344,9 +362,11 @@ Session Check → GET /api/auth/session
 ### Middleware (`src/middleware.ts`)
 
 **Public routes** (no auth required):
-- `/`, `/sign-in`, `/sign-up`
+- `/`, `/sign-in`
 - `/call/*`, `/interview/*` (candidate-facing)
-- Select API routes: `register-call`, `response-webhook`, `validate-user`, `upload-resume`, `generate-interview-questions`, `users/bulk-import-noauth`
+- API routes: `/api/auth/login`, `/api/auth/signup`, `/api/auth/logout`, `/api/register-call`, `/api/get-call`, `/api/generate-interview-questions`, `/api/analyze-communication`, `/api/response-webhook`, `/api/validate-user`, `/api/users/bulk-import-noauth`, `/api/get-assignee-photo`
+
+> **Note:** `/sign-up` is currently disabled (commented out in middleware). `/api/upload-resume` is NOT a public route despite being candidate-facing — it requires auth.
 
 **Protected routes** (auth required):
 - `/dashboard/*` and all sub-routes
@@ -653,7 +673,7 @@ Session Check → GET /api/auth/session
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/create-interview` | Create new interview |
-| GET/PUT/DELETE | `/api/interviews/[id]` | Single interview CRUD |
+| PUT/DELETE | `/api/interviews/[id]` | Update / delete interview |
 
 ### Candidates / Assignees
 
@@ -661,7 +681,7 @@ Session Check → GET /api/auth/session
 |--------|----------|-------------|
 | GET | `/api/assignees` | List all assignees |
 | GET/PUT/DELETE | `/api/assignees/[id]` | Single assignee CRUD |
-| POST | `/api/assignees/assign-interview` | Assign interview to candidate |
+| POST/DELETE | `/api/assignees/assign-interview` | Assign / unassign interview to candidate |
 | POST | `/api/assignees/bulk-assign-interview` | Bulk assignment |
 | POST | `/api/assignees/bulk-assign-tag` | Bulk tag operations |
 | POST | `/api/assignees/bulk-update-status` | Bulk status update |
@@ -691,9 +711,9 @@ Session Check → GET /api/auth/session
 |--------|----------|-------------|
 | POST | `/api/ats-scoring` | Legacy single-call ATS scoring |
 | GET/POST | `/api/ats-scoring/jobs` | List / create job postings |
-| GET/DELETE | `/api/ats-scoring/jobs/[interviewId]` | Single job CRUD |
+| GET/PUT/PATCH/DELETE | `/api/ats-scoring/jobs/[interviewId]` | Single job CRUD (GET, update, patch, delete) |
 | POST | `/api/ats-scoring/jobs/[interviewId]/queue` | Queue batch job (creates `ats_batch_jobs` + `ats_job_tasks`) |
-| GET/POST | `/api/ats-scoring/jobs/[interviewId]/urls` | Resume URL management for a job |
+| PATCH | `/api/ats-scoring/jobs/[interviewId]/urls` | Resume URL management for a job |
 | POST | `/api/ats-scoring/jobs/[interviewId]/process` | Process next batch of pending tasks (called repeatedly by client) |
 
 ### Company Finder
@@ -702,7 +722,7 @@ Session Check → GET /api/auth/session
 |--------|----------|-------------|
 | POST | `/api/company-finder` | Legacy single-call enrichment |
 | POST | `/api/company-finder/extract` | Legacy single-call extraction |
-| GET | `/api/company-finder/cache` | Company cache lookup |
+| POST | `/api/company-finder/cache` | Company cache lookup |
 | POST | `/api/company-finder/scans` | Create scan session |
 | GET/DELETE | `/api/company-finder/scans/[id]` | Scan detail & deletion |
 | POST | `/api/company-finder/scans/[id]/queue` | Queue CF batch job (creates `cf_batch_jobs` + `cf_job_tasks`) |
@@ -710,6 +730,7 @@ Session Check → GET /api/auth/session
 | POST | `/api/company-finder/scans/[id]/extract` | Stage A: NLP extraction (no web search) |
 | POST | `/api/company-finder/scans/[id]/enrich` | Stage B: Web enrichment per company |
 | POST | `/api/company-finder/scans/[id]/process` | Combined extract→enrich pipeline |
+| POST | `/api/company-finder/scans/[id]/retry-failed` | Retry failed CF tasks in a batch job |
 
 ### User Management
 
@@ -734,6 +755,19 @@ Session Check → GET /api/auth/session
 |--------|----------|-------------|
 | POST | `/api/send-assignee-emails` | Email invitations via Power Automate |
 | POST | `/api/send-recruiter-notification` | Recruiter alert emails |
+
+### Profile Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET/PUT | `/api/profile` | Get / update current user profile |
+| PUT | `/api/profile/password` | Change user password |
+
+### AI Interviewer
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/create-interviewer` | Fetch interviewer creation config |
 
 ### Utilities & Cost
 
@@ -815,11 +849,27 @@ Session Check → GET /api/auth/session
 | `createInterviewModal.tsx` | Multi-step interview creation wizard |
 | `create-popup/details.tsx` | Step 1: Name, objective, duration, interviewer |
 | `create-popup/questions.tsx` | Step 2: Add/edit questions |
+| `create-popup/questionCard.tsx` | Individual question card within creation wizard |
 | `dataTable.tsx` | Interview responses table with sorting/actions |
 | `editInterview.tsx` | Edit existing interview settings |
 | `sharePopup.tsx` | Shareable interview link modal |
 | `fileUpload.tsx` | Resume/file upload component within interview flow |
 | `VideoRecorder.tsx` | Video recording for video-based interviews |
+| `questionAnswerCard.tsx` | Q&A display card for interview response review |
+| `summaryInfo.tsx` | Interview summary/overview information panel |
+
+### AI Interviewer Management (`src/components/dashboard/interviewer/`)
+
+| Component | Purpose |
+|-----------|---------|
+| `interviewerCard.tsx` | AI interviewer profile card with details and actions |
+| `interviewerDetailsModal.tsx` | Detailed view/edit modal for AI interviewer profiles |
+
+### Dashboard Utilities (`src/components/dashboard/`)
+
+| Component | Purpose |
+|-----------|---------|
+| `Modal.tsx` | Shared reusable modal component for dashboard views |
 
 ### Candidate Management (`src/components/dashboard/user/`)
 
@@ -830,6 +880,25 @@ Session Check → GET /api/auth/session
 | `bulkImportModal.tsx` | CSV bulk import with column mapping |
 | `BulkActionsModals.tsx` | Bulk delete, status update, tag assignment |
 | `ResumeViewer.tsx` | Resume preview in modal |
+
+### Loaders (`src/components/loaders/`)
+
+| Component | Purpose |
+|-----------|---------|
+| `loader-with-logo/loaderWithLogo.tsx` | Full-page loader with app logo |
+| `loader-with-text/loaderWithText.tsx` | Loader with customizable text message |
+| `mini-loader/miniLoader.tsx` | Small inline spinner for buttons/cards |
+| `page-loader/PageLoader.tsx` | Page-level loading indicator |
+| `progress-bar/ProgressBar.tsx` | Horizontal progress bar for batch operations |
+
+### Top-Level Components (`src/components/`)
+
+| Component | Purpose |
+|-----------|---------|
+| `navbar.tsx` | Top navigation bar with user menu |
+| `sideMenu.tsx` | Left sidebar navigation with route links |
+| `NavigationLoader.tsx` | Route transition loading indicator |
+| `providers.tsx` | Wraps app with all React Context providers |
 
 ---
 
@@ -1270,6 +1339,9 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob storage token |
 | `POWER_AUTOMATE_FLOW_URL` | Microsoft Power Automate webhook URL |
 | `FIXED_RECRUITER_EMAIL` | Default recruiter notification email |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Clerk sign-up redirect URL (legacy — not actively used, auth is custom JWT) |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Clerk post-sign-in redirect (legacy) |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Clerk post-sign-up redirect (legacy) |
 
 ---
 
@@ -1419,4 +1491,4 @@ Upload Resumes ──▶ Parse (browser) ──▶ Upload to Blob ──▶ POST
 
 ---
 
-*Last updated: March 30, 2026*
+*Last updated: March 31, 2026*
