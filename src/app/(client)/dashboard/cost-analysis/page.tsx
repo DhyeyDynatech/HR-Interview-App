@@ -47,6 +47,7 @@ import {
   Calendar,
   FileImage,
   ScanSearch,
+  Building2,
 } from "lucide-react";
 import {
   CostFilters,
@@ -65,7 +66,7 @@ const CATEGORY_ICONS: Record<UsageCategory, React.ReactNode> = {
   voice_call: <Phone className="h-4 w-4" />,
   blob_upload: <Upload className="h-4 w-4" />,
   ats_scoring: <ScanSearch className="h-4 w-4" />,
-  company_finder: <ScanSearch className="h-4 w-4" />,
+  company_finder: <Building2 className="h-4 w-4" />,
   resume_parsing: <FileImage className="h-4 w-4" />,
 };
 
