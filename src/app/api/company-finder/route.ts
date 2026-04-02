@@ -178,8 +178,9 @@ export async function POST(req: NextRequest) {
         return c;
       });
 
-    // Track API usage
-    const searchCalls = ((response as any).output || []).filter((o: any) => o.type === "web_search_call").length;
+    // Count only actual web searches (action.type === "search"), not page visits ("open_page")
+    const searchCalls = ((response as any).output || [])
+      .filter((o: any) => o.type === "web_search_call" && o.action?.type === "search").length;
     ApiUsageService.saveOpenAIUsage({
       userId: resolvedUserId,
       organizationId: resolvedOrgId,

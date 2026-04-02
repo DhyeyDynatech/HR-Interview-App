@@ -288,7 +288,9 @@ export async function POST(
         }
 
         const enrichUsage = (response as any).usage;
-        const searchCalls = ((response as any).output || []).filter((o: any) => o.type === "web_search_call").length;
+        // Count only actual web searches (action.type === "search"), not page visits ("open_page")
+        const searchCalls = ((response as any).output || [])
+          .filter((o: any) => o.type === "web_search_call" && o.action?.type === "search").length;
         ApiUsageService.saveOpenAIUsage({
           category: "company_finder",
           organizationId,
