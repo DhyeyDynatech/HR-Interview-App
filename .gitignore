@@ -41,3 +41,12 @@ next-env.d.ts
 
 .idea/
 .claude/
+
+# AI assistant config files
+.cursorrules
+.windsurfrules
+.mcp.json
+.opencode.json
+AGENTS.md
+CLAUDE.md
+GEMINI.md
