@@ -1,5 +1,5 @@
 export type AssigneeStatus = 'active' | 'inactive' | 'pending';
-export type UserRole = 'admin' | 'manager' | 'interviewer' | 'viewer' | 'marketing';
+export type UserRole = 'admin' | 'manager' | 'interviewer' | 'viewer' | 'marketing' | 'hr_consultant';
 export type UserStatus = 'active' | 'inactive' | 'pending' | 'suspended';
 export type ReviewStatus = 'NO_STATUS' | 'NOT_SELECTED' | 'POTENTIAL' | 'SELECTED';
 export type InterviewStatus = 'NOT_SENT' | 'INTERVIEW_SENT' | 'INTERVIEW_RESENT' | 'INTERVIEW_COMPLETED' | 'AI_RESPONSE_CAPTURED' | 'REVIEWED' | 'NOT_REVIEWED' | 'CANDIDATE_SELECTED' | 'CANDIDATE_REJECTED';

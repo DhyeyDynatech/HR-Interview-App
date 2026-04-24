@@ -581,7 +581,7 @@ export default function ScoringView({
   const cfAutoRestartAttempted = useRef(false);
   useEffect(() => {
     if (dataLoading || !interviewId || cfAutoRestartAttempted.current) return;
-    if (user?.role !== 'admin' && user?.role !== 'marketing') return;
+    if (user?.role !== 'admin') return;
 
     const cfKey = `cf_${interviewId}`;
     const currentState = getProcessingState(cfKey);
@@ -2415,7 +2415,7 @@ export default function ScoringView({
               <ScanSearch className="h-4 w-4" />
               ATS Scoring
             </TabsTrigger>
-            {(user?.role === 'admin' || user?.role === 'marketing') && (
+            {user?.role === 'admin' && (
               <TabsTrigger value="companies" className="gap-1.5">
                 <Building2 className="h-4 w-4" />
                 Companies Founded
@@ -2542,7 +2542,7 @@ export default function ScoringView({
             </div>
           </TabsContent>
 
-          {(user?.role === "admin" || user?.role === "marketing") && (
+          {user?.role === "admin" && (
             <TabsContent value="companies" className="mt-4 focus-visible:outline-none">
               <div className="flex flex-col gap-6">
                 {/* ATS scoring in progress — company results may be stale */}

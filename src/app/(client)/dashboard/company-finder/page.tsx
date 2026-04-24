@@ -14,7 +14,7 @@ export default function CompanyFinderPage() {
   const [scanId, setScanId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const canAccess = user?.role === "admin" || user?.role === "marketing";
+  const canAccess = user?.role === "admin";
 
   useEffect(() => {
     if (authLoading) return;

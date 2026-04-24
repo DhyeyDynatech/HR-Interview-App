@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth.context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -85,6 +86,7 @@ const CATEGORY_COLORS: Record<UsageCategory, string> = {
 
 function CostAnalysisPage() {
   const { user, isLoading: authLoading } = useAuth();
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [costData, setCostData] = useState<any[]>([]);
   const [summary, setSummary] = useState<EnhancedCostSummary | null>(null);
@@ -190,6 +192,12 @@ function CostAnalysisPage() {
       console.error("Error fetching interviews:", error);
     }
   }, [orgId]);
+
+  useEffect(() => {
+    if (!authLoading && (user?.role === 'marketing' || user?.role === 'hr_consultant')) {
+      router.replace('/dashboard');
+    }
+  }, [authLoading, user?.role, router]);
 
   useEffect(() => {
     fetchInterviews();

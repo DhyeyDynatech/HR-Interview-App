@@ -31,7 +31,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp"       SCHEMA extensions;
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
-    CREATE TYPE public.user_role AS ENUM ('admin', 'manager', 'interviewer', 'viewer', 'marketing');
+    CREATE TYPE public.user_role AS ENUM ('admin', 'manager', 'interviewer', 'viewer', 'marketing', 'hr_consultant');
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_status') THEN
     CREATE TYPE public.user_status AS ENUM ('active', 'inactive', 'pending', 'suspended');

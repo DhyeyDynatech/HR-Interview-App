@@ -16,7 +16,8 @@ function SideMenu({ isOpen = true, onClose }: SideMenuProps) {
   const router = useRouter();
   const { startLoading } = useLoading();
   const { user } = useAuth();
-  const canAccessMarketing = user?.role === 'admin' || user?.role === 'marketing';
+  const canAccessCompanyFinder = user?.role === 'admin';
+  const canAccessCostAnalysis = user?.role !== 'marketing' && user?.role !== 'hr_consultant';
 
   const handleNavigation = (path: string) => {
     if (pathname && pathname === path) {
@@ -123,7 +124,7 @@ function SideMenu({ isOpen = true, onClose }: SideMenuProps) {
               <ScanSearch className="h-5 w-5 mr-3" />
               <p className="font-medium">ATS Scoring</p>
             </div>
-            {canAccessMarketing && (
+            {canAccessCompanyFinder && (
               <div
                 className={`flex flex-row items-center px-6 py-3 cursor-pointer transition-colors ${
                   isActive("/dashboard/company-finder")
@@ -136,17 +137,19 @@ function SideMenu({ isOpen = true, onClose }: SideMenuProps) {
                 <p className="font-medium">Company Finder</p>
               </div>
             )}
-            <div
-              className={`flex flex-row items-center px-6 py-3 cursor-pointer transition-colors ${
-                isActive("/dashboard/cost-analysis")
-                  ? "bg-indigo-500 text-white"
-                  : "hover:bg-slate-200"
-              }`}
-              onClick={() => handleNavigation("/dashboard/cost-analysis")}
-            >
-              <BarChart3 className="h-5 w-5 mr-3" />
-              <p className="font-medium">Cost & Analysis</p>
-            </div>
+            {canAccessCostAnalysis && (
+              <div
+                className={`flex flex-row items-center px-6 py-3 cursor-pointer transition-colors ${
+                  isActive("/dashboard/cost-analysis")
+                    ? "bg-indigo-500 text-white"
+                    : "hover:bg-slate-200"
+                }`}
+                onClick={() => handleNavigation("/dashboard/cost-analysis")}
+              >
+                <BarChart3 className="h-5 w-5 mr-3" />
+                <p className="font-medium">Cost & Analysis</p>
+              </div>
+            )}
             {/* <div
               className={`flex flex-row items-center px-6 py-3 cursor-pointer transition-colors ${
                 isActive("/dashboard/settings")
