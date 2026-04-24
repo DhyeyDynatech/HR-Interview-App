@@ -5,14 +5,14 @@ import { AzureOpenAI, OpenAI } from "openai";
  * Called per-request in serverless routes (stateless, no shared singleton).
  */
 export function getOpenAIClient(): AzureOpenAI {
-  const apiKey = process.env.AZURE_OPENAI_API_KEY;
-  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2025-01-01-preview";
+  const apiKey = process.env.AZURE_OPENAI_API_KEY?.trim();
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT?.trim();
+  const apiVersion = (process.env.AZURE_OPENAI_API_VERSION || "2025-01-01-preview").trim();
 
   if (!apiKey) throw new Error("AZURE_OPENAI_API_KEY is not set");
   if (!endpoint) throw new Error("AZURE_OPENAI_ENDPOINT is not set");
 
-  return new AzureOpenAI({ apiKey, endpoint, apiVersion, maxRetries: 5 });
+  return new AzureOpenAI({ apiKey, endpoint, apiVersion, maxRetries: 2 });
 }
 
 /**

@@ -5,8 +5,13 @@ class Logger {
     message: string,
     args?: string | object | "",
   ) {
+    const serialized = args
+      ? typeof args === "string"
+        ? args
+        : JSON.stringify(args, null, 2)
+      : "";
     // eslint-disable-next-line no-console
-    console[level](`[${level.toUpperCase()}] ${message} ${args ? args : ""}`);
+    console[level](`[${level.toUpperCase()}] ${message}`, serialized ? serialized : "");
   }
 
   info(message: string, args?: string | object) {

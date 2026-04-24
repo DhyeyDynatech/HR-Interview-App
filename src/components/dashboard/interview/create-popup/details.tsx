@@ -120,6 +120,7 @@ function DetailsPopup({
 
   const onGenrateQuestions = async () => {
     setLoading(true);
+    setIsClicked(true);
 
     const data = {
       name: name.trim(),
@@ -128,40 +129,50 @@ function DetailsPopup({
       context: uploadedDocumentContext,
       userId: user?.id,
       organizationId: user?.organization_id,
-      // Fields for API usage tracking metadata
       numberOfQuestions: Number(numQuestions),
       interviewName: name.trim(),
     };
 
-    const generatedQuestions = (await axios.post(
-      "/api/generate-interview-questions",
-      data,
-    )) as any;
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+      const generatedQuestions = (await axios.post(
+        "/api/generate-interview-questions",
+        data,
+        {
+          timeout: 55000,
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      )) as any;
 
-    const generatedQuestionsResponse = JSON.parse(
-      generatedQuestions?.data?.response,
-    );
+      const generatedQuestionsResponse = JSON.parse(
+        generatedQuestions?.data?.response,
+      );
 
-    const updatedQuestions = generatedQuestionsResponse.questions.map(
-      (question: Question) => ({
-        id: uuidv4(),
-        question: question.question.trim(),
-        follow_up_count: 1,
-      }),
-    );
+      const updatedQuestions = generatedQuestionsResponse.questions.map(
+        (question: Question) => ({
+          id: uuidv4(),
+          question: question.question.trim(),
+          follow_up_count: 1,
+        }),
+      );
 
-    const updatedInterviewData = {
-      ...interviewData,
-      name: name.trim(),
-      objective: objective.trim(),
-      questions: updatedQuestions,
-      interviewer_id: selectedInterviewer,
-      question_count: Number(numQuestions),
-      time_duration: duration,
-      description: generatedQuestionsResponse.description,
-      is_anonymous: isAnonymous,
-    };
-    setInterviewData(updatedInterviewData);
+      const updatedInterviewData = {
+        ...interviewData,
+        name: name.trim(),
+        objective: objective.trim(),
+        questions: updatedQuestions,
+        interviewer_id: selectedInterviewer,
+        question_count: Number(numQuestions),
+        time_duration: duration,
+        description: generatedQuestionsResponse.description,
+        is_anonymous: isAnonymous,
+      };
+      setInterviewData(updatedInterviewData);
+    } catch (error) {
+      console.error("Failed to generate questions:", error);
+      setLoading(false);
+      setIsClicked(false);
+    }
   };
 
   const onManual = () => {
@@ -411,10 +422,7 @@ function DetailsPopup({
                   : true) || isClicked
               }
               className="bg-indigo-600 hover:bg-indigo-800  w-40"
-              onClick={() => {
-                setIsClicked(true);
-                onGenrateQuestions();
-              }}
+              onClick={onGenrateQuestions}
             >
               Generate Questions
             </Button>
