@@ -700,6 +700,7 @@ export default function ScoringView({
         const detail = await ATSJobService.getJobDetail(interviewId);
         if (detail.results?.length > 0) {
           setResults(detail.results);
+          createAssigneesFromResults(detail.results);
         }
       } catch (err) {
         console.error("Failed to reload ATS results after completion:", err);
@@ -1286,7 +1287,7 @@ export default function ScoringView({
 
   // Automatically create assignees from ATS results
   const createAssigneesFromResults = async (scoredResults: ATSScoreResult[]) => {
-    const MIN_SCORE = 6;
+    const MIN_SCORE = 5;
     if (mountedRef.current) setCreatingAssignees(true);
     let created = 0;
     let skipped = 0;
