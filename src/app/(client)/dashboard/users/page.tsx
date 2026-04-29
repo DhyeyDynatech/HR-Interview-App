@@ -164,7 +164,11 @@ export default function AssigneesPage() {
     let filtered = assignees;
 
     if (statusFilter !== 'all') {
-      filtered = filtered.filter(assignee => assignee.status === statusFilter);
+      if (statusFilter === 'interview_completed') {
+        filtered = filtered.filter(assignee => assigneesWithResponses.has(assignee.email.toLowerCase()));
+      } else if (statusFilter === 'interview_pending') {
+        filtered = filtered.filter(assignee => !assigneesWithResponses.has(assignee.email.toLowerCase()));
+      }
     }
 
     if (interviewFilter !== 'all') {
@@ -213,7 +217,7 @@ export default function AssigneesPage() {
 
 
     return filtered;
-  }, [assignees, searchTerm, statusFilter, interviewFilter, tagFilter, reviewFilter, interviewStatusFilter]);
+  }, [assignees, searchTerm, statusFilter, interviewFilter, tagFilter, reviewFilter, interviewStatusFilter, assigneesWithResponses]);
 
   // Reset to first page whenever filters or search change
   React.useEffect(() => {
@@ -514,12 +518,10 @@ export default function AssigneesPage() {
 
   function getStats() {
     const total = assignees.length;
-    const active = assignees.filter(a => a.status === 'active').length;
-    const assigned = assignees.filter(a => a.interview_id).length;
-    const unassigned = assignees.filter(a => !a.interview_id).length;
+    const interviewCompleted = assignees.filter(a => assigneesWithResponses.has(a.email.toLowerCase())).length;
+    const interviewPending = assignees.filter(a => !assigneesWithResponses.has(a.email.toLowerCase())).length;
 
-
-    return { total, active, assigned, unassigned };
+    return { total, interviewCompleted, interviewPending };
   };
 
   const stats = getStats();
@@ -647,7 +649,7 @@ export default function AssigneesPage() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center space-x-2">
@@ -659,38 +661,26 @@ export default function AssigneesPage() {
             </div>
           </CardContent>
         </Card>
-        
+
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center space-x-2">
               <UserCheck className="h-5 w-5 text-green-600" />
               <div>
-                <p className="text-sm font-medium text-gray-600">Active</p>
-                <p className="text-2xl font-bold">{stats.active}</p>
+                <p className="text-sm font-medium text-gray-600">Interview Completed</p>
+                <p className="text-2xl font-bold">{stats.interviewCompleted}</p>
               </div>
             </div>
           </CardContent>
         </Card>
-        
+
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center space-x-2">
-              <UserCheck className="h-5 w-5 text-purple-600" />
+              <UserX className="h-5 w-5 text-orange-500" />
               <div>
-                <p className="text-sm font-medium text-gray-600">Assigned</p>
-                <p className="text-2xl font-bold">{stats.assigned}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center space-x-2">
-              <UserX className="h-5 w-5 text-gray-600" />
-              <div>
-                <p className="text-sm font-medium text-gray-600">Unassigned</p>
-                <p className="text-2xl font-bold">{stats.unassigned}</p>
+                <p className="text-sm font-medium text-gray-600">Interview Pending</p>
+                <p className="text-2xl font-bold">{stats.interviewPending}</p>
               </div>
             </div>
           </CardContent>
@@ -751,9 +741,8 @@ export default function AssigneesPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="inactive">Inactive</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="interview_completed">Interview Completed</SelectItem>
+                    <SelectItem value="interview_pending">Interview Pending</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -845,7 +834,7 @@ export default function AssigneesPage() {
                 <span className="text-sm text-gray-600">Active filters:</span>
                 {statusFilter !== 'all' && (
                   <Badge variant="secondary" className="flex items-center gap-1">
-                    Status: {statusFilter}
+                    Status: {statusFilter === 'interview_completed' ? 'Interview Completed' : 'Interview Pending'}
                     <button
                       className="ml-1 hover:text-red-500"
                       onClick={() => setStatusFilter('all')}
