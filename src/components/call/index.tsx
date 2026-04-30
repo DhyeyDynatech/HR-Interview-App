@@ -92,7 +92,7 @@ function Call({ interview }: InterviewProps) {
   const [name, setName] = useState<string>("");
   const [isValidEmail, setIsValidEmail] = useState<boolean>(false);
   const [callId, setCallId] = useState<string>("");
-  const { tabSwitchCount } = useTabSwitchPrevention();
+  const { tabSwitchCount, isDialogOpen: isTabSwitchDialogOpen, handleUnderstand: handleTabSwitchUnderstand } = useTabSwitchPrevention();
   const [isFeedbackSubmitted, setIsFeedbackSubmitted] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [interviewerImg, setInterviewerImg] = useState("");
@@ -104,6 +104,13 @@ function Call({ interview }: InterviewProps) {
   const [baseMismatchCount, setBaseMismatchCount] = useState(0);
   const [baseCameraOffCount, setBaseCameraOffCount] = useState(0);
   const [baseMultiplePersonCount, setBaseMultiplePersonCount] = useState(0);
+
+  // Real-time violation event accumulator — captures exact timestamps as violations occur
+  const violationEventsRef = useRef<ViolationEvent[]>([]);
+  const prevMismatchCountRef = useRef(0);
+  const prevCameraOffCountRef = useRef(0);
+  const prevMultiplePersonCountRef = useRef(0);
+  const prevTabSwitchCountRef = useRef(0);
 
   // Camera preview state - show video before interview starts
   const [showCameraPreview, setShowCameraPreview] = useState(true);
@@ -319,6 +326,57 @@ function Call({ interview }: InterviewProps) {
     }
   }, [verificationResult, hasReferenceImage]);
 
+  // Real-time violation event tracking — capture exact timestamps as each violation occurs
+  useEffect(() => {
+    if (!isStarted || isEnded) return;
+    if (mismatchCount > prevMismatchCountRef.current) {
+      violationEventsRef.current.push({
+        type: 'face_mismatch',
+        timestamp: new Date().toISOString(),
+        details: verificationResult.faceDetected
+          ? 'Face did not match the profile picture'
+          : 'No face detected in video',
+      });
+      prevMismatchCountRef.current = mismatchCount;
+    }
+  }, [mismatchCount, isStarted, isEnded, verificationResult.faceDetected]);
+
+  useEffect(() => {
+    if (!isStarted || isEnded) return;
+    if (cameraStatus.offCount > prevCameraOffCountRef.current) {
+      violationEventsRef.current.push({
+        type: 'camera_off',
+        timestamp: new Date().toISOString(),
+        details: 'Camera was turned off during the interview',
+      });
+      prevCameraOffCountRef.current = cameraStatus.offCount;
+    }
+  }, [cameraStatus.offCount, isStarted, isEnded]);
+
+  useEffect(() => {
+    if (!isStarted || isEnded) return;
+    if (multiplePersonStatus.multiplePersonCount > prevMultiplePersonCountRef.current) {
+      violationEventsRef.current.push({
+        type: 'multiple_person',
+        timestamp: new Date().toISOString(),
+        details: 'Multiple persons detected in the video',
+      });
+      prevMultiplePersonCountRef.current = multiplePersonStatus.multiplePersonCount;
+    }
+  }, [multiplePersonStatus.multiplePersonCount, isStarted, isEnded]);
+
+  useEffect(() => {
+    if (!isStarted || isEnded) return;
+    if (tabSwitchCount > prevTabSwitchCountRef.current) {
+      violationEventsRef.current.push({
+        type: 'tab_switch',
+        timestamp: new Date().toISOString(),
+        details: 'Assignee switched tabs during the interview',
+      });
+      prevTabSwitchCountRef.current = tabSwitchCount;
+    }
+  }, [tabSwitchCount, isStarted, isEnded]);
+
   // Preload assignee photo during camera preview (before interview starts)
   // This prevents video stuttering when face verification initializes
   useEffect(() => {
@@ -532,6 +590,13 @@ function Call({ interview }: InterviewProps) {
       interview_id: interview?.id || null,
     };
 
+    // Reset real-time violation event accumulator for this attempt
+    violationEventsRef.current = [];
+    prevMismatchCountRef.current = mismatchCount;
+    prevCameraOffCountRef.current = cameraStatus.offCount;
+    prevMultiplePersonCountRef.current = multiplePersonStatus.multiplePersonCount;
+    prevTabSwitchCountRef.current = tabSwitchCount;
+
     // Capture current violation counters as baseline for this attempt
     setBaseTabSwitchCount(tabSwitchCount);
     setBaseMismatchCount(mismatchCount);
@@ -613,81 +678,39 @@ function Call({ interview }: InterviewProps) {
   useEffect(() => {
     if (isEnded) {
       const updateInterview = async () => {
-        // Create violations summary with all violation types (per attempt)
-        const tabSwitchDelta = Math.max(
-          0,
-          tabSwitchCount - baseTabSwitchCount,
-        );
-        const mismatchDelta = Math.max(0, mismatchCount - baseMismatchCount);
-        // Check if interview ended due to camera being off for 2+ minutes
+        // Use the real-time violation events captured with accurate timestamps.
+        // If camera-off ended the interview, add a final event for that.
         const endedDueToCameraOff = cameraOffStartTime !== null && cameraOffCountdown === 0;
-        
-        // If interview ended due to camera being off, ensure it's counted
-        const cameraOffDelta = endedDueToCameraOff 
-          ? Math.max(1, cameraStatus.offCount - baseCameraOffCount + 1)
-          : Math.max(0, cameraStatus.offCount - baseCameraOffCount);
-        
-        const multiplePersonDelta = Math.max(
-          0,
-          multiplePersonStatus.multiplePersonCount -
-            baseMultiplePersonCount,
-        );
+        const violations: ViolationEvent[] = [...violationEventsRef.current];
 
-        const violations: ViolationEvent[] = [];
-        
-        // Add tab switch violations
-        for (let i = 0; i < tabSwitchDelta; i++) {
-          violations.push({
-            type: 'tab_switch',
-            timestamp: new Date().toISOString(),
-            details: 'Assignee switched tabs during the interview'
-          });
-        }
-        
-        // Add face mismatch violations
-        for (let i = 0; i < mismatchDelta; i++) {
-          violations.push({
-            type: 'face_mismatch',
-            timestamp: new Date().toISOString(),
-            details: 'Face did not match the profile picture'
-          });
-        }
-        
-        // Add camera off violations
-        for (let i = 0; i < cameraOffDelta; i++) {
-          if (i === cameraOffDelta - 1 && endedDueToCameraOff) {
-            // Last violation is the one that caused interview to end
-            violations.push({
-              type: 'camera_off',
-              timestamp: new Date().toISOString(),
-              details: 'Interview ended automatically: Camera was turned off for more than 2 minutes'
-            });
+        if (endedDueToCameraOff) {
+          // Replace the last camera_off event (already recorded) with the auto-end detail,
+          // or add one if the periodic tracker somehow missed it.
+          const lastCameraOff = [...violations].reverse().find(v => v.type === 'camera_off');
+          if (lastCameraOff) {
+            lastCameraOff.details = 'Interview ended automatically: Camera was turned off for more than 2 minutes';
           } else {
             violations.push({
               type: 'camera_off',
               timestamp: new Date().toISOString(),
-              details: 'Camera was turned off during the interview'
+              details: 'Interview ended automatically: Camera was turned off for more than 2 minutes',
             });
           }
         }
-        
-        // Add multiple person violations
-        for (let i = 0; i < multiplePersonDelta; i++) {
-          violations.push({
-            type: 'multiple_person',
-            timestamp: new Date().toISOString(),
-            details: 'Multiple persons detected in the video'
-          });
-        }
-        
-        // Calculate total attempts (current total minus base total, or just current total if no base)
+
+        // Derive counts from the real-time events list
+        const tabSwitchDelta = violations.filter(v => v.type === 'tab_switch').length;
+        const mismatchDelta = violations.filter(v => v.type === 'face_mismatch').length;
+        const cameraOffDelta = violations.filter(v => v.type === 'camera_off').length;
+        const multiplePersonDelta = violations.filter(v => v.type === 'multiple_person').length;
+
         const faceMismatchTotal = faceVerificationTotal || 0;
         const cameraOffTotal = cameraStatus.totalChecks || 0;
         const multiplePersonTotal = multiplePersonStatus.totalChecks || 0;
 
         await ResponseService.saveResponse(
-          { 
-            is_ended: true, 
+          {
+            is_ended: true,
             tab_switch_count: tabSwitchDelta,
             face_mismatch_count: mismatchDelta,
             camera_off_count: cameraOffDelta,
@@ -750,7 +773,7 @@ function Call({ interview }: InterviewProps) {
   return (
     <div className="flex justify-center items-center min-h-screen bg-gradient-to-br from-slate-50 via-indigo-50/30 to-purple-50/20">
       {/* Violation Warnings */}
-      {isStarted && <TabSwitchWarning />}
+      {isStarted && <TabSwitchWarning isOpen={isTabSwitchDialogOpen} onUnderstand={handleTabSwitchUnderstand} />}
       
       {/* Modern Violation Warnings */}
       <AnimatePresence>

@@ -37,12 +37,14 @@ const useTabSwitchPrevention = () => {
   return { isDialogOpen, tabSwitchCount, handleUnderstand };
 };
 
-function TabSwitchWarning() {
-  const { isDialogOpen, handleUnderstand } = useTabSwitchPrevention();
+type TabSwitchWarningProps = {
+  isOpen: boolean;
+  onUnderstand: () => void;
+};
 
-
+function TabSwitchWarning({ isOpen, onUnderstand }: TabSwitchWarningProps) {
   return (
-    <AlertDialog open={isDialogOpen}>
+    <AlertDialog open={isOpen}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Warning: Tab Switching</AlertDialogTitle>
@@ -54,7 +56,7 @@ function TabSwitchWarning() {
         <AlertDialogFooter>
           <AlertDialogAction
             className="bg-indigo-400 hover:bg-indigo-600 text-white"
-            onClick={handleUnderstand}
+            onClick={onUnderstand}
           >
             I understand
           </AlertDialogAction>
