@@ -112,6 +112,11 @@ function Call({ interview }: InterviewProps) {
   const prevMultiplePersonCountRef = useRef(0);
   const prevTabSwitchCountRef = useRef(0);
 
+  // Time-limit warning state
+  const [timeWarningShown, setTimeWarningShown] = useState(false);
+  const [showTimeWarning, setShowTimeWarning] = useState(false);
+  const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
+
   // Camera preview state - show video before interview starts
   const [showCameraPreview, setShowCameraPreview] = useState(true);
 
@@ -432,15 +437,34 @@ function Call({ interview }: InterviewProps) {
   useEffect(() => {
     let intervalId: any;
     if (isCalling) {
-      // setting time from 0 to 1 every 10 milisecond using javascript setInterval method
-      intervalId = setInterval(() => setTime(time + 1), 10);
+      intervalId = setInterval(() => setTime(prev => prev + 1), 10);
     }
-    setCurrentTimeDuration(String(Math.floor(time / 100)));
-    if (Number(currentTimeDuration) == Number(interviewTimeDuration) * 60) {
+    const elapsedSeconds = Math.floor(time / 100);
+    setCurrentTimeDuration(String(elapsedSeconds));
+
+    const limitSeconds = Number(interviewTimeDuration) * 60;
+    const remaining = limitSeconds - elapsedSeconds;
+
+    // Show 1-minute warning once
+    if (remaining <= 60 && remaining > 0 && !timeWarningShown && isCalling) {
+      setTimeWarningShown(true);
+      setShowTimeWarning(true);
+      setTimeRemainingSeconds(remaining);
+      toast.warning(`Interview ending in ${remaining} seconds. Please wrap up your answer.`, {
+        duration: 8000,
+      });
+    }
+
+    // Update live countdown while warning is showing
+    if (showTimeWarning && remaining > 0) {
+      setTimeRemainingSeconds(remaining);
+    }
+
+    if (elapsedSeconds >= limitSeconds && isCalling) {
+      setShowTimeWarning(false);
       webClient.stopCall();
       setIsEnded(true);
     }
-
 
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -787,10 +811,19 @@ function Call({ interview }: InterviewProps) {
           <ViolationWarning type="multiple-person" onDismiss={dismissMultiplePersonWarning} />
         )}
         {isStarted && !isEnded && showCameraOffAlert && cameraOffCountdown !== null && (
-          <CameraOffCountdownAlert 
-            countdown={cameraOffCountdown} 
-            onDismiss={() => setShowCameraOffAlert(false)} 
+          <CameraOffCountdownAlert
+            countdown={cameraOffCountdown}
+            onDismiss={() => setShowCameraOffAlert(false)}
           />
+        )}
+        {isStarted && !isEnded && showTimeWarning && timeRemainingSeconds !== null && (
+          <div
+            style={{ zIndex: 9999 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 font-semibold text-sm"
+          >
+            <AlarmClockIcon className="h-5 w-5 shrink-0" />
+            Interview ending in {timeRemainingSeconds}s — please wrap up your answer.
+          </div>
         )}
       </AnimatePresence>
 
