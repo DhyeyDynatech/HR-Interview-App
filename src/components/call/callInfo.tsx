@@ -438,22 +438,29 @@ function CallInfo({
               </div>
 
               {/* Video Status */}
-              <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-lg ${call?.disconnection_reason ? 'bg-yellow-100' : 'bg-green-100'}`}>
-                    <Video className={`h-5 w-5 ${call?.disconnection_reason ? 'text-yellow-600' : 'text-green-600'}`} />
+              {(() => {
+                const normalReasons = ['agent_hangup', 'user_hangup', 'call_transfer'];
+                const reason = call?.disconnection_reason;
+                const hasIssue = !!reason && !normalReasons.includes(reason);
+                return (
+                  <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2 rounded-lg ${hasIssue ? 'bg-yellow-100' : 'bg-green-100'}`}>
+                        <Video className={`h-5 w-5 ${hasIssue ? 'text-yellow-600' : 'text-green-600'}`} />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-xs text-gray-500 font-medium">Video/Audio Status</p>
+                        <p className={`text-lg font-bold ${hasIssue ? 'text-yellow-600' : 'text-green-600'}`}>
+                          {hasIssue ? 'Issues detected' : 'Normal'}
+                        </p>
+                        {hasIssue && (
+                          <p className="text-xs text-gray-500 mt-1 truncate">{reason}</p>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-gray-500 font-medium">Video/Audio Status</p>
-                    <p className={`text-lg font-bold ${call?.disconnection_reason ? 'text-yellow-600' : 'text-green-600'}`}>
-                      {call?.disconnection_reason ? 'Issues detected' : 'Normal'}
-                    </p>
-                    {call?.disconnection_reason && (
-                      <p className="text-xs text-gray-500 mt-1 truncate">{call.disconnection_reason}</p>
-                    )}
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
 
               {/* Voice Detection - Multiple Person */}
               <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
@@ -914,20 +921,20 @@ function CallInfo({
 
               {/* Violations Details Accordion Item */}
               {violationsSummary.length > 0 && (
-                <AccordionItem value="violations-details" className="border-b border-slate-300">
-                  <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
-                    <div className="flex items-center justify-between w-full pr-4">
-                      <span className="flex items-center gap-2">
-                        <Shield className="h-5 w-5 text-red-500" />
-                        Violations Details
-                      </span>
-                      <span className="text-xs text-red-600 font-medium px-2 py-0.5 rounded-full bg-red-100">
-                        {violationsSummary.length} total
-                      </span>
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent className="pt-2 pb-4">
-                    <div className="space-y-4">
+              <AccordionItem value="violations-details" className="border-b border-slate-300">
+                <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
+                  <div className="flex items-center justify-between w-full pr-4">
+                    <span className="flex items-center gap-2">
+                      <Shield className="h-5 w-5 text-red-500" />
+                      Violations Details
+                    </span>
+                    <span className="text-xs text-red-600 font-medium px-2 py-0.5 rounded-full bg-red-100">
+                      {violationsSummary.length} total
+                    </span>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="pt-2 pb-4">
+                  <div className="space-y-4">
                       {/* Violation Summary Cards - 5 boxes in 1 row */}
                       <div className="grid grid-cols-5 gap-3">
                         {/* Tab Switch Count */}
