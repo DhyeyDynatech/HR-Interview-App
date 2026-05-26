@@ -60,6 +60,16 @@ export const PRICING = {
   // This flat rate is only used as fallback when API cost is unavailable
   RETELL_VOICE_PER_MIN: 0.07,
 
+  // Azure Voice Live — token-based pricing (Basic tier rates per million tokens)
+  // Applies to gpt-4o-mini-realtime-preview, gpt-realtime-mini, gpt-5-mini, gpt-4.1-mini
+  // For Pro tier models (gpt-realtime, gpt-5, gpt-4.1), update these constants.
+  VOICE_LIVE: {
+    TEXT_INPUT_PER_M: 0.66,
+    TEXT_OUTPUT_PER_M: 2.64,
+    AUDIO_INPUT_PER_M: 15.0,
+    AUDIO_OUTPUT_PER_M: 30.0,
+  },
+
   // OpenAI Web Search tool — per search call (flat fee)
   // gpt-5-mini: $10 / 1,000 calls = $0.01 per call
   WEB_SEARCH_PER_CALL: 0.01,  // $0.01 per call
@@ -85,7 +95,7 @@ export type UsageCategory =
   | "company_finder"         // Company extraction from resumes
   | "resume_parsing";        // Vision OCR for image-based (scanned) resumes
 
-export type ServiceType = "openai" | "retell" | "vercel";
+export type ServiceType = "openai" | "retell" | "azure-voicelive" | "vercel";
 
 // Category labels for display
 export const CATEGORY_LABELS: Record<UsageCategory, string> = {

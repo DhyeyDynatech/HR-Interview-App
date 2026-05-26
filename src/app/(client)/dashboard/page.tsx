@@ -9,7 +9,8 @@ import { ResponseService } from "@/services/responses.service";
 import { useInterviews } from "@/contexts/interviews.context";
 import Modal from "@/components/dashboard/Modal";
 import { Button } from "@/components/ui/button";
-import { Gem, Plus } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Gem, LayoutGrid, List, Plus, Search } from "lucide-react";
 import Image from "next/image";
 
 function Interviews() {
@@ -21,6 +22,8 @@ function Interviews() {
     useState<number>(10);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
+  const [search, setSearch] = useState<string>('');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
   function InterviewsLoader() {
     return (
@@ -60,7 +63,7 @@ function Interviews() {
   return (
     <main className="p-6 w-full rounded-md">
       <div className="flex flex-col w-full">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div>
             <h2 className="text-2xl font-semibold tracking-tight">
               My Interviews
@@ -69,17 +72,46 @@ function Interviews() {
               Start getting responses now!
             </h3>
           </div>
-          {currentPlan !== "free_trial_over" && (
-            <Button
-              onClick={() => setIsCreateModalOpen(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Create Interview
-            </Button>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+              <Input
+                placeholder="Search interviews..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-9 w-56"
+              />
+            </div>
+            <div className="flex border rounded-md overflow-hidden">
+              <button
+                type="button"
+                title="Grid view"
+                onClick={() => setViewMode('grid')}
+                className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+              >
+                <LayoutGrid size={16} />
+              </button>
+              <button
+                type="button"
+                title="List view"
+                onClick={() => setViewMode('list')}
+                className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+              >
+                <List size={16} />
+              </button>
+            </div>
+            {currentPlan !== "free_trial_over" && (
+              <Button
+                onClick={() => setIsCreateModalOpen(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Create Interview
+              </Button>
+            )}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-4">
+        <div className={viewMode === 'grid' ? "flex flex-wrap gap-4" : "flex flex-col gap-2"}>
           {interviewsLoading || loading ? (
             <InterviewsLoader />
           ) : (
@@ -134,16 +166,26 @@ function Interviews() {
                   </div>
                 </Modal>
               )}
-              {interviews.map((item) => (
-                <InterviewCard
-                  id={item.id}
-                  interviewerId={item.interviewer_id}
-                  key={item.id}
-                  name={item.name}
-                  url={item.url ?? ""}
-                  readableSlug={item.readable_slug}
-                />
-              ))}
+              {interviews
+                .filter((item) =>
+                  (item.name ?? '').toLowerCase().includes(search.toLowerCase())
+                )
+                .map((item) => (
+                  <InterviewCard
+                    id={item.id}
+                    interviewerId={item.interviewer_id}
+                    key={item.id}
+                    name={item.name}
+                    url={item.url ?? ""}
+                    readableSlug={item.readable_slug}
+                    variant={viewMode}
+                  />
+                ))}
+              {interviews.filter((item) =>
+                (item.name ?? '').toLowerCase().includes(search.toLowerCase())
+              ).length === 0 && !interviewsLoading && !loading && (
+                <p className="text-sm text-gray-500 py-8">No interviews match your search.</p>
+              )}
             </>
           )}
         </div>

@@ -13,7 +13,7 @@ export type UsageCategory =
   | "company_finder"
   | "resume_parsing";
 
-export type ServiceType = "openai" | "retell" | "vercel";
+export type ServiceType = "openai" | "retell" | "azure-voicelive" | "vercel";
 
 // Interfaces for saving usage
 export interface SaveOpenAIUsageParams {
@@ -39,6 +39,22 @@ export interface SaveVoiceUsageParams {
   durationSeconds: number;
   requestId?: string;
   retellCost?: number;      // Cost from Retell API call_cost.combined_cost (in dollars)
+  metadata?: Record<string, any>;
+}
+
+export interface SaveVoiceLiveUsageParams {
+  organizationId?: string;
+  userId?: string;
+  interviewId?: string;
+  responseId?: number;
+  durationSeconds: number;
+  requestId?: string;
+  // Token counts reported by Voice Live response.done events
+  inputTokens: number;
+  outputTokens: number;
+  inputAudioTokens: number;
+  outputAudioTokens: number;
+  model?: string;
   metadata?: Record<string, any>;
 }
 
@@ -257,6 +273,94 @@ export class ApiUsageService {
     if (error) {
       console.error("Error saving voice usage:", error);
       // Don't throw - we don't want to break the main flow if logging fails
+    }
+  }
+
+  /**
+   * Calculate Azure Voice Live cost from token counts (Basic tier rates).
+   * Audio + text tokens are billed at different rates.
+   */
+  static calculateVoiceLiveCost(params: {
+    inputTokens: number;
+    outputTokens: number;
+    inputAudioTokens: number;
+    outputAudioTokens: number;
+  }): number {
+    const textInput = Math.max(0, params.inputTokens - params.inputAudioTokens);
+    const textOutput = Math.max(0, params.outputTokens - params.outputAudioTokens);
+    const cost =
+      (textInput * PRICING.VOICE_LIVE.TEXT_INPUT_PER_M +
+        textOutput * PRICING.VOICE_LIVE.TEXT_OUTPUT_PER_M +
+        params.inputAudioTokens * PRICING.VOICE_LIVE.AUDIO_INPUT_PER_M +
+        params.outputAudioTokens * PRICING.VOICE_LIVE.AUDIO_OUTPUT_PER_M) /
+      1_000_000;
+
+    return Number(cost.toFixed(6));
+  }
+
+  /**
+   * Save Azure Voice Live call usage record.
+   * Cost is computed locally from token counts streamed via Voice Live's
+   * response.done events — there is no equivalent of Retell's call_cost API.
+   * Uses request_id (our generated call_id) for deduplication.
+   */
+  static async saveVoiceLiveUsage(params: SaveVoiceLiveUsageParams): Promise<void> {
+    if (!params.organizationId) {
+      console.warn(
+        `[ApiUsage] WARNING: saving voicelive usage with NULL organizationId (interviewId=${params.interviewId})`,
+      );
+    }
+
+    const supabase = getSupabaseClient();
+
+    if (params.requestId) {
+      const { data: existing } = await supabase
+        .from("api_usage")
+        .select("id")
+        .eq("request_id", params.requestId)
+        .eq("category", "voice_call")
+        .limit(1);
+
+      if (existing && existing.length > 0) {
+        console.log(
+          `Voice Live usage already recorded for call ${params.requestId}, skipping duplicate`,
+        );
+
+        return;
+      }
+    }
+
+    const cost = this.calculateVoiceLiveCost({
+      inputTokens: params.inputTokens,
+      outputTokens: params.outputTokens,
+      inputAudioTokens: params.inputAudioTokens,
+      outputAudioTokens: params.outputAudioTokens,
+    });
+
+    const { error } = await supabase.from("api_usage").insert({
+      organization_id: params.organizationId || null,
+      user_id: params.userId || null,
+      interview_id: params.interviewId || null,
+      response_id: params.responseId || null,
+      category: "voice_call",
+      service: "azure-voicelive",
+      input_tokens: params.inputTokens,
+      output_tokens: params.outputTokens,
+      total_tokens: params.inputTokens + params.outputTokens,
+      duration_seconds: params.durationSeconds,
+      cost_usd: cost,
+      model: params.model || null,
+      request_id: params.requestId || null,
+      metadata: {
+        ...params.metadata,
+        inputAudioTokens: params.inputAudioTokens,
+        outputAudioTokens: params.outputAudioTokens,
+        costSource: "voicelive_token_calc",
+      },
+    });
+
+    if (error) {
+      console.error("Error saving Voice Live usage:", error);
     }
   }
 

@@ -19,18 +19,19 @@ const publicRoutes = [
   "/api/validate-user",
   "/api/users/bulk-import-noauth",
   "/api/get-assignee-photo",
+  // Voice Live production save-call endpoint — called by candidate browser at end of call
+  "/api/voice-live",
+  // Voice Live recording upload — candidate has no JWT; the route authorizes
+  // by validating the call_id against the response table itself.
+  "/api/upload-call-recording",
 ];
 
 // Routes that require authentication
-const protectedRoutes = [
-  "/dashboard",
-];
+const protectedRoutes = ["/dashboard"];
 
 function isPublicRoute(pathname: string): boolean {
-
-  return publicRoutes.some(route => {
+  return publicRoutes.some((route) => {
     if (route.endsWith("/")) {
-
       return pathname === route || pathname.startsWith(route);
     }
 
@@ -39,9 +40,8 @@ function isPublicRoute(pathname: string): boolean {
 }
 
 function isProtectedRoute(pathname: string): boolean {
-
-  return protectedRoutes.some(route => 
-    pathname === route || pathname.startsWith(route + "/")
+  return protectedRoutes.some(
+    (route) => pathname === route || pathname.startsWith(route + "/"),
   );
 }
 
@@ -50,13 +50,13 @@ export function middleware(request: NextRequest) {
 
   // Allow public routes
   if (isPublicRoute(pathname)) {
-
     return NextResponse.next();
   }
 
   // Check for authentication token
-  const token = request.cookies.get("auth_token")?.value || 
-                request.headers.get("Authorization")?.replace("Bearer ", "");
+  const token =
+    request.cookies.get("auth_token")?.value ||
+    request.headers.get("Authorization")?.replace("Bearer ", "");
 
   // For protected routes, redirect to sign-in if not authenticated
   if (isProtectedRoute(pathname) && !token) {
@@ -70,10 +70,9 @@ export function middleware(request: NextRequest) {
   if (pathname.startsWith("/api/") && !token) {
     return NextResponse.json(
       { success: false, message: "Unauthorized" },
-      { status: 401 }
+      { status: 401 },
     );
   }
-
 
   return NextResponse.next();
 }

@@ -6,6 +6,7 @@ import {
   UserXIcon,
   MonitorIcon,
   XIcon,
+  VideoOffIcon,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -153,40 +154,62 @@ interface ViolationTrackerProps {
 }
 
 export function CameraOffCountdownAlert({ countdown, onDismiss }: CameraOffCountdownAlertProps) {
+  const TOTAL = 120;
   const minutes = Math.floor(countdown / 60);
   const seconds = countdown % 60;
   const formattedTime = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  const progressPct = Math.max(0, (countdown / TOTAL) * 100);
+  const isUrgent = countdown <= 30;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: -20, scale: 0.95 }}
+      initial={{ opacity: 0, y: -30, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -20, scale: 0.95 }}
+      exit={{ opacity: 0, y: -30, scale: 0.95 }}
       transition={{ duration: 0.3 }}
-      className="fixed top-4 right-4 z-50 w-full max-w-md"
+      className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-sm"
     >
-      <div className="bg-white rounded-lg shadow-lg p-4 border border-gray-200 relative">
-        <div className="flex items-start gap-2">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-gray-900 font-bold leading-relaxed mb-2">
-              Please turn on your <span className="text-red-600">camera</span> to start the interview.
-            </p>
-            <p className="text-sm text-gray-900 font-bold leading-relaxed flex items-start gap-2">
-              <span className="w-5 h-5 rounded-full bg-black flex items-center justify-center flex-shrink-0 mt-0.5">
-                <span className="text-white text-xs font-bold">!</span>
-              </span>
-              <span>The interview cannot begin without <span className="text-red-600">camera access</span>. If your camera remains off for <span className="text-red-600">{formattedTime}</span>, your interview will be automatically ended.</span>
-            </p>
+      <div className={`rounded-2xl shadow-2xl border-2 overflow-hidden ${isUrgent ? 'border-red-500 bg-red-50' : 'border-orange-400 bg-white'}`}>
+        {/* Progress bar at top — drains as time runs out */}
+        <div className="h-1.5 bg-gray-200">
+          <div
+            className={`h-full transition-all duration-1000 ease-linear ${isUrgent ? 'bg-red-500' : 'bg-orange-400'}`}
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+
+        <div className="p-5">
+          {/* Header */}
+          <div className="flex items-center gap-3 mb-4">
+            <div className={`p-2 rounded-full ${isUrgent ? 'bg-red-100' : 'bg-orange-100'}`}>
+              <VideoOffIcon className={`h-5 w-5 ${isUrgent ? 'text-red-600' : 'text-orange-500'}`} />
+            </div>
+            <div className="flex-1">
+              <p className="font-bold text-gray-900 text-sm">Camera Off</p>
+              <p className="text-xs text-gray-500">Turn your camera back on to continue</p>
+            </div>
+            {onDismiss && (
+              <button
+                onClick={onDismiss}
+                className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
+                aria-label="Dismiss"
+              >
+                <XIcon className="h-4 w-4 text-gray-400" />
+              </button>
+            )}
           </div>
-          {onDismiss && (
-            <button
-              className="absolute top-2 right-2 p-1 hover:bg-gray-100 rounded-lg transition-colors"
-              aria-label="Dismiss warning"
-              onClick={onDismiss}
-            >
-              <XIcon className="h-5 w-5 text-gray-600" />
-            </button>
-          )}
+
+          {/* Large countdown */}
+          <div className="text-center py-2">
+            <span className={`text-6xl font-black tabular-nums tracking-tight ${isUrgent ? 'text-red-600' : 'text-orange-500'}`}>
+              {formattedTime}
+            </span>
+            <p className="text-xs text-gray-500 mt-1">until interview ends automatically</p>
+          </div>
+
+          <p className="text-xs text-center text-gray-400 mt-3">
+            Timer stops automatically once your camera is back on.
+          </p>
         </div>
       </div>
     </motion.div>

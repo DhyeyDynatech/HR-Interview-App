@@ -330,29 +330,29 @@ function CostAnalysisPage() {
         return (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {item.interviewName && (
-              <div className="flex items-center gap-2">
-                <Briefcase className="h-4 w-4 text-purple-500" />
-                <div>
+              <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                <Briefcase className="h-4 w-4 text-purple-500 flex-shrink-0" />
+                <div className="min-w-0 overflow-hidden">
                   <p className="text-xs text-gray-500">Interview</p>
-                  <p className="text-sm font-medium">{item.interviewName}</p>
+                  <p className="text-sm font-medium truncate" title={item.interviewName}>{item.interviewName}</p>
                 </div>
               </div>
             )}
             {metadata.candidateName && (
-              <div className="flex items-center gap-2">
-                <User className="h-4 w-4 text-purple-500" />
-                <div>
+              <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                <User className="h-4 w-4 text-purple-500 flex-shrink-0" />
+                <div className="min-w-0 overflow-hidden">
                   <p className="text-xs text-gray-500">Candidate</p>
-                  <p className="text-sm font-medium">{metadata.candidateName}</p>
+                  <p className="text-sm font-medium truncate" title={metadata.candidateName}>{metadata.candidateName}</p>
                 </div>
               </div>
             )}
             {metadata.candidateEmail && (
-              <div className="flex items-center gap-2">
-                <Mail className="h-4 w-4 text-purple-500" />
-                <div>
+              <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                <Mail className="h-4 w-4 text-purple-500 flex-shrink-0" />
+                <div className="min-w-0 overflow-hidden">
                   <p className="text-xs text-gray-500">Email</p>
-                  <p className="text-sm font-medium">{metadata.candidateEmail}</p>
+                  <p className="text-sm font-medium truncate" title={metadata.candidateEmail}>{metadata.candidateEmail}</p>
                 </div>
               </div>
             )}
@@ -365,36 +365,36 @@ function CostAnalysisPage() {
             {/* Call Info Section */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {item.interviewName && (
-                <div className="flex items-center gap-2">
-                  <Briefcase className="h-4 w-4 text-orange-500" />
-                  <div>
+                <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                  <Briefcase className="h-4 w-4 text-orange-500 flex-shrink-0" />
+                  <div className="min-w-0 overflow-hidden">
                     <p className="text-xs text-gray-500">Interview</p>
-                    <p className="text-sm font-medium">{item.interviewName}</p>
+                    <p className="text-sm font-medium truncate" title={item.interviewName}>{item.interviewName}</p>
                   </div>
                 </div>
               )}
               {metadata.candidateName && (
-                <div className="flex items-center gap-2">
-                  <User className="h-4 w-4 text-orange-500" />
-                  <div>
+                <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                  <User className="h-4 w-4 text-orange-500 flex-shrink-0" />
+                  <div className="min-w-0 overflow-hidden">
                     <p className="text-xs text-gray-500">Candidate</p>
-                    <p className="text-sm font-medium">{metadata.candidateName}</p>
+                    <p className="text-sm font-medium truncate" title={metadata.candidateName}>{metadata.candidateName}</p>
                   </div>
                 </div>
               )}
               {metadata.candidateEmail && (
-                <div className="flex items-center gap-2">
-                  <Mail className="h-4 w-4 text-orange-500" />
-                  <div>
+                <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                  <Mail className="h-4 w-4 text-orange-500 flex-shrink-0" />
+                  <div className="min-w-0 overflow-hidden">
                     <p className="text-xs text-gray-500">Email</p>
-                    <p className="text-sm font-medium">{metadata.candidateEmail}</p>
+                    <p className="text-sm font-medium truncate" title={metadata.candidateEmail}>{metadata.candidateEmail}</p>
                   </div>
                 </div>
               )}
               {item.durationMinutes && (
-                <div className="flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-orange-500" />
-                  <div>
+                <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                  <Clock className="h-4 w-4 text-orange-500 flex-shrink-0" />
+                  <div className="min-w-0 overflow-hidden">
                     <p className="text-xs text-gray-500">Call Duration</p>
                     <p className="text-sm font-medium">{item.durationMinutes} minutes</p>
                   </div>
@@ -402,19 +402,25 @@ function CostAnalysisPage() {
               )}
             </div>
 
-            {/* Retell API Cost */}
+            {/* Voice Call Cost (label adapts to provider) */}
             {item.cost > 0 && (
               <div className="mt-2 p-3 bg-orange-50 rounded-lg border border-orange-100">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <DollarSign className="h-4 w-4 text-orange-600" />
-                    <span className="text-sm font-medium text-orange-800">Retell API Cost</span>
+                    <span className="text-sm font-medium text-orange-800">
+                      {item.service === "azure-voicelive"
+                        ? "Azure Voice Live API Cost"
+                        : "Retell API Cost"}
+                    </span>
                   </div>
                   <span className="text-sm font-semibold text-orange-700">${item.cost.toFixed(4)}</span>
                 </div>
                 {item.durationMinutes && item.durationMinutes > 0 && (
                   <p className="text-xs text-orange-600 mt-1">
-                    ~${(item.cost / item.durationMinutes).toFixed(4)}/min
+                    {item.service === "azure-voicelive"
+                      ? "token-based pricing · audio + text"
+                      : `~$${(item.cost / item.durationMinutes).toFixed(4)}/min`}
                   </p>
                 )}
                 {metadata.costSource === "fallback_estimate" && (
@@ -876,7 +882,7 @@ function CostAnalysisPage() {
                     <div className="text-xs mt-1 opacity-75">
                       {cat.service === "openai" ? (
                         <span>{cat.totalTokens.toLocaleString()} tokens ({cat.count} calls)</span>
-                      ) : cat.service === "retell" ? (
+                      ) : cat.service === "retell" || cat.service === "azure-voicelive" ? (
                         <span>{cat.totalDurationMinutes.toFixed(1)} min ({cat.count} calls)</span>
                       ) : cat.category === "blob_upload" ? (
                         <span>{(cat.totalStorageBytes / (1024 * 1024 * 1024)).toFixed(4)} GB stored</span>
@@ -930,10 +936,26 @@ function CostAnalysisPage() {
                 </div>
               </div>
               {/* Voice + Storage */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="p-2 bg-white rounded border">
                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Voice (Retell)</span>
                   <div className="text-xs mt-0.5 text-gray-600">~$0.07+/min <span className="text-gray-400">(varies by LLM &amp; voice engine)</span></div>
+                </div>
+                <div className="p-2 bg-white rounded border">
+                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Azure Voice Live (Basic)</span>
+                  <div className="text-xs mt-0.5 text-gray-600 space-y-0.5">
+                    <div>
+                      <span className="text-gray-500">Text:</span>{" "}
+                      <span className="text-emerald-600">${PRICING.VOICE_LIVE.TEXT_INPUT_PER_M} in</span>{" "}
+                      <span className="text-blue-600">${PRICING.VOICE_LIVE.TEXT_OUTPUT_PER_M} out</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Audio:</span>{" "}
+                      <span className="text-emerald-600">${PRICING.VOICE_LIVE.AUDIO_INPUT_PER_M} in</span>{" "}
+                      <span className="text-blue-600">${PRICING.VOICE_LIVE.AUDIO_OUTPUT_PER_M} out</span>
+                    </div>
+                    <div className="text-gray-400">per 1M tokens</div>
+                  </div>
                 </div>
                 <div className="p-2 bg-white rounded border">
                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Vercel Blob Storage (Pro)</span>
@@ -1110,7 +1132,13 @@ function CostAnalysisPage() {
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline">
-                            {item.service === "openai" ? (item.model || "gpt-5-mini") : item.service === "retell" ? "Retell" : "Vercel Blob"}
+                            {item.service === "openai"
+                              ? (item.model || "gpt-5-mini")
+                              : item.service === "retell"
+                                ? "Retell"
+                                : item.service === "azure-voicelive"
+                                  ? "Voice Live"
+                                  : "Vercel Blob"}
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">

@@ -73,6 +73,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
         console.log('🔐 Auth Provider: No token found');
         setUser(null);
         setToken(null);
+
+        // If we're on a protected route, redirect immediately and KEEP
+        // isLoading=true so the layout's loading screen stays visible until
+        // /sign-in mounts. This prevents the brief flash of protected
+        // content that happens if we setIsLoading(false) before navigating.
+        const publicPages = ['/sign-in', '/sign-up', '/call/', '/reset-password'];
+        const isPublicPage = publicPages.some(page => pathname?.includes(page));
+        if (!isPublicPage) {
+          router.push('/sign-in');
+
+          return;
+        }
+
         setIsLoading(false);
 
         return;

@@ -19,27 +19,20 @@ function getRetellClient() {
 }
 
 // Power Automate Flow Configuration
-const POWER_AUTOMATE_FLOW_URL = process.env.POWER_AUTOMATE_FLOW_URL || 
-  "https://8250a9bfeb76ef4cba38b14a0bb011.0c.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/c23211e1facb4777976e1d4443b2dd11/triggers/manual/paths/invoke?api-version=1";
+const POWER_AUTOMATE_FLOW_URL = process.env.POWER_AUTOMATE_FLOW_URL ?? "";
 
 const POWER_AUTOMATE_ACCESS_TOKEN = process.env.POWER_AUTOMATE_ACCESS_TOKEN;
 const POWER_AUTOMATE_SAS_TOKEN = process.env.POWER_AUTOMATE_SAS_TOKEN;
 
-/**
- * Send email via Power Automate
- */
 const sendEmailViaPowerAutomate = async (
   to: string,
   subject: string,
-  body: string
+  body: string,
+  attempt = 1,
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
   try {
     const requestBody = {
-      emailMeta: {
-        to: to,
-        subject: subject,
-        body: body,
-      },
+      emailMeta: { to, subject, body },
     };
 
     const headers: HeadersInit = {
@@ -51,7 +44,7 @@ const sendEmailViaPowerAutomate = async (
     }
 
     let flowUrl = POWER_AUTOMATE_FLOW_URL;
-    
+
     if (POWER_AUTOMATE_SAS_TOKEN && !flowUrl.includes("sig=")) {
       const separator = flowUrl.includes("?") ? "&" : "?";
       let sigValue = POWER_AUTOMATE_SAS_TOKEN;
@@ -73,7 +66,7 @@ const sendEmailViaPowerAutomate = async (
 
     const response = await fetch(flowUrl, {
       method: "POST",
-      headers: headers,
+      headers,
       body: JSON.stringify(requestBody),
     });
 
@@ -97,6 +90,15 @@ const sendEmailViaPowerAutomate = async (
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error(`Error calling Power Automate:`, errorMessage);
+
+    // Power Automate cold-start retry — the flow runtime resets the connection
+    // on the first call after inactivity.  Wait 2 s then try once more.
+    if (attempt === 1) {
+      logger.warn(`Power Automate cold-start detected, retrying in 2 s… (to: ${to})`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      return sendEmailViaPowerAutomate(to, subject, body, 2);
+    }
 
     return {
       success: false,
@@ -166,27 +168,48 @@ export async function POST(req: NextRequest) {
     
     if (!response.is_analysed || !analytics.overallScore) {
       logger.info(`Analytics not found for call ${callId}, generating now...`);
-      
+
+      // Voice Live calls have call_ids prefixed with "vl-" — Retell's API
+      // doesn't know about them. For those, use the transcript that
+      // /api/voice-live/save-call stored on response.details.transcript
+      // instead of calling Retell's SDK (which would 404).
+      const isVoiceLiveCall = String(callId).startsWith("vl-");
+
       try {
-        // Retrieve call details from Retell
-        const retell = getRetellClient();
-        const callOutput = await retell.call.retrieve(callId);
-        const transcript = callOutput.transcript;
-        
-        if (!transcript) {
-          logger.warn(`Transcript not available for call ${callId}, analytics cannot be generated`);
+        let transcript: string | undefined;
+
+        if (isVoiceLiveCall) {
+          transcript =
+            response?.details?.transcript ||
+            (typeof response?.details === "object" && response.details?.transcript) ||
+            undefined;
+          if (!transcript) {
+            logger.warn(
+              `Voice Live call ${callId} has no transcript on response.details yet — save-call may still be in flight. Skipping analytics regen.`,
+            );
+          }
         } else {
-          // Generate analytics
+          // Retell path — unchanged behavior
+          const retell = getRetellClient();
+          const callOutput = await retell.call.retrieve(callId);
+          transcript = callOutput.transcript;
+          if (!transcript) {
+            logger.warn(
+              `Transcript not available for call ${callId}, analytics cannot be generated`,
+            );
+          }
+        }
+
+        if (transcript) {
           const analyticsResult = await generateInterviewAnalytics({
             callId: callId,
             interviewId: response.interview_id,
             transcript: transcript,
           });
-          
+
           if (analyticsResult.analytics) {
             analytics = analyticsResult.analytics;
-            
-            // Update response with generated analytics
+
             await ResponseService.saveResponse(
               {
                 is_analysed: true,
@@ -194,7 +217,7 @@ export async function POST(req: NextRequest) {
               },
               callId,
             );
-            
+
             logger.info(`Analytics generated successfully for call ${callId}`);
           } else {
             logger.error(`Failed to generate analytics for call ${callId}`);

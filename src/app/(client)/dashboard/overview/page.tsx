@@ -188,7 +188,7 @@ function DashboardOverview() {
 
   const recentAssignees = useMemo(() => {
     return [...assignees]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .sort((a, b) => new Date(b.updated_at ?? b.created_at).getTime() - new Date(a.updated_at ?? a.created_at).getTime())
       .slice(0, 3);
   }, [assignees]);
 
@@ -232,8 +232,8 @@ function DashboardOverview() {
     if (diffDays === 0) return "Today";
     if (diffDays === 1) return "1 day ago";
     if (diffDays < 7) return `${diffDays} days ago`;
-    if (diffDays < 30) return `${Math.floor(diffDays / 7)} wer ago`;
-    return `${Math.floor(diffDays / 30)} Im ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} week${Math.floor(diffDays / 7) > 1 ? 's' : ''} ago`;
+    return `${Math.floor(diffDays / 30)} month${Math.floor(diffDays / 30) > 1 ? 's' : ''} ago`;
   };
 
   const getStatusBadge = (candidate: InterviewAssignee) => {
@@ -695,7 +695,7 @@ function DashboardOverview() {
         <Card className="border shadow-sm">
           <CardHeader className="pb-2 pt-4 px-4 md:px-5">
             <CardTitle className="text-sm md:text-base font-semibold text-gray-900">Alerts & Quick Actions</CardTitle>
-            <p className="text-[10px] md:text-xs text-gray-400">Enters, at stated ncparvive, whip proode hore</p>
+            <p className="text-[10px] md:text-xs text-gray-400">Quick access to common actions and platform shortcuts</p>
           </CardHeader>
           <CardContent className="px-4 md:px-5 pb-4">
             <div className="flex flex-wrap gap-2 md:gap-3">

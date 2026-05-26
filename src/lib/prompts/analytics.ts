@@ -50,13 +50,15 @@ Based on this transcript and the provided main interview questions, generate the
             b) Any follow-up questions that were asked related to this main question and their answers
           - The summary should be a cohesive paragraph encompassing all related information for each main question
 4. Create a 10 to 15 words summary regarding the soft skills considering factors such as confidence, leadership, adaptability, critical thinking and decision making.
+5. User Sentiment: a single-word label describing the candidate's overall emotional tone during the interview. Must be exactly one of: "Positive", "Neutral", "Negative", or "Unknown" (use "Unknown" only if the transcript is empty or too short to judge).
 Ensure the output is in valid JSON format with the following structure:
 {
   "overallScore": number,
   "overallFeedback": string,
   "communication": { "score": number, "feedback": string },
   "questionSummaries": [{ "question": string, "summary": string }],
-  "softSkillSummary: string
+  "softSkillSummary": string,
+  "userSentiment": string
 }
 
 IMPORTANT: Only use the main questions provided. Do not generate or infer additional questions such as follow-up questions.`;

@@ -9,8 +9,9 @@ import * as UserService from '@/services/users.service';
 const base_url = process.env.NEXT_PUBLIC_LIVE_URL;
 
 // Power Automate Flow Configuration
-const POWER_AUTOMATE_FLOW_URL = process.env.POWER_AUTOMATE_FLOW_URL || 
-  "https://8250a9bfeb76ef4cba38b14a0bb011.0c.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/c23211e1facb4777976e1d4443b2dd11/triggers/manual/paths/invoke?api-version=1";
+// No hardcoded fallback — a missing env var should fail loudly, not silently
+// route to a dead endpoint.
+const POWER_AUTOMATE_FLOW_URL = process.env.POWER_AUTOMATE_FLOW_URL ?? "";
 
 // Power Automate Authentication
 // Option 1: OAuth Bearer Token
@@ -37,38 +38,38 @@ const POWER_AUTOMATE_SAS_TOKEN = process.env.POWER_AUTOMATE_SAS_TOKEN;
  *   }
  * }
  */
+// Power Automate HTTP trigger flows have a cold-start behaviour: the first
+// call after a period of inactivity gets its TCP connection reset while the
+// flow runtime warms up, producing a low-level "fetch failed" error.  A
+// single automatic retry after a short delay is enough to hit the now-warm
+// flow and succeed.
 const sendEmailViaPowerAutomate = async (
   to: string,
   subject: string,
-  body: string
+  body: string,
+  attempt = 1,
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
   try {
     const requestBody = {
       emailMeta: {
-        to: to,
-        subject: subject,
-        body: body,
+        to,
+        subject,
+        body,
       },
     };
 
-    // Prepare headers
     const headers: HeadersInit = {
       "Content-Type": "application/json",
     };
 
-    // Add OAuth Bearer token if provided
     if (POWER_AUTOMATE_ACCESS_TOKEN) {
       headers["Authorization"] = `Bearer ${POWER_AUTOMATE_ACCESS_TOKEN}`;
     }
 
-    // Build URL - check if SAS token is already in URL or needs to be added
     let flowUrl = POWER_AUTOMATE_FLOW_URL;
-    
-    // If SAS token is provided separately and not already in URL, add it
+
     if (POWER_AUTOMATE_SAS_TOKEN && !flowUrl.includes("sig=")) {
-      // Add SAS token as query parameter
       const separator = flowUrl.includes("?") ? "&" : "?";
-      // Extract just the sig value if full SAS token string is provided
       let sigValue = POWER_AUTOMATE_SAS_TOKEN;
       if (POWER_AUTOMATE_SAS_TOKEN.includes("sig=")) {
         const match = POWER_AUTOMATE_SAS_TOKEN.match(/sig=([^&]+)/);
@@ -77,7 +78,6 @@ const sendEmailViaPowerAutomate = async (
       flowUrl = `${flowUrl}${separator}sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=${encodeURIComponent(sigValue)}`;
     }
 
-    // Also try adding SAS token as header (some flows may require this)
     if (POWER_AUTOMATE_SAS_TOKEN && !POWER_AUTOMATE_ACCESS_TOKEN) {
       let sigValue = POWER_AUTOMATE_SAS_TOKEN;
       if (POWER_AUTOMATE_SAS_TOKEN.includes("sig=")) {
@@ -89,7 +89,7 @@ const sendEmailViaPowerAutomate = async (
 
     const response = await fetch(flowUrl, {
       method: "POST",
-      headers: headers,
+      headers,
       body: JSON.stringify(requestBody),
     });
 
@@ -106,7 +106,6 @@ const sendEmailViaPowerAutomate = async (
     const result = await response.json().catch(() => ({}));
     logger.info(`Email sent via Power Automate to ${to}`);
 
-
     return {
       success: true,
       messageId: result?.messageId || `powerautomate-${Date.now()}`,
@@ -114,6 +113,15 @@ const sendEmailViaPowerAutomate = async (
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error(`Error calling Power Automate:`, errorMessage);
+
+    // Power Automate cold-start retry — the flow runtime resets the connection
+    // on the first call after inactivity.  Wait 2 s then try once more.
+    if (attempt === 1) {
+      logger.warn(`Power Automate cold-start detected, retrying in 2 s… (to: ${to})`);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      return sendEmailViaPowerAutomate(to, subject, body, 2);
+    }
 
     return {
       success: false,

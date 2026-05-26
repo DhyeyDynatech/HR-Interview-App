@@ -16,11 +16,12 @@ interface Props {
   id: string;
   url: string;
   readableSlug: string;
+  variant?: 'grid' | 'list';
 }
 
 const base_url = process.env.NEXT_PUBLIC_LIVE_URL;
 
-function InterviewCard({ name, interviewerId, id, url, readableSlug }: Props) {
+function InterviewCard({ name, interviewerId, id, url, readableSlug, variant = 'grid' }: Props) {
   const [copied, setCopied] = useState(false);
   const [responseCount, setResponseCount] = useState<number | null>(null);
   const [isFetching, setIsFetching] = useState(false);
@@ -37,9 +38,24 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug }: Props) {
   }, []);
 
   useEffect(() => {
-    const fetchResponses = async () => {
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const startTime = Date.now();
+    // For Retell, get-call drives analysis inline so usually one tick is
+    // enough. For Voice Live, analysis is driven by /api/voice-live/save-call
+    // on the candidate's connection, so the dashboard has to keep polling
+    // until that finishes. Five minutes is a safe upper bound — longer than
+    // any realistic interview-end-to-analytics gap, short enough to stop
+    // spinning forever if save-call crashed.
+    const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
+    const POLL_INTERVAL_MS = 5000;
+
+    const tick = async () => {
+      if (cancelled) return;
+
       try {
         const responses = await ResponseService.getAllResponses(id);
+        if (cancelled) return;
 
         // Count unique respondents by email (one per assignee)
         const uniqueEmails = new Set(
@@ -48,31 +64,46 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug }: Props) {
             .filter((email: string | undefined | null) => !!email),
         );
         setResponseCount(uniqueEmails.size);
-        if (responses.length > 0) {
-          setIsFetching(true);
-          for (const response of responses) {
-            if (!response.is_analysed) {
-              try {
-                const result = await axios.post("/api/get-call", {
-                  id: response.call_id,
-                });
 
-                if (result.status !== 200) {
-                  throw new Error(`HTTP error! status: ${result.status}`);
-                }
-              } catch {
-                // API call failed - skip this response
-              }
-            }
+        const unanalysed = responses.filter((r: any) => !r.is_analysed);
+        if (unanalysed.length === 0) {
+          setIsFetching(false);
+
+          return;
+        }
+
+        setIsFetching(true);
+
+        // Drive each unanalysed response forward. For Retell this runs
+        // analytics inline; for Voice Live this either retries analytics
+        // from the saved transcript or returns in_progress (no-op).
+        for (const response of unanalysed) {
+          if (cancelled) return;
+          try {
+            await axios.post("/api/get-call", { id: response.call_id });
+          } catch {
+            // API failure — keep polling, save-call may still be in flight
           }
+        }
+
+        if (cancelled) return;
+
+        if (Date.now() - startTime < MAX_POLL_DURATION_MS) {
+          pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+        } else {
           setIsFetching(false);
         }
       } catch {
-        // Failed to fetch responses
+        if (!cancelled) setIsFetching(false);
       }
     };
 
-    fetchResponses();
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -110,15 +141,66 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug }: Props) {
     window.open(interviewUrl, "_blank");
   };
 
+  const linkStyle = {
+    pointerEvents: isFetching ? ("none" as const) : ("auto" as const),
+    cursor: isFetching ? "default" : "pointer",
+  };
+
+  if (variant === 'list') {
+
+    return (
+      <a href={`/interviews/${id}`} style={linkStyle}>
+        <div className={`flex items-center gap-4 rounded-lg border bg-white px-4 py-3 hover:shadow-sm transition-shadow ${isFetching ? "opacity-60" : ""}`}>
+          <div className="flex-shrink-0">
+            {img ? (
+              <Image
+                src={img}
+                alt="Picture of the interviewer"
+                width={36}
+                height={36}
+                className="object-cover object-center rounded"
+              />
+            ) : (
+              <div className="w-9 h-9 bg-gray-200 rounded animate-pulse" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-sm text-gray-900 truncate">{name}</p>
+            {isFetching && <div className="mt-1"><MiniLoader /></div>}
+          </div>
+          <div className="text-gray-600 text-xs font-medium whitespace-nowrap">
+            Responses:{" "}
+            <span className="text-gray-900 font-semibold">
+              {responseCount?.toString() || 0}
+            </span>
+          </div>
+          <div className="flex gap-1">
+            <Button
+              className="text-xs text-indigo-600 px-2 h-8"
+              variant="secondary"
+              onClick={handleJumpToInterview}
+            >
+              <ArrowUpRight size={16} />
+            </Button>
+            <Button
+              className={`text-xs text-indigo-600 px-2 h-8 ${copied ? "bg-indigo-300 text-white" : ""}`}
+              variant="secondary"
+              onClick={(event) => {
+                event.stopPropagation();
+                event.preventDefault();
+                copyToClipboard();
+              }}
+            >
+              {copied ? <CopyCheck size={16} /> : <Copy size={16} />}
+            </Button>
+          </div>
+        </div>
+      </a>
+    );
+  }
 
   return (
-    <a
-      href={`/interviews/${id}`}
-      style={{
-        pointerEvents: isFetching ? "none" : "auto",
-        cursor: isFetching ? "default" : "pointer",
-      }}
-    >
+    <a href={`/interviews/${id}`} style={linkStyle}>
       <Card className="relative p-0 cursor-pointer h-40 w-52 rounded-lg border shadow-sm hover:shadow-md transition-shadow">
         <CardContent className={`p-0 ${isFetching ? "opacity-60" : ""}`}>
           <div className="w-full h-24 overflow-hidden bg-indigo-600 flex items-center text-center">

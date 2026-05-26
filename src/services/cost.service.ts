@@ -388,7 +388,9 @@ export class CostService {
 
     // Calculate totals
     const gptCategories = byCategory.filter(b => b.service === "openai");
-    const voiceCategories = byCategory.filter(b => b.service === "retell");
+    const voiceCategories = byCategory.filter(
+      (b) => b.service === "retell" || b.service === "azure-voicelive",
+    );
 
     // --- Avg Cost per Interview ---
     // Interview-related categories: voice_call, interview_response, communication_analysis,

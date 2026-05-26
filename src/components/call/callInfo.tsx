@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Analytics,
   CallData,
@@ -9,8 +9,27 @@ import {
 } from "@/types/response";
 import axios from "axios";
 import { ScrollArea } from "@radix-ui/react-scroll-area";
-import ReactAudioPlayer from "react-audio-player";
-import { DownloadIcon, TrashIcon, Clock, AlertTriangle, Video, Users, CheckCircle2, CameraOff, UserX, Shield, Monitor, Calendar, Smile, Frown, Meh } from "lucide-react";
+import {
+  DownloadIcon,
+  TrashIcon,
+  Clock,
+  AlertTriangle,
+  Video,
+  Users,
+  CheckCircle2,
+  CameraOff,
+  UserX,
+  Shield,
+  Monitor,
+  Calendar,
+  Smile,
+  Frown,
+  Meh,
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { ResponseService } from "@/services/responses.service";
@@ -55,6 +74,275 @@ type CallProps = {
   onCandidateStatusChange: (callId: string, newStatus: string) => void;
 };
 
+function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+// Custom audio player. Shows the total duration immediately, renders a
+// countdown, supports click-to-seek, playback-speed dropdown, mutable
+// volume control, and forces a real download (vs. cross-origin browsers
+// ignoring the <a download> attribute and just opening the file inline).
+const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+function CountdownAudioPlayer({
+  src,
+  filename,
+}: {
+  src: string;
+  filename?: string;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressRef = useRef<HTMLDivElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [showVolume, setShowVolume] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // MediaRecorder webm/opus files have no duration in the container
+    // header, so audio.duration reports Infinity until the browser has
+    // scanned the whole stream. The seek-past-end trick forces it to do
+    // that: we jump way past the actual end, the browser reads through
+    // to find the real end, then reports a finite duration via the
+    // "durationchange" event. After it settles, we seek back to 0.
+    let durationFixed = false;
+    const ensureFiniteDuration = () => {
+      if (durationFixed) return;
+      if (audio.duration === Infinity || isNaN(audio.duration)) {
+        const onSeeked = () => {
+          if (
+            audio.duration !== Infinity &&
+            !isNaN(audio.duration) &&
+            audio.duration > 0
+          ) {
+            durationFixed = true;
+            setDuration(audio.duration);
+            audio.currentTime = 0;
+            audio.removeEventListener("seeked", onSeeked);
+          }
+        };
+        audio.addEventListener("seeked", onSeeked);
+        try {
+          audio.currentTime = 1e9; // large finite — browser clamps to real end
+        } catch {
+          /* some browsers reject this; falls back to Infinity duration */
+        }
+      } else if (audio.duration > 0) {
+        durationFixed = true;
+        setDuration(audio.duration);
+      }
+    };
+
+    const onLoaded = () => ensureFiniteDuration();
+    const onDurChange = () => ensureFiniteDuration();
+    const onTime = () => setCurrentTime(audio.currentTime || 0);
+    const onEnd = () => setIsPlaying(false);
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("durationchange", onDurChange);
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("ended", onEnd);
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+
+    return () => {
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("durationchange", onDurChange);
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnd);
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+    };
+  }, [src]);
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+  };
+
+  const seekFromClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    const bar = progressRef.current;
+    if (!audio || !bar) return;
+    // Guard: until the duration-detection trick completes, `duration` may
+    // be 0 (or stale Infinity), and setting currentTime to a non-finite
+    // value throws. Bail out silently and the click becomes a no-op.
+    if (!isFinite(duration) || duration <= 0) return;
+    const rect = bar.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const target = ratio * duration;
+    if (!isFinite(target)) return;
+    audio.currentTime = target;
+    // Use `target` directly — reading audio.currentTime immediately after
+    // setting it returns the pre-seek position because the seek is async.
+    setCurrentTime(target);
+  };
+
+  // Keep the audio element in sync with React state for playbackRate and
+  // volume. We do this in an effect rather than inline so that if the audio
+  // element is re-mounted (e.g. src changes) the latest settings re-apply.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) audio.playbackRate = playbackRate;
+  }, [playbackRate]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.volume = volume;
+      audio.muted = muted;
+    }
+  }, [volume, muted]);
+
+  // Force a real download. The browser's <a download> attribute is ignored
+  // for cross-origin URLs (Azure Blob is always cross-origin), so the file
+  // just opens inline. Fetching as a Blob and using a synthetic anchor
+  // bypasses that — works as long as the storage account allows GET via
+  // CORS, which we've already set up.
+  const downloadRecording = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const res = await fetch(src);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download =
+        filename ||
+        src.split("/").pop()?.split("?")[0] ||
+        "interview-recording.webm";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Revoke after a tick — Safari needs the URL alive until the click
+      // is processed.
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch {
+      // Fall back to opening the URL in a new tab so the user still has
+      // *some* way to access the file.
+      window.open(src, "_blank", "noopener");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const remaining = Math.max(0, duration - currentTime);
+  const percent = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="flex items-center gap-3 w-full max-w-md rounded-md border border-slate-200 bg-white px-3 py-2">
+      <audio ref={audioRef} src={src} preload="metadata" />
+      <button
+        type="button"
+        onClick={togglePlay}
+        className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-white hover:bg-indigo-700 transition"
+        aria-label={isPlaying ? "Pause" : "Play"}
+      >
+        {isPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+      </button>
+      {/* Tall transparent wrapper gives a ~20px click target while the bar stays thin */}
+      <div
+        ref={progressRef}
+        onClick={seekFromClick}
+        className="flex-1 flex items-center py-2 cursor-pointer"
+        role="slider"
+        aria-label="Seek"
+        aria-valuemin={0}
+        aria-valuemax={Math.floor(duration)}
+        aria-valuenow={Math.floor(currentTime)}
+      >
+        <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-indigo-600 rounded-full transition-[width] duration-100"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      </div>
+      <span className="tabular-nums text-xs font-medium text-slate-700 min-w-[3rem] text-right">
+        {formatTime(remaining)}
+      </span>
+
+      <select
+        value={playbackRate}
+        onChange={(e) => setPlaybackRate(Number(e.target.value))}
+        className="text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded px-1.5 py-1 cursor-pointer border-0 focus:ring-1 focus:ring-indigo-500"
+        aria-label="Playback speed"
+      >
+        {PLAYBACK_RATES.map((r) => (
+          <option key={r} value={r}>
+            {r}x
+          </option>
+        ))}
+      </select>
+
+      <div className="relative flex items-center">
+        <button
+          type="button"
+          onClick={() => {
+            if (showVolume) {
+              setMuted((m) => !m);
+            } else {
+              setShowVolume(true);
+            }
+          }}
+          onBlur={() => setTimeout(() => setShowVolume(false), 150)}
+          className="flex h-7 w-7 items-center justify-center rounded text-slate-700 hover:bg-slate-100 transition"
+          aria-label={muted ? "Unmute" : "Mute / volume"}
+        >
+          {muted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+        </button>
+        {showVolume && (
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={muted ? 0 : volume}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setVolume(v);
+              setMuted(v === 0);
+            }}
+            onMouseLeave={() => setShowVolume(false)}
+            className="ml-1 w-20 accent-indigo-600 cursor-pointer"
+            aria-label="Volume"
+          />
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={downloadRecording}
+        disabled={downloading}
+        className="flex h-7 w-7 items-center justify-center rounded text-slate-700 hover:bg-slate-100 transition disabled:opacity-50"
+        aria-label="Download recording"
+        title="Download recording"
+      >
+        <DownloadIcon size={16} />
+      </button>
+    </div>
+  );
+}
+
 function CallInfo({
   call_id,
   onDeleteResponse,
@@ -77,11 +365,14 @@ function CallInfo({
   const [faceMismatchTotal, setFaceMismatchTotal] = useState<number>(0);
   const [cameraOffTotal, setCameraOffTotal] = useState<number>(0);
   const [multiplePersonTotal, setMultiplePersonTotal] = useState<number>(0);
-  const [violationsSummary, setViolationsSummary] =
-    useState<ViolationEvent[]>([]);
+  const [violationsSummary, setViolationsSummary] = useState<ViolationEvent[]>(
+    [],
+  );
   const [responseData, setResponseData] = useState<any>(null);
   const [userResponses, setUserResponses] = useState<InterviewResponse[]>([]);
-  const [qaPairs, setQaPairs] = useState<Array<{ question: string; answer: string }>>([]);
+  const [qaPairs, setQaPairs] = useState<
+    Array<{ question: string; answer: string }>
+  >([]);
 
   useEffect(() => {
     const fetchResponses = async () => {
@@ -94,7 +385,7 @@ function CallInfo({
         const response = await axios.post("/api/get-call", { id: call_id });
         setCall(response.data.callResponse);
         setAnalytics(response.data.analytics);
-        
+
         // Update responseData with duration from API if available
         if (response.data.duration !== undefined) {
           setResponseData((prev: any) => ({
@@ -151,14 +442,11 @@ function CallInfo({
           return;
         }
 
-        const allResponses =
-          await ResponseService.getAllResponses(interviewId);
+        const allResponses = await ResponseService.getAllResponses(interviewId);
 
         const sameUserResponses = allResponses.filter(
           (r: InterviewResponse) =>
-            r.email &&
-            email &&
-            r.email.toLowerCase() === email.toLowerCase(),
+            r.email && email && r.email.toLowerCase() === email.toLowerCase(),
         );
 
         sameUserResponses.sort(
@@ -200,38 +488,40 @@ function CallInfo({
 
       return transcriptObject
         .map((item: any) => {
-          const role = item.role === 'agent' ? 'Agent' : 'User';
+          const role = item.role === "agent" ? "Agent" : "User";
 
-          return `${role}: ${item.content || ''}`;
+          return `${role}: ${item.content || ""}`;
         })
-        .join('\n\n');
+        .join("\n\n");
     };
 
-    const extractQAPairs = (transcriptObject: any[]): Array<{ question: string; answer: string }> => {
+    const extractQAPairs = (
+      transcriptObject: any[],
+    ): Array<{ question: string; answer: string }> => {
       if (!transcriptObject || !Array.isArray(transcriptObject)) {
         return [];
       }
 
       const pairs: Array<{ question: string; answer: string }> = [];
-      let currentQuestion = '';
-      let currentAnswer = '';
+      let currentQuestion = "";
+      let currentAnswer = "";
 
       for (const item of transcriptObject) {
-        const content = (item.content || '').trim();
+        const content = (item.content || "").trim();
         if (!content) continue;
 
-        if (item.role === 'agent') {
+        if (item.role === "agent") {
           // If we have a pending question-answer pair, save it
           if (currentQuestion && currentAnswer) {
             pairs.push({ question: currentQuestion, answer: currentAnswer });
           }
           // Start a new question
           currentQuestion = content;
-          currentAnswer = '';
-        } else if (item.role === 'user') {
+          currentAnswer = "";
+        } else if (item.role === "user") {
           // Accumulate answer (in case answer spans multiple entries)
           if (currentAnswer) {
-            currentAnswer += ' ' + content;
+            currentAnswer += " " + content;
           } else {
             currentAnswer = content;
           }
@@ -249,36 +539,64 @@ function CallInfo({
     if (call || responseData) {
       // Check multiple possible transcript locations
       let transcriptText = "";
-      
+
       // 1. Direct transcript property from call
-      if (call?.transcript && typeof call.transcript === 'string') {
+      if (call?.transcript && typeof call.transcript === "string") {
         transcriptText = call.transcript;
       }
       // 2. Transcript in responseData.details (for analyzed calls)
-      else if (responseData?.details?.transcript && typeof responseData.details.transcript === 'string') {
+      else if (
+        responseData?.details?.transcript &&
+        typeof responseData.details.transcript === "string"
+      ) {
         transcriptText = responseData.details.transcript;
       }
       // 3. Transcript in call.details object (for analyzed calls)
-      else if ((call as any)?.details?.transcript && typeof (call as any).details.transcript === 'string') {
+      else if (
+        (call as any)?.details?.transcript &&
+        typeof (call as any).details.transcript === "string"
+      ) {
         transcriptText = (call as any).details.transcript;
       }
       // 4. Build from call.transcript_object array
-      else if (call?.transcript_object && Array.isArray(call.transcript_object) && call.transcript_object.length > 0) {
+      else if (
+        call?.transcript_object &&
+        Array.isArray(call.transcript_object) &&
+        call.transcript_object.length > 0
+      ) {
         transcriptText = buildTranscriptFromObject(call.transcript_object);
       }
       // 5. Build from responseData.details.transcript_object
-      else if (responseData?.details?.transcript_object && Array.isArray(responseData.details.transcript_object) && responseData.details.transcript_object.length > 0) {
-        transcriptText = buildTranscriptFromObject(responseData.details.transcript_object);
+      else if (
+        responseData?.details?.transcript_object &&
+        Array.isArray(responseData.details.transcript_object) &&
+        responseData.details.transcript_object.length > 0
+      ) {
+        transcriptText = buildTranscriptFromObject(
+          responseData.details.transcript_object,
+        );
       }
       // 6. Build from call.transcript_with_tool_calls array
-      else if ((call as any)?.transcript_with_tool_calls && Array.isArray((call as any).transcript_with_tool_calls) && (call as any).transcript_with_tool_calls.length > 0) {
-        transcriptText = buildTranscriptFromObject((call as any).transcript_with_tool_calls);
+      else if (
+        (call as any)?.transcript_with_tool_calls &&
+        Array.isArray((call as any).transcript_with_tool_calls) &&
+        (call as any).transcript_with_tool_calls.length > 0
+      ) {
+        transcriptText = buildTranscriptFromObject(
+          (call as any).transcript_with_tool_calls,
+        );
       }
       // 7. Check call.details.transcript_object
-      else if ((call as any)?.details?.transcript_object && Array.isArray((call as any).details.transcript_object) && (call as any).details.transcript_object.length > 0) {
-        transcriptText = buildTranscriptFromObject((call as any).details.transcript_object);
+      else if (
+        (call as any)?.details?.transcript_object &&
+        Array.isArray((call as any).details.transcript_object) &&
+        (call as any).details.transcript_object.length > 0
+      ) {
+        transcriptText = buildTranscriptFromObject(
+          (call as any).details.transcript_object,
+        );
       }
-      
+
       // Debug logging (can be removed in production)
       if (!transcriptText || transcriptText.trim().length === 0) {
         console.log("🔍 Transcript Debug:", {
@@ -290,13 +608,15 @@ function CallInfo({
           hasCallDetailsTranscript: !!(call as any)?.details?.transcript,
           hasCallTranscriptObject: !!call?.transcript_object,
           callTranscriptObjectLength: call?.transcript_object?.length || 0,
-          hasResponseDataDetailsTranscriptObject: !!responseData?.details?.transcript_object,
-          responseDataDetailsTranscriptObjectLength: responseData?.details?.transcript_object?.length || 0,
+          hasResponseDataDetailsTranscriptObject:
+            !!responseData?.details?.transcript_object,
+          responseDataDetailsTranscriptObjectLength:
+            responseData?.details?.transcript_object?.length || 0,
           callKeys: Object.keys(call || {}),
           responseDataKeys: Object.keys(responseData || {}),
         });
       }
-      
+
       if (transcriptText && transcriptText.trim().length > 0) {
         if (name) {
           setTranscript(replaceAgentAndUser(transcriptText, name));
@@ -305,7 +625,10 @@ function CallInfo({
           let updatedTranscript = transcriptText
             .replace(/Agent:/g, "**AI interviewer:**")
             .replace(/User:/g, "**Candidate:**");
-          updatedTranscript = updatedTranscript.replace(/(?:\r\n|\r|\n)/g, "\n\n");
+          updatedTranscript = updatedTranscript.replace(
+            /(?:\r\n|\r|\n)/g,
+            "\n\n",
+          );
           setTranscript(updatedTranscript);
         }
       } else {
@@ -314,14 +637,23 @@ function CallInfo({
 
       // Extract Q&A pairs from transcript_object
       let transcriptObjectArray: any[] = [];
-      
+
       if (call?.transcript_object && Array.isArray(call.transcript_object)) {
         transcriptObjectArray = call.transcript_object;
-      } else if (responseData?.details?.transcript_object && Array.isArray(responseData.details.transcript_object)) {
+      } else if (
+        responseData?.details?.transcript_object &&
+        Array.isArray(responseData.details.transcript_object)
+      ) {
         transcriptObjectArray = responseData.details.transcript_object;
-      } else if ((call as any)?.details?.transcript_object && Array.isArray((call as any).details.transcript_object)) {
+      } else if (
+        (call as any)?.details?.transcript_object &&
+        Array.isArray((call as any).details.transcript_object)
+      ) {
         transcriptObjectArray = (call as any).details.transcript_object;
-      } else if ((call as any)?.transcript_with_tool_calls && Array.isArray((call as any).transcript_with_tool_calls)) {
+      } else if (
+        (call as any)?.transcript_with_tool_calls &&
+        Array.isArray((call as any).transcript_with_tool_calls)
+      ) {
         transcriptObjectArray = (call as any).transcript_with_tool_calls;
       }
 
@@ -364,7 +696,6 @@ function CallInfo({
     }
   };
 
-
   return (
     <div className="w-full h-full z-[10]">
       {isLoading ? (
@@ -373,8 +704,7 @@ function CallInfo({
         </div>
       ) : (
         <>
-        
-        {userResponses.length > 1 && (
+          {userResponses.length > 1 && (
             <div className="bg-slate-200 rounded-2xl min-h-[100px] p-4 px-5 mb-[20px]">
               <p className="font-semibold my-2 mb-3">Attempt History</p>
               <div className="flex flex-wrap gap-2">
@@ -410,13 +740,15 @@ function CallInfo({
                     <Clock className="h-5 w-5 text-indigo-600" />
                   </div>
                   <div className="flex-1">
-                    <p className="text-xs text-gray-500 font-medium">Interview Duration</p>
+                    <p className="text-xs text-gray-500 font-medium">
+                      Interview Duration
+                    </p>
                     <p className="text-lg font-bold text-gray-900">
-                      {responseData?.duration 
+                      {responseData?.duration
                         ? `${Math.floor(responseData.duration / 60)}m ${responseData.duration % 60}s`
                         : call?.start_timestamp && call?.end_timestamp
-                        ? `${Math.floor((call.end_timestamp - call.start_timestamp) / 60000)}m ${Math.floor(((call.end_timestamp - call.start_timestamp) % 60000) / 1000)}s`
-                        : 'N/A'}
+                          ? `${Math.floor((call.end_timestamp - call.start_timestamp) / 60000)}m ${Math.floor(((call.end_timestamp - call.start_timestamp) % 60000) / 1000)}s`
+                          : "N/A"}
                     </p>
                   </div>
                 </div>
@@ -425,13 +757,23 @@ function CallInfo({
               {/* Tab Switching */}
               <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
                 <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-lg ${tabSwitchCount > 0 ? 'bg-red-100' : 'bg-green-100'}`}>
-                    <AlertTriangle className={`h-5 w-5 ${tabSwitchCount > 0 ? 'text-red-600' : 'text-green-600'}`} />
+                  <div
+                    className={`p-2 rounded-lg ${tabSwitchCount > 0 ? "bg-red-100" : "bg-green-100"}`}
+                  >
+                    <AlertTriangle
+                      className={`h-5 w-5 ${tabSwitchCount > 0 ? "text-red-600" : "text-green-600"}`}
+                    />
                   </div>
                   <div className="flex-1">
-                    <p className="text-xs text-gray-500 font-medium">Tab Switching</p>
-                    <p className={`text-lg font-bold ${tabSwitchCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {tabSwitchCount > 0 ? `${tabSwitchCount} times` : 'No issues'}
+                    <p className="text-xs text-gray-500 font-medium">
+                      Tab Switching
+                    </p>
+                    <p
+                      className={`text-lg font-bold ${tabSwitchCount > 0 ? "text-red-600" : "text-green-600"}`}
+                    >
+                      {tabSwitchCount > 0
+                        ? `${tabSwitchCount} times`
+                        : "No issues"}
                     </p>
                   </div>
                 </div>
@@ -439,22 +781,50 @@ function CallInfo({
 
               {/* Video Status */}
               {(() => {
-                const normalReasons = ['agent_hangup', 'user_hangup', 'call_transfer'];
+                const normalReasons = [
+                  "agent_hangup",
+                  "user_hangup",
+                  "call_transfer",
+                ];
                 const reason = call?.disconnection_reason;
-                const hasIssue = !!reason && !normalReasons.includes(reason);
+                const hasDisconnectionIssue = !!reason && !normalReasons.includes(reason);
+                const hasCameraIssue = cameraOffCount > 0;
+                const hasIssue = hasDisconnectionIssue || hasCameraIssue;
+
+                const statusLabel = hasDisconnectionIssue
+                  ? "Issues detected"
+                  : hasCameraIssue
+                    ? `Camera off ${cameraOffCount}x`
+                    : "Normal";
+
                 return (
                   <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
                     <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg ${hasIssue ? 'bg-yellow-100' : 'bg-green-100'}`}>
-                        <Video className={`h-5 w-5 ${hasIssue ? 'text-yellow-600' : 'text-green-600'}`} />
+                      <div
+                        className={`p-2 rounded-lg ${hasIssue ? "bg-yellow-100" : "bg-green-100"}`}
+                      >
+                        <Video
+                          className={`h-5 w-5 ${hasIssue ? "text-yellow-600" : "text-green-600"}`}
+                        />
                       </div>
                       <div className="flex-1">
-                        <p className="text-xs text-gray-500 font-medium">Video/Audio Status</p>
-                        <p className={`text-lg font-bold ${hasIssue ? 'text-yellow-600' : 'text-green-600'}`}>
-                          {hasIssue ? 'Issues detected' : 'Normal'}
+                        <p className="text-xs text-gray-500 font-medium">
+                          Video/Audio Status
                         </p>
-                        {hasIssue && (
-                          <p className="text-xs text-gray-500 mt-1 truncate">{reason}</p>
+                        <p
+                          className={`text-lg font-bold ${hasIssue ? "text-yellow-600" : "text-green-600"}`}
+                        >
+                          {statusLabel}
+                        </p>
+                        {hasDisconnectionIssue && (
+                          <p className="text-xs text-gray-500 mt-1 truncate">
+                            {reason}
+                          </p>
+                        )}
+                        {hasCameraIssue && !hasDisconnectionIssue && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            {cameraOffCount} of {cameraOffTotal || cameraOffCount} checks failed
+                          </p>
                         )}
                       </div>
                     </div>
@@ -465,13 +835,23 @@ function CallInfo({
               {/* Voice Detection - Multiple Person */}
               <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
                 <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-lg ${multiplePersonCount > 0 ? 'bg-red-100' : 'bg-green-100'}`}>
-                    <Users className={`h-5 w-5 ${multiplePersonCount > 0 ? 'text-red-600' : 'text-green-600'}`} />
+                  <div
+                    className={`p-2 rounded-lg ${multiplePersonCount > 0 ? "bg-red-100" : "bg-green-100"}`}
+                  >
+                    <Users
+                      className={`h-5 w-5 ${multiplePersonCount > 0 ? "text-red-600" : "text-green-600"}`}
+                    />
                   </div>
                   <div className="flex-1">
-                    <p className="text-xs text-gray-500 font-medium">Voice Detection</p>
-                    <p className={`text-lg font-bold ${multiplePersonCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {multiplePersonCount > 0 ? `${multiplePersonCount} times` : 'Single person detected'}
+                    <p className="text-xs text-gray-500 font-medium">
+                      Voice Detection
+                    </p>
+                    <p
+                      className={`text-lg font-bold ${multiplePersonCount > 0 ? "text-red-600" : "text-green-600"}`}
+                    >
+                      {multiplePersonCount > 0
+                        ? `${multiplePersonCount} times`
+                        : "Single person detected"}
                     </p>
                   </div>
                 </div>
@@ -510,7 +890,12 @@ function CallInfo({
                     </div>
                   </div>
                   <div className="flex flex-row mr-2 items-center gap-3">
-                    <label htmlFor="candidateStatus" className="text-sm font-semibold">Candidate Review Status</label>
+                    <label
+                      htmlFor="candidateStatus"
+                      className="text-sm font-semibold"
+                    >
+                      Candidate Review Status
+                    </label>
                     <Select
                       value={candidateStatus}
                       onValueChange={async (newValue: string) => {
@@ -533,21 +918,34 @@ function CallInfo({
                             );
                           }
                         }
-                        
+
                         // Sync review_status with candidate_status in assignee table
                         if (email && interviewId) {
                           try {
                             await assigneeService.updateAssigneeReviewStatus(
                               email,
                               interviewId,
-                              newValue as 'NO_STATUS' | 'NOT_SELECTED' | 'POTENTIAL' | 'SELECTED'
+                              newValue as
+                                | "NO_STATUS"
+                                | "NOT_SELECTED"
+                                | "POTENTIAL"
+                                | "SELECTED",
                             );
                             // Dispatch event to notify other pages to refresh assignees
-                            window.dispatchEvent(new CustomEvent('assigneeReviewStatusUpdated', {
-                              detail: { email, interviewId, reviewStatus: newValue }
-                            }));
+                            window.dispatchEvent(
+                              new CustomEvent("assigneeReviewStatusUpdated", {
+                                detail: {
+                                  email,
+                                  interviewId,
+                                  reviewStatus: newValue,
+                                },
+                              }),
+                            );
                           } catch (error) {
-                            console.error('Error syncing review status:', error);
+                            console.error(
+                              "Error syncing review status:",
+                              error,
+                            );
                             // Don't show error to user - this is a background sync
                           }
                         }
@@ -622,23 +1020,21 @@ function CallInfo({
                 <div className="flex flex-col mt-3">
                   <p className="font-semibold">Interview Recording</p>
                   <div className="flex flex-row gap-3 mt-2">
-                    {(call?.recording_url || (call as any)?.details?.recording_url || responseData?.details?.recording_url) ? (
-                      <>
-                        <ReactAudioPlayer 
-                          src={call?.recording_url || (call as any)?.details?.recording_url || responseData?.details?.recording_url} 
-                          controls 
-                        />
-                        <a
-                          className="my-auto"
-                          href={call?.recording_url || (call as any)?.details?.recording_url || responseData?.details?.recording_url}
-                          download=""
-                          aria-label="Download"
-                        >
-                          <DownloadIcon size={20} />
-                        </a>
-                      </>
+                    {call?.recording_url ||
+                    (call as any)?.details?.recording_url ||
+                    responseData?.details?.recording_url ? (
+                      <CountdownAudioPlayer
+                        src={
+                          call?.recording_url ||
+                          (call as any)?.details?.recording_url ||
+                          responseData?.details?.recording_url
+                        }
+                        filename={`interview-${call_id}.webm`}
+                      />
                     ) : (
-                      <p className="text-sm text-gray-500 italic">Recording not available</p>
+                      <p className="text-sm text-gray-500 italic">
+                        Recording not available
+                      </p>
                     )}
                   </div>
                 </div>
@@ -722,14 +1118,17 @@ function CallInfo({
                 <div className="flex flex-row gap-3 items-center">
                   <p className="my-auto font-medium">User Sentiment: </p>
                   {(() => {
-                    const userSentiment = call?.call_analysis?.user_sentiment || 
-                                         (call as any)?.details?.call_analysis?.user_sentiment || 
-                                         responseData?.details?.call_analysis?.user_sentiment;
+                    const userSentiment =
+                      call?.call_analysis?.user_sentiment ||
+                      (call as any)?.details?.call_analysis?.user_sentiment ||
+                      responseData?.details?.call_analysis?.user_sentiment;
 
                     if (userSentiment === undefined) {
                       return (
                         <div className="flex items-center gap-2">
-                          <span className="text-gray-500 italic">Not available</span>
+                          <span className="text-gray-500 italic">
+                            Not available
+                          </span>
                         </div>
                       );
                     }
@@ -742,33 +1141,37 @@ function CallInfo({
                     return (
                       <div className="flex items-center gap-2">
                         {/* Sentiment Badge with Icon */}
-                        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full font-semibold text-sm ${
-                          isPositive 
-                            ? "bg-green-100 text-green-700 border border-green-300" 
-                            : isNegative 
-                            ? "bg-red-100 text-red-700 border border-red-300"
-                            : isNeutral
-                            ? "bg-yellow-100 text-yellow-700 border border-yellow-300"
-                            : "bg-gray-100 text-gray-700 border border-gray-300"
-                        }`}>
+                        <div
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-full font-semibold text-sm ${
+                            isPositive
+                              ? "bg-green-100 text-green-700 border border-green-300"
+                              : isNegative
+                                ? "bg-red-100 text-red-700 border border-red-300"
+                                : isNeutral
+                                  ? "bg-yellow-100 text-yellow-700 border border-yellow-300"
+                                  : "bg-gray-100 text-gray-700 border border-gray-300"
+                          }`}
+                        >
                           {/* Icon */}
                           {isPositive && <Smile className="h-4 w-4" />}
                           {isNegative && <Frown className="h-4 w-4" />}
                           {isNeutral && <Meh className="h-4 w-4" />}
-                          
+
                           {/* Sentiment Text */}
                           <span>{userSentiment}</span>
-                          
+
                           {/* Colored Dot Indicator */}
-                          <div className={`h-2 w-2 rounded-full ${
-                            isPositive 
-                              ? "bg-green-500" 
-                              : isNegative 
-                              ? "bg-red-500"
-                              : isNeutral
-                              ? "bg-yellow-500"
-                              : "bg-gray-500"
-                          }`} />
+                          <div
+                            className={`h-2 w-2 rounded-full ${
+                              isPositive
+                                ? "bg-green-500"
+                                : isNegative
+                                  ? "bg-red-500"
+                                  : isNeutral
+                                    ? "bg-yellow-500"
+                                    : "bg-gray-500"
+                            }`}
+                          />
                         </div>
                       </div>
                     );
@@ -778,12 +1181,15 @@ function CallInfo({
                   <div className="font-medium  ">
                     <span className="font-normal">Call Summary: </span>
                     {(() => {
-                      const callSummary = call?.call_analysis?.call_summary || 
-                                         (call as any)?.details?.call_analysis?.call_summary || 
-                                         responseData?.details?.call_analysis?.call_summary;
+                      const callSummary =
+                        call?.call_analysis?.call_summary ||
+                        (call as any)?.details?.call_analysis?.call_summary ||
+                        responseData?.details?.call_analysis?.call_summary;
 
                       return callSummary === undefined ? (
-                        <span className="text-gray-500 italic">Not available</span>
+                        <span className="text-gray-500 italic">
+                          Not available
+                        </span>
                       ) : (
                         callSummary
                       );
@@ -791,25 +1197,36 @@ function CallInfo({
                   </div>
                 </div>
                 {(() => {
-                  const completionReason = call?.call_analysis?.call_completion_rating_reason || 
-                                          (call as any)?.details?.call_analysis?.call_completion_rating_reason || 
-                                          responseData?.details?.call_analysis?.call_completion_rating_reason;
+                  const completionReason =
+                    call?.call_analysis?.call_completion_rating_reason ||
+                    (call as any)?.details?.call_analysis
+                      ?.call_completion_rating_reason ||
+                    responseData?.details?.call_analysis
+                      ?.call_completion_rating_reason;
 
-                  return completionReason && (
-                    <p className="font-medium ">
-                      {completionReason}
-                    </p>
+                  return (
+                    completionReason && (
+                      <p className="font-medium ">{completionReason}</p>
+                    )
                   );
                 })()}
               </div>
             </div>
           </div>
-          
+
           {/* Accordion Section - All content in one block */}
           <div className="bg-slate-200 rounded-2xl p-4 px-5 my-3 mb-[20px]">
-            <Accordion type="single" collapsible className="w-full" defaultValue="call-summary">
+            <Accordion
+              type="single"
+              collapsible
+              className="w-full"
+              defaultValue="call-summary"
+            >
               {/* Call Summary Accordion Item */}
-              <AccordionItem value="call-summary" className="border-b border-slate-300">
+              <AccordionItem
+                value="call-summary"
+                className="border-b border-slate-300"
+              >
                 <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
                   Call Summary
                 </AccordionTrigger>
@@ -818,26 +1235,32 @@ function CallInfo({
                     <div className="font-medium">
                       <span className="font-normal">Call Summary: </span>
                       {(() => {
-                        const callSummary = call?.call_analysis?.call_summary || 
-                                         (call as any)?.details?.call_analysis?.call_summary || 
-                                         responseData?.details?.call_analysis?.call_summary;
+                        const callSummary =
+                          call?.call_analysis?.call_summary ||
+                          (call as any)?.details?.call_analysis?.call_summary ||
+                          responseData?.details?.call_analysis?.call_summary;
 
                         return callSummary === undefined ? (
-                          <span className="text-gray-500 italic">Not available</span>
+                          <span className="text-gray-500 italic">
+                            Not available
+                          </span>
                         ) : (
                           callSummary
                         );
                       })()}
                     </div>
                     {(() => {
-                      const completionReason = call?.call_analysis?.call_completion_rating_reason || 
-                                              (call as any)?.details?.call_analysis?.call_completion_rating_reason || 
-                                              responseData?.details?.call_analysis?.call_completion_rating_reason;
+                      const completionReason =
+                        call?.call_analysis?.call_completion_rating_reason ||
+                        (call as any)?.details?.call_analysis
+                          ?.call_completion_rating_reason ||
+                        responseData?.details?.call_analysis
+                          ?.call_completion_rating_reason;
 
-                      return completionReason && (
-                        <p className="font-medium mt-2">
-                          {completionReason}
-                        </p>
+                      return (
+                        completionReason && (
+                          <p className="font-medium mt-2">{completionReason}</p>
+                        )
                       );
                     })()}
                   </div>
@@ -846,35 +1269,42 @@ function CallInfo({
 
               {/* Question Summary Accordion Item */}
               {analytics &&
-              analytics.questionSummaries &&
-              analytics.questionSummaries.length > 0 && (
-                <AccordionItem value="question-summary" className="border-b border-slate-300">
-                  <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
-                    Question Summary
-                  </AccordionTrigger>
-                  <AccordionContent className="pt-2 pb-4">
-                    <div className="rounded-md max-h-72 text-sm mt-3 py-3 leading-6 overflow-y-auto whitespace-pre-line px-2 bg-slate-50">
-                      {analytics?.questionSummaries.map((qs, index) => (
-                        <QuestionAnswerCard
-                          key={qs.question}
-                          questionNumber={index + 1}
-                          question={qs.question}
-                          answer={qs.summary}
-                        />
-                      ))}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              )}
+                analytics.questionSummaries &&
+                analytics.questionSummaries.length > 0 && (
+                  <AccordionItem
+                    value="question-summary"
+                    className="border-b border-slate-300"
+                  >
+                    <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
+                      Question Summary
+                    </AccordionTrigger>
+                    <AccordionContent className="pt-2 pb-4">
+                      <div className="rounded-md max-h-72 text-sm mt-3 py-3 leading-6 overflow-y-auto whitespace-pre-line px-2 bg-slate-50">
+                        {analytics?.questionSummaries.map((qs, index) => (
+                          <QuestionAnswerCard
+                            key={qs.question}
+                            questionNumber={index + 1}
+                            question={qs.question}
+                            answer={qs.summary}
+                          />
+                        ))}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                )}
 
               {/* Transcript Summary Accordion Item - Shows Q&A Pairs */}
               {qaPairs.length > 0 && (
-                <AccordionItem value="transcript-summary" className="border-b border-slate-300">
+                <AccordionItem
+                  value="transcript-summary"
+                  className="border-b border-slate-300"
+                >
                   <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
                     <div className="flex items-center justify-between w-full pr-4">
                       <span>Transcript Summary</span>
                       <span className="text-xs text-gray-600 font-medium">
-                        {qaPairs.length} Q&A {qaPairs.length === 1 ? 'pair' : 'pairs'}
+                        {qaPairs.length} Q&A{" "}
+                        {qaPairs.length === 1 ? "pair" : "pairs"}
                       </span>
                     </div>
                   </AccordionTrigger>
@@ -894,13 +1324,18 @@ function CallInfo({
               )}
 
               {/* Transcript Accordion Item */}
-              <AccordionItem value="transcript" className="border-b border-slate-300">
+              <AccordionItem
+                value="transcript"
+                className="border-b border-slate-300"
+              >
                 <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
                   <div className="flex items-center justify-between w-full pr-4">
                     <span>Transcript</span>
                     {userResponses.length > 1 && (
                       <div className="text-xs text-gray-600 flex items-center gap-2">
-                        <span className="font-semibold">Interview Attempts:</span>
+                        <span className="font-semibold">
+                          Interview Attempts:
+                        </span>
                         <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-medium">
                           {userResponses.length}
                         </span>
@@ -913,7 +1348,12 @@ function CallInfo({
                     <div
                       className="text-sm p-4 rounded-2xl leading-5"
                       // eslint-disable-next-line react/no-danger
-                      dangerouslySetInnerHTML={{ __html: transcript && transcript.trim().length > 0 ? marked(transcript) : '<p class="text-gray-500 italic">No transcript available for this interview.</p>' }}
+                      dangerouslySetInnerHTML={{
+                        __html:
+                          transcript && transcript.trim().length > 0
+                            ? marked(transcript)
+                            : '<p class="text-gray-500 italic">No transcript available for this interview.</p>',
+                      }}
                     />
                   </div>
                 </AccordionContent>
@@ -921,138 +1361,228 @@ function CallInfo({
 
               {/* Violations Details Accordion Item */}
               {violationsSummary.length > 0 && (
-              <AccordionItem value="violations-details" className="border-b border-slate-300">
-                <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
-                  <div className="flex items-center justify-between w-full pr-4">
-                    <span className="flex items-center gap-2">
-                      <Shield className="h-5 w-5 text-red-500" />
-                      Violations Details
-                    </span>
-                    <span className="text-xs text-red-600 font-medium px-2 py-0.5 rounded-full bg-red-100">
-                      {violationsSummary.length} total
-                    </span>
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="pt-2 pb-4">
-                  <div className="space-y-4">
+                <AccordionItem
+                  value="violations-details"
+                  className="border-b border-slate-300"
+                >
+                  <AccordionTrigger className="text-lg font-semibold hover:no-underline py-4">
+                    <div className="flex items-center justify-between w-full pr-4">
+                      <span className="flex items-center gap-2">
+                        <Shield className="h-5 w-5 text-red-500" />
+                        Violations Details
+                      </span>
+                      <span className="text-xs text-red-600 font-medium px-2 py-0.5 rounded-full bg-red-100">
+                        {violationsSummary.length} total
+                      </span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="pt-2 pb-4">
+                    <div className="space-y-4">
                       {/* Violation Summary Cards - 5 boxes in 1 row */}
                       <div className="grid grid-cols-5 gap-3">
                         {/* Tab Switch Count */}
-                        <div className={`p-3 rounded-lg ${tabSwitchCount > 0 ? 'bg-orange-50 border border-orange-200' : 'bg-green-50 border border-green-200'}`}>
+                        <div
+                          className={`p-3 rounded-lg ${tabSwitchCount > 0 ? "bg-orange-50 border border-orange-200" : "bg-green-50 border border-green-200"}`}
+                        >
                           <div className="flex items-center gap-2">
-                            <Monitor className={`h-4 w-4 ${tabSwitchCount > 0 ? 'text-orange-500' : 'text-green-500'}`} />
-                            <span className="text-xs font-medium text-gray-600">Tab Switches</span>
+                            <Monitor
+                              className={`h-4 w-4 ${tabSwitchCount > 0 ? "text-orange-500" : "text-green-500"}`}
+                            />
+                            <span className="text-xs font-medium text-gray-600">
+                              Tab Switches
+                            </span>
                           </div>
-                          <p className={`text-lg font-bold mt-1 ${tabSwitchCount > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                          <p
+                            className={`text-lg font-bold mt-1 ${tabSwitchCount > 0 ? "text-orange-600" : "text-green-600"}`}
+                          >
                             {tabSwitchCount}
                           </p>
                         </div>
 
                         {/* Face Mismatch Count */}
-                        <div className={`p-3 rounded-lg ${faceMismatchCount > 0 ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
+                        <div
+                          className={`p-3 rounded-lg ${faceMismatchCount > 0 ? "bg-red-50 border border-red-200" : "bg-green-50 border border-green-200"}`}
+                        >
                           <div className="flex items-center gap-2">
-                            <UserX className={`h-4 w-4 ${faceMismatchCount > 0 ? 'text-red-500' : 'text-green-500'}`} />
-                            <span className="text-xs font-medium text-gray-600">Face Mismatch</span>
+                            <UserX
+                              className={`h-4 w-4 ${faceMismatchCount > 0 ? "text-red-500" : "text-green-500"}`}
+                            />
+                            <span className="text-xs font-medium text-gray-600">
+                              Face Mismatch
+                            </span>
                           </div>
-                          <p className={`text-lg font-bold mt-1 ${faceMismatchCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          <p
+                            className={`text-lg font-bold mt-1 ${faceMismatchCount > 0 ? "text-red-600" : "text-green-600"}`}
+                          >
                             {faceMismatchCount}
                             {faceMismatchTotal > 0 && (
-                              <span className="text-sm font-normal text-gray-500">/{faceMismatchTotal}</span>
+                              <span className="text-sm font-normal text-gray-500">
+                                /{faceMismatchTotal}
+                              </span>
                             )}
                           </p>
                           {faceMismatchTotal > 0 && (
-                            <p className="text-xs text-gray-500">Total checks: {faceMismatchTotal}</p>
+                            <p className="text-xs text-gray-500">
+                              Total checks: {faceMismatchTotal}
+                            </p>
                           )}
                         </div>
 
                         {/* Camera Off Count */}
-                        <div className={`p-3 rounded-lg ${cameraOffCount > 0 ? 'bg-yellow-50 border border-yellow-200' : 'bg-green-50 border border-green-200'}`}>
+                        <div
+                          className={`p-3 rounded-lg ${cameraOffCount > 0 ? "bg-yellow-50 border border-yellow-200" : "bg-green-50 border border-green-200"}`}
+                        >
                           <div className="flex items-center gap-2">
-                            <CameraOff className={`h-4 w-4 ${cameraOffCount > 0 ? 'text-yellow-600' : 'text-green-500'}`} />
-                            <span className="text-xs font-medium text-gray-600">Camera Off</span>
+                            <CameraOff
+                              className={`h-4 w-4 ${cameraOffCount > 0 ? "text-yellow-600" : "text-green-500"}`}
+                            />
+                            <span className="text-xs font-medium text-gray-600">
+                              Camera Off
+                            </span>
                           </div>
-                          <p className={`text-lg font-bold mt-1 ${cameraOffCount > 0 ? 'text-yellow-600' : 'text-green-600'}`}>
+                          <p
+                            className={`text-lg font-bold mt-1 ${cameraOffCount > 0 ? "text-yellow-600" : "text-green-600"}`}
+                          >
                             {cameraOffCount}
                             {cameraOffTotal > 0 && (
-                              <span className="text-sm font-normal text-gray-500">/{cameraOffTotal}</span>
+                              <span className="text-sm font-normal text-gray-500">
+                                /{cameraOffTotal}
+                              </span>
                             )}
                           </p>
                           {cameraOffTotal > 0 && (
-                            <p className="text-xs text-gray-500">Total checks: {cameraOffTotal}</p>
+                            <p className="text-xs text-gray-500">
+                              Total checks: {cameraOffTotal}
+                            </p>
                           )}
                         </div>
 
                         {/* Multiple Person Count */}
-                        <div className={`p-3 rounded-lg ${multiplePersonCount > 0 ? 'bg-purple-50 border border-purple-200' : 'bg-green-50 border border-green-200'}`}>
+                        <div
+                          className={`p-3 rounded-lg ${multiplePersonCount > 0 ? "bg-purple-50 border border-purple-200" : "bg-green-50 border border-green-200"}`}
+                        >
                           <div className="flex items-center gap-2">
-                            <Users className={`h-4 w-4 ${multiplePersonCount > 0 ? 'text-purple-500' : 'text-green-500'}`} />
-                            <span className="text-xs font-medium text-gray-600">Multiple Persons</span>
+                            <Users
+                              className={`h-4 w-4 ${multiplePersonCount > 0 ? "text-purple-500" : "text-green-500"}`}
+                            />
+                            <span className="text-xs font-medium text-gray-600">
+                              Multiple Persons
+                            </span>
                           </div>
-                          <p className={`text-lg font-bold mt-1 ${multiplePersonCount > 0 ? 'text-purple-600' : 'text-green-600'}`}>
+                          <p
+                            className={`text-lg font-bold mt-1 ${multiplePersonCount > 0 ? "text-purple-600" : "text-green-600"}`}
+                          >
                             {multiplePersonCount}
                             {multiplePersonTotal > 0 && (
-                              <span className="text-sm font-normal text-gray-500">/{multiplePersonTotal}</span>
+                              <span className="text-sm font-normal text-gray-500">
+                                /{multiplePersonTotal}
+                              </span>
                             )}
                           </p>
                           {multiplePersonTotal > 0 && (
-                            <p className="text-xs text-gray-500">Total checks: {multiplePersonTotal}</p>
+                            <p className="text-xs text-gray-500">
+                              Total checks: {multiplePersonTotal}
+                            </p>
                           )}
                         </div>
 
                         {/* Total Violations */}
-                        <div className={`p-3 rounded-lg ${(tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount) > 0 ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
+                        <div
+                          className={`p-3 rounded-lg ${tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount > 0 ? "bg-red-50 border border-red-200" : "bg-green-50 border border-green-200"}`}
+                        >
                           <div className="flex items-center gap-2">
-                            <Shield className={`h-4 w-4 ${(tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount) > 0 ? 'text-red-500' : 'text-green-500'}`} />
-                            <span className="text-xs font-medium text-gray-600">Total Violations</span>
+                            <Shield
+                              className={`h-4 w-4 ${tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount > 0 ? "text-red-500" : "text-green-500"}`}
+                            />
+                            <span className="text-xs font-medium text-gray-600">
+                              Total Violations
+                            </span>
                           </div>
-                          <p className={`text-lg font-bold mt-1 ${(tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                            {tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount}
+                          <p
+                            className={`text-lg font-bold mt-1 ${tabSwitchCount + faceMismatchCount + cameraOffCount + multiplePersonCount > 0 ? "text-red-600" : "text-green-600"}`}
+                          >
+                            {tabSwitchCount +
+                              faceMismatchCount +
+                              cameraOffCount +
+                              multiplePersonCount}
                           </p>
                         </div>
                       </div>
 
                       {/* Violation Timeline - 5 boxes per row */}
-                      <p className="text-sm font-semibold text-gray-700">Violation Timeline</p>
+                      <p className="text-sm font-semibold text-gray-700">
+                        Violation Timeline
+                      </p>
                       <div className="grid grid-cols-5 gap-3 max-h-80 overflow-y-auto">
                         {violationsSummary.map((violation, index) => (
                           <div
                             key={index}
                             className={`p-3 rounded-lg border ${
-                              violation.type === 'tab_switch' ? 'bg-orange-50 border-orange-200' :
-                              violation.type === 'face_mismatch' ? 'bg-red-50 border-red-200' :
-                              violation.type === 'camera_off' ? 'bg-yellow-50 border-yellow-200' :
-                              'bg-purple-50 border-purple-200'
+                              violation.type === "tab_switch"
+                                ? "bg-orange-50 border-orange-200"
+                                : violation.type === "face_mismatch"
+                                  ? "bg-red-50 border-red-200"
+                                  : violation.type === "camera_off"
+                                    ? "bg-yellow-50 border-yellow-200"
+                                    : "bg-purple-50 border-purple-200"
                             }`}
                           >
                             <div className="flex items-center gap-2 mb-2">
-                              <div className={`p-1.5 rounded-full ${
-                                violation.type === 'tab_switch' ? 'bg-orange-100' :
-                                violation.type === 'face_mismatch' ? 'bg-red-100' :
-                                violation.type === 'camera_off' ? 'bg-yellow-100' :
-                                'bg-purple-100'
-                              }`}>
-                                {violation.type === 'tab_switch' && <Monitor className="h-3 w-3 text-orange-600" />}
-                                {violation.type === 'face_mismatch' && <UserX className="h-3 w-3 text-red-600" />}
-                                {violation.type === 'camera_off' && <CameraOff className="h-3 w-3 text-yellow-600" />}
-                                {violation.type === 'multiple_person' && <Users className="h-3 w-3 text-purple-600" />}
+                              <div
+                                className={`p-1.5 rounded-full ${
+                                  violation.type === "tab_switch"
+                                    ? "bg-orange-100"
+                                    : violation.type === "face_mismatch"
+                                      ? "bg-red-100"
+                                      : violation.type === "camera_off"
+                                        ? "bg-yellow-100"
+                                        : "bg-purple-100"
+                                }`}
+                              >
+                                {violation.type === "tab_switch" && (
+                                  <Monitor className="h-3 w-3 text-orange-600" />
+                                )}
+                                {violation.type === "face_mismatch" && (
+                                  <UserX className="h-3 w-3 text-red-600" />
+                                )}
+                                {violation.type === "camera_off" && (
+                                  <CameraOff className="h-3 w-3 text-yellow-600" />
+                                )}
+                                {violation.type === "multiple_person" && (
+                                  <Users className="h-3 w-3 text-purple-600" />
+                                )}
                               </div>
-                              <span className={`text-xs font-semibold ${
-                                violation.type === 'tab_switch' ? 'text-orange-700' :
-                                violation.type === 'face_mismatch' ? 'text-red-700' :
-                                violation.type === 'camera_off' ? 'text-yellow-700' :
-                                'text-purple-700'
-                              }`}>
-                                {violation.type === 'tab_switch' && 'Tab Switch'}
-                                {violation.type === 'face_mismatch' && 'Face Mismatch'}
-                                {violation.type === 'camera_off' && 'Camera Off'}
-                                {violation.type === 'multiple_person' && 'Multiple Persons'}
+                              <span
+                                className={`text-xs font-semibold ${
+                                  violation.type === "tab_switch"
+                                    ? "text-orange-700"
+                                    : violation.type === "face_mismatch"
+                                      ? "text-red-700"
+                                      : violation.type === "camera_off"
+                                        ? "text-yellow-700"
+                                        : "text-purple-700"
+                                }`}
+                              >
+                                {violation.type === "tab_switch" &&
+                                  "Tab Switch"}
+                                {violation.type === "face_mismatch" &&
+                                  "Face Mismatch"}
+                                {violation.type === "camera_off" &&
+                                  "Camera Off"}
+                                {violation.type === "multiple_person" &&
+                                  "Multiple Persons"}
                               </span>
                             </div>
                             <p className="text-xs text-gray-500">
-                              {new Date(violation.timestamp).toLocaleTimeString()}
+                              {new Date(
+                                violation.timestamp,
+                              ).toLocaleTimeString()}
                             </p>
                             {violation.details && (
-                              <p className="text-xs text-gray-500 mt-1 truncate" title={violation.details}>
+                              <p
+                                className="text-xs text-gray-500 mt-1 truncate"
+                                title={violation.details}
+                              >
                                 {violation.details}
                               </p>
                             )}
@@ -1063,7 +1593,6 @@ function CallInfo({
                   </AccordionContent>
                 </AccordionItem>
               )}
-
             </Accordion>
           </div>
         </>

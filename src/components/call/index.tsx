@@ -28,7 +28,9 @@ import { Interview } from "@/types/interview";
 import { FeedbackData } from "@/types/response";
 import { FeedbackService } from "@/services/feedback.service";
 import { FeedbackForm } from "@/components/call/feedbackForm";
-import VideoRecorder, { VideoRecorderHandle } from '@/components/dashboard/interview/VideoRecorder';
+import VideoRecorder, {
+  VideoRecorderHandle,
+} from "@/components/dashboard/interview/VideoRecorder";
 import {
   TabSwitchWarning,
   useTabSwitchPrevention,
@@ -50,9 +52,18 @@ import { useFaceVerification } from "@/hooks/useFaceVerification";
 import { FaceMismatchWarning, VerificationStatus } from "./FaceMismatchWarning";
 import { useCameraDetection } from "@/hooks/useCameraDetection";
 import { useMultiplePersonDetection } from "@/hooks/useMultiplePersonDetection";
-import { ViolationWarning, ViolationTracker, CameraOffCountdownAlert } from "./ViolationWarnings";
+import {
+  ViolationWarning,
+  ViolationTracker,
+  CameraOffCountdownAlert,
+} from "./ViolationWarnings";
 import { AnimatePresence } from "framer-motion";
 import { ViolationEvent } from "@/types/response";
+import {
+  VoiceLiveClient,
+  VoiceLiveUsage,
+  TranscriptEntry,
+} from "@/lib/voice-live-client";
 
 // Type assertion needed because RetellWebClient extends EventEmitter but types don't expose event methods
 const webClient = new RetellWebClient() as RetellWebClient & {
@@ -92,7 +103,11 @@ function Call({ interview }: InterviewProps) {
   const [name, setName] = useState<string>("");
   const [isValidEmail, setIsValidEmail] = useState<boolean>(false);
   const [callId, setCallId] = useState<string>("");
-  const { tabSwitchCount, isDialogOpen: isTabSwitchDialogOpen, handleUnderstand: handleTabSwitchUnderstand } = useTabSwitchPrevention();
+  const {
+    tabSwitchCount,
+    isDialogOpen: isTabSwitchDialogOpen,
+    handleUnderstand: handleTabSwitchUnderstand,
+  } = useTabSwitchPrevention(isStarted && !isEnded);
   const [isFeedbackSubmitted, setIsFeedbackSubmitted] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [interviewerImg, setInterviewerImg] = useState("");
@@ -105,6 +120,27 @@ function Call({ interview }: InterviewProps) {
   const [baseCameraOffCount, setBaseCameraOffCount] = useState(0);
   const [baseMultiplePersonCount, setBaseMultiplePersonCount] = useState(0);
 
+  // ── Voice Live (Azure) state ─────────────────────────────────────────────
+  // When the register-call response says provider=voicelive, we run a
+  // VoiceLiveClient instead of RetellWebClient. Tracked via refs because
+  // stop/cleanup happens from multiple places in this component.
+  const voiceLiveClientRef = useRef<VoiceLiveClient | null>(null);
+  const isVoiceLiveActiveRef = useRef<boolean>(false);
+  const voiceLiveTranscriptRef = useRef<TranscriptEntry[]>([]);
+  const voiceLiveUsageRef = useRef<VoiceLiveUsage | null>(null);
+  const voiceLiveStartTimeRef = useRef<number>(0);
+  const voiceLiveSaveSubmittedRef = useRef<boolean>(false);
+  // Refusal counter — the realtime model classifies each refusal via the
+  // `report_refusal` tool (context-aware: distinguishes "I refuse to answer"
+  // from "I don't know"). We just count those tool calls and force-end the
+  // interview at 3. No client-side text classification.
+  const voiceLiveRefusalCountRef = useRef<number>(0);
+  // Closing-message safety net — the model sometimes speaks the farewell line
+  // but forgets to invoke the `end_interview` tool, leaving the session open
+  // forever. When a finalized assistant entry matches a clear closing phrase,
+  // we run the same wait-and-end logic as onEndCall. Armed once per attempt.
+  const voiceLiveClosingArmedRef = useRef<boolean>(false);
+
   // Real-time violation event accumulator — captures exact timestamps as violations occur
   const violationEventsRef = useRef<ViolationEvent[]>([]);
   const prevMismatchCountRef = useRef(0);
@@ -115,21 +151,33 @@ function Call({ interview }: InterviewProps) {
   // Time-limit warning state
   const [timeWarningShown, setTimeWarningShown] = useState(false);
   const [showTimeWarning, setShowTimeWarning] = useState(false);
-  const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
+  const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<
+    number | null
+  >(null);
 
   // Camera preview state - show video before interview starts
   const [showCameraPreview, setShowCameraPreview] = useState(true);
 
   // Camera countdown timer states
-  const [cameraOffCountdown, setCameraOffCountdown] = useState<number | null>(null);
-  const [cameraOffStartTime, setCameraOffStartTime] = useState<number | null>(null);
+  const [cameraOffCountdown, setCameraOffCountdown] = useState<number | null>(
+    null,
+  );
+  const [cameraOffStartTime, setCameraOffStartTime] = useState<number | null>(
+    null,
+  );
   const [showCameraOffAlert, setShowCameraOffAlert] = useState(false);
   const cameraCountdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Ref mirror of cameraOffStartTime — used inside the countdown effect so
+  // the state value changing does NOT re-trigger the effect (which would
+  // immediately run the cleanup and clear the interval before it ticks).
+  const cameraOffStartedRef = useRef(false);
 
   // Face verification states
   const [assigneePhotoUrl, setAssigneePhotoUrl] = useState<string | null>(null);
   const [showMismatchWarning, setShowMismatchWarning] = useState(false);
-  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(
+    null,
+  );
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const videoRecorderRef = useRef<VideoRecorderHandle>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
@@ -146,7 +194,7 @@ function Call({ interview }: InterviewProps) {
     totalAttempts: faceVerificationTotal,
     isLoading: verificationLoading,
     hasReferenceImage,
-    modelsLoaded
+    modelsLoaded,
   } = useFaceVerification({
     referenceImageUrl: assigneePhotoUrl,
     videoRef: interviewVideoRef,
@@ -171,6 +219,7 @@ function Call({ interview }: InterviewProps) {
   useEffect(() => {
     if (!isStarted || isEnded) {
       // Clear countdown if interview not started or ended
+      cameraOffStartedRef.current = false;
       if (cameraCountdownIntervalRef.current) {
         clearInterval(cameraCountdownIntervalRef.current);
         cameraCountdownIntervalRef.current = null;
@@ -181,35 +230,27 @@ function Call({ interview }: InterviewProps) {
       return;
     }
 
-    // If camera is off and we haven't started countdown yet
-    if (!cameraStatus.isOn && cameraOffStartTime === null) {
-      const startTime = Date.now();
-      setCameraOffStartTime(startTime);
+    // If camera is off and we haven't started countdown yet.
+    // Use a ref instead of cameraOffStartTime state so that setting state
+    // inside this block does NOT re-trigger the effect (which would run the
+    // cleanup, clear the interval, and freeze the timer at 2:00).
+    if (!cameraStatus.isOn && !cameraOffStartedRef.current) {
+      cameraOffStartedRef.current = true;
+      setCameraOffStartTime(Date.now());
       setShowCameraOffAlert(true);
-      setCameraOffCountdown(120); // 2 minutes = 120 seconds
-      
-      // Start countdown timer
+      setCameraOffCountdown(120);
+
       cameraCountdownIntervalRef.current = setInterval(() => {
-        setCameraOffCountdown((prevCountdown) => {
-          if (prevCountdown === null || prevCountdown <= 0) {
-            // Auto-end interview after 2 minutes
-            if (cameraCountdownIntervalRef.current) {
-              clearInterval(cameraCountdownIntervalRef.current);
-              cameraCountdownIntervalRef.current = null;
-            }
-            // End the interview
-            webClient.stopCall();
-            setIsEnded(true);
-            toast.error("Interview ended automatically: Camera was turned off for more than 2 minutes.");
-            return 0;
-          }
-          return prevCountdown - 1;
+        setCameraOffCountdown((prev) => {
+          if (prev === null || prev <= 1) return 0;
+          return prev - 1;
         });
       }, 1000);
     }
-    
+
     // If camera is back on, clear countdown
-    if (cameraStatus.isOn && cameraOffStartTime !== null) {
+    if (cameraStatus.isOn && cameraOffStartedRef.current) {
+      cameraOffStartedRef.current = false;
       if (cameraCountdownIntervalRef.current) {
         clearInterval(cameraCountdownIntervalRef.current);
         cameraCountdownIntervalRef.current = null;
@@ -225,7 +266,38 @@ function Call({ interview }: InterviewProps) {
         cameraCountdownIntervalRef.current = null;
       }
     };
-  }, [cameraStatus.isOn, isStarted, isEnded, cameraOffStartTime]);
+    // cameraOffStartTime intentionally excluded — we track "started" via
+    // cameraOffStartedRef so state changes don't re-run this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraStatus.isOn, isStarted, isEnded]);
+
+  // Dedicated effect: trigger auto-end once the countdown reaches exactly 0.
+  // Keeping this separate from the interval above means the side-effects
+  // (stopActiveCall, setIsEnded, toast) never run inside a state-updater,
+  // which is the reason the auto-end was silently ignored before.
+  useEffect(() => {
+    if (
+      cameraOffCountdown !== 0 ||
+      cameraOffStartTime === null ||
+      !isStarted ||
+      isEnded
+    ) {
+      return;
+    }
+    if (cameraCountdownIntervalRef.current) {
+      clearInterval(cameraCountdownIntervalRef.current);
+      cameraCountdownIntervalRef.current = null;
+    }
+    cameraOffStartedRef.current = false;
+    stopActiveCall();
+    setIsEnded(true);
+    toast.error(
+      "Interview ended automatically: Camera was turned off for more than 2 minutes.",
+    );
+    setCameraOffStartTime(null);
+    setShowCameraOffAlert(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraOffCountdown, cameraOffStartTime, isStarted, isEnded]);
 
   // Multiple person detection hook - use the visible video element (interviewVideoRef)
   // The hidden VideoRecorder's video element doesn't render frames properly for face detection
@@ -257,12 +329,18 @@ function Call({ interview }: InterviewProps) {
       if (stream) {
         setVideoStream(stream);
         // Apply stream to preview video if it exists
-        if (previewVideoRef.current && previewVideoRef.current.srcObject !== stream) {
+        if (
+          previewVideoRef.current &&
+          previewVideoRef.current.srcObject !== stream
+        ) {
           previewVideoRef.current.srcObject = stream;
           previewVideoRef.current.play().catch(() => {});
         }
         // Apply stream to interview video if it exists
-        if (interviewVideoRef.current && interviewVideoRef.current.srcObject !== stream) {
+        if (
+          interviewVideoRef.current &&
+          interviewVideoRef.current.srcObject !== stream
+        ) {
           interviewVideoRef.current.srcObject = stream;
           interviewVideoRef.current.play().catch(() => {});
         }
@@ -322,7 +400,11 @@ function Call({ interview }: InterviewProps) {
 
   // Show warning when face mismatch detected
   useEffect(() => {
-    if (!verificationResult.isMatch && verificationResult.lastChecked && hasReferenceImage) {
+    if (
+      !verificationResult.isMatch &&
+      verificationResult.lastChecked &&
+      hasReferenceImage
+    ) {
       setShowMismatchWarning(true);
       // Auto-hide warning after 8 seconds
       const timeout = setTimeout(() => setShowMismatchWarning(false), 8000);
@@ -336,11 +418,11 @@ function Call({ interview }: InterviewProps) {
     if (!isStarted || isEnded) return;
     if (mismatchCount > prevMismatchCountRef.current) {
       violationEventsRef.current.push({
-        type: 'face_mismatch',
+        type: "face_mismatch",
         timestamp: new Date().toISOString(),
         details: verificationResult.faceDetected
-          ? 'Face did not match the profile picture'
-          : 'No face detected in video',
+          ? "Face did not match the profile picture"
+          : "No face detected in video",
       });
       prevMismatchCountRef.current = mismatchCount;
     }
@@ -350,9 +432,9 @@ function Call({ interview }: InterviewProps) {
     if (!isStarted || isEnded) return;
     if (cameraStatus.offCount > prevCameraOffCountRef.current) {
       violationEventsRef.current.push({
-        type: 'camera_off',
+        type: "camera_off",
         timestamp: new Date().toISOString(),
-        details: 'Camera was turned off during the interview',
+        details: "Camera was turned off during the interview",
       });
       prevCameraOffCountRef.current = cameraStatus.offCount;
     }
@@ -360,13 +442,17 @@ function Call({ interview }: InterviewProps) {
 
   useEffect(() => {
     if (!isStarted || isEnded) return;
-    if (multiplePersonStatus.multiplePersonCount > prevMultiplePersonCountRef.current) {
+    if (
+      multiplePersonStatus.multiplePersonCount >
+      prevMultiplePersonCountRef.current
+    ) {
       violationEventsRef.current.push({
-        type: 'multiple_person',
+        type: "multiple_person",
         timestamp: new Date().toISOString(),
-        details: 'Multiple persons detected in the video',
+        details: "Multiple persons detected in the video",
       });
-      prevMultiplePersonCountRef.current = multiplePersonStatus.multiplePersonCount;
+      prevMultiplePersonCountRef.current =
+        multiplePersonStatus.multiplePersonCount;
     }
   }, [multiplePersonStatus.multiplePersonCount, isStarted, isEnded]);
 
@@ -374,9 +460,9 @@ function Call({ interview }: InterviewProps) {
     if (!isStarted || isEnded) return;
     if (tabSwitchCount > prevTabSwitchCountRef.current) {
       violationEventsRef.current.push({
-        type: 'tab_switch',
+        type: "tab_switch",
         timestamp: new Date().toISOString(),
-        details: 'Assignee switched tabs during the interview',
+        details: "Assignee switched tabs during the interview",
       });
       prevTabSwitchCountRef.current = tabSwitchCount;
     }
@@ -389,9 +475,9 @@ function Call({ interview }: InterviewProps) {
       // Fetch as soon as we have email and interview.id (during preview phase)
       if (email && interview.id && !assigneePhotoUrl) {
         try {
-          const res = await fetch('/api/get-assignee-photo', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          const res = await fetch("/api/get-assignee-photo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, interview_id: interview.id }),
           });
           const data = await res.json();
@@ -437,7 +523,7 @@ function Call({ interview }: InterviewProps) {
   useEffect(() => {
     let intervalId: any;
     if (isCalling) {
-      intervalId = setInterval(() => setTime(prev => prev + 1), 10);
+      intervalId = setInterval(() => setTime((prev) => prev + 1), 10);
     }
     const elapsedSeconds = Math.floor(time / 100);
     setCurrentTimeDuration(String(elapsedSeconds));
@@ -450,9 +536,12 @@ function Call({ interview }: InterviewProps) {
       setTimeWarningShown(true);
       setShowTimeWarning(true);
       setTimeRemainingSeconds(remaining);
-      toast.warning(`Interview ending in ${remaining} seconds. Please wrap up your answer.`, {
-        duration: 8000,
-      });
+      toast.warning(
+        `Interview ending in ${remaining} seconds. Please wrap up your answer.`,
+        {
+          duration: 8000,
+        },
+      );
     }
 
     // Update live countdown while warning is showing
@@ -462,7 +551,7 @@ function Call({ interview }: InterviewProps) {
 
     if (elapsedSeconds >= limitSeconds && isCalling) {
       setShowTimeWarning(false);
-      webClient.stopCall();
+      stopActiveCall();
       setIsEnded(true);
     }
 
@@ -475,6 +564,129 @@ function Call({ interview }: InterviewProps) {
       setIsValidEmail(true);
     }
   }, [email]);
+
+  // Stops whichever voice client is currently active (Retell or Voice Live).
+  // Voice Live's stop() is idempotent and safe to call repeatedly.
+  const stopActiveCall = () => {
+    if (isVoiceLiveActiveRef.current) {
+      voiceLiveClientRef.current?.stop();
+    } else {
+      webClient.stopCall();
+    }
+  };
+
+  // Posts the captured transcript + token usage + violations to the Voice
+  // Live save endpoint. Fires once per call (guarded by voiceLiveSaveSubmittedRef).
+  // The save-call route owns the entire end-of-call sequence for Voice Live
+  // (response write, analytics, assignee status, recruiter email) so we do
+  // NOT also run the violation/assignee useEffect on the client for these
+  // calls — see the gate at the top of the second isEnded effect.
+  const submitVoiceLiveSave = async (callIdForSave: string) => {
+    if (voiceLiveSaveSubmittedRef.current) return;
+    voiceLiveSaveSubmittedRef.current = true;
+
+    const startTime = voiceLiveStartTimeRef.current;
+    const duration =
+      startTime > 0 ? Math.round((Date.now() - startTime) / 1000) : 0;
+
+    // 1. Pull the stereo recording from the Voice Live client and upload it
+    // to Azure Blob. Must happen BEFORE we call voiceLiveClientRef.current
+    // .stop() — stop() closes the AudioContext and tears down the graph.
+    // The drainAndEnd path does call stop() right before isEnded triggers
+    // this effect; getRecordingBlob() handles the already-stopped case by
+    // flushing whatever is in chunks and returning. Worst case it returns
+    // null and we proceed without a recording — analytics + transcript
+    // still save normally.
+    let recordingUrl: string | undefined;
+    try {
+      const blob = await voiceLiveClientRef.current?.getRecordingBlob();
+      if (blob && blob.size > 0) {
+        const form = new FormData();
+        form.append("call_id", callIdForSave);
+        form.append(
+          "file",
+          blob,
+          `${callIdForSave}.${blob.type.includes("mp4") ? "mp4" : "webm"}`,
+        );
+        const uploadRes = await axios.post(
+          "/api/upload-call-recording",
+          form,
+          {
+            headers: { "Content-Type": "multipart/form-data" },
+            // Big uploads can take a few seconds — don't let axios cut it off.
+            timeout: 60_000,
+          },
+        );
+        recordingUrl = uploadRes.data?.recording_url;
+      }
+    } catch (err) {
+      // Non-fatal — log and continue. The recruiter gets transcript +
+      // analytics but no audio playback.
+      console.error("Recording upload failed:", err);
+    }
+
+    // Aggregate violations the same way the Retell-side useEffect does.
+    const endedDueToCameraOff =
+      cameraOffStartTime !== null && cameraOffCountdown === 0;
+    const violations: ViolationEvent[] = [...violationEventsRef.current];
+    if (endedDueToCameraOff) {
+      const lastCameraOff = [...violations]
+        .reverse()
+        .find((v) => v.type === "camera_off");
+      if (lastCameraOff) {
+        lastCameraOff.details =
+          "Interview ended automatically: Camera was turned off for more than 2 minutes";
+      } else {
+        violations.push({
+          type: "camera_off",
+          timestamp: new Date().toISOString(),
+          details:
+            "Interview ended automatically: Camera was turned off for more than 2 minutes",
+        });
+      }
+    }
+
+    try {
+      await axios.post("/api/voice-live/save-call", {
+        call_id: callIdForSave,
+        transcript: voiceLiveTranscriptRef.current.map((t) => ({
+          role: t.role,
+          content: t.content,
+        })),
+        duration_seconds: duration,
+        usage: voiceLiveUsageRef.current,
+        model: undefined, // server uses its env default
+        // Violation data — server merges into the same response write.
+        violations_summary: violations,
+        tab_switch_count: violations.filter((v) => v.type === "tab_switch")
+          .length,
+        face_mismatch_count: violations.filter(
+          (v) => v.type === "face_mismatch",
+        ).length,
+        camera_off_count: violations.filter((v) => v.type === "camera_off")
+          .length,
+        multiple_person_count: violations.filter(
+          (v) => v.type === "multiple_person",
+        ).length,
+        face_mismatch_total: faceVerificationTotal || 0,
+        camera_off_total: cameraStatus.totalChecks || 0,
+        multiple_person_total: multiplePersonStatus.totalChecks || 0,
+        // Fallback fields — used only if save-call has to create the response
+        // row defensively (when createResponse failed silently at call start).
+        interview_id: interview?.id,
+        email,
+        name,
+        // Azure Blob URL for the stereo audio recording. Omitted if upload
+        // failed; save-call will simply not write a recording_url in that case.
+        recording_url: recordingUrl,
+      });
+    } catch (err: any) {
+      console.error("Failed to save Voice Live call:", err);
+      toast.error(
+        "Could not save the interview transcript. Your recruiter will need to retry analytics.",
+      );
+    }
+  };
 
   useEffect(() => {
     webClient.on("call_started", () => {
@@ -496,7 +708,7 @@ function Call({ interview }: InterviewProps) {
     });
 
     webClient.on("error", () => {
-      webClient.stopCall();
+      stopActiveCall();
       setIsEnded(true);
       setIsCalling(false);
     });
@@ -515,7 +727,6 @@ function Call({ interview }: InterviewProps) {
       }
     });
 
-
     return () => {
       // Clean up event listeners
       webClient.removeAllListeners();
@@ -525,7 +736,7 @@ function Call({ interview }: InterviewProps) {
   const onEndCallClick = async () => {
     if (isStarted) {
       setLoading(true);
-      webClient.stopCall();
+      stopActiveCall();
       setIsEnded(true);
       setLoading(false);
     } else {
@@ -543,10 +754,12 @@ function Call({ interview }: InterviewProps) {
 
   const startConversation = async () => {
     setLoading(true);
-    
+
     // 0. Basic validation for email & name
     if (!testEmail(email)) {
-      toast.error("Please enter a valid email address before starting the interview.");
+      toast.error(
+        "Please enter a valid email address before starting the interview.",
+      );
       setLoading(false);
 
       return;
@@ -581,14 +794,19 @@ function Call({ interview }: InterviewProps) {
 
     // Check if camera is available (video stream should be ready from preview)
     if (!videoStream) {
-      toast.error("Please ensure your camera is on before starting the interview.");
+      toast.error(
+        "Please ensure your camera is on before starting the interview.",
+      );
       setLoading(false);
       return;
     }
 
     // Validate email with backend
     try {
-      const validateRes = await axios.post("/api/validate-user", { email,interview_id: interview.id, });
+      const validateRes = await axios.post("/api/validate-user", {
+        email,
+        interview_id: interview.id,
+      });
       if (!validateRes.data.success) {
         toast.error(validateRes.data.error || "You are not authorized person");
         setLoading(false);
@@ -597,9 +815,9 @@ function Call({ interview }: InterviewProps) {
       }
     } catch (err: any) {
       const message =
-      err?.response?.data?.error ||
-      err?.message ||
-      "You are not authorized person";
+        err?.response?.data?.error ||
+        err?.message ||
+        "You are not authorized person";
       toast.error(message);
       setLoading(false);
 
@@ -618,7 +836,8 @@ function Call({ interview }: InterviewProps) {
     violationEventsRef.current = [];
     prevMismatchCountRef.current = mismatchCount;
     prevCameraOffCountRef.current = cameraStatus.offCount;
-    prevMultiplePersonCountRef.current = multiplePersonStatus.multiplePersonCount;
+    prevMultiplePersonCountRef.current =
+      multiplePersonStatus.multiplePersonCount;
     prevTabSwitchCountRef.current = tabSwitchCount;
 
     // Capture current violation counters as baseline for this attempt
@@ -628,11 +847,198 @@ function Call({ interview }: InterviewProps) {
     setBaseMultiplePersonCount(multiplePersonStatus.multiplePersonCount);
 
     try {
-      const registerCallResponse: registerCallResponseType = await axios.post(
-        "/api/register-call",
-        { dynamic_data: data, interviewer_id: interview?.interviewer_id },
-      );
+      const registerCallResponse: any = await axios.post("/api/register-call", {
+        dynamic_data: data,
+        interviewer_id: interview?.interviewer_id,
+      });
 
+      // ── Voice Live path ────────────────────────────────────────────────
+      if (registerCallResponse.data?.provider === "voicelive") {
+        const cfg = registerCallResponse.data;
+        const newCallId = cfg.call_id;
+
+        // Reset Voice Live trackers for this attempt
+        voiceLiveTranscriptRef.current = [];
+        voiceLiveUsageRef.current = null;
+        voiceLiveSaveSubmittedRef.current = false;
+        voiceLiveStartTimeRef.current = Date.now();
+        isVoiceLiveActiveRef.current = true;
+        voiceLiveRefusalCountRef.current = 0;
+        voiceLiveClosingArmedRef.current = false;
+
+        // Closing-phrase regex — only the most unambiguous farewells. Phrases
+        // like "take care", "all the best", "wish you well" were dropped
+        // because the agent can use them mid-interview ("take care to mention
+        // specifics…", "I wish you the best in this role…"). These two
+        // patterns are essentially exclusive to a sign-off.
+        const CLOSING_PATTERN =
+          /\b(good[\s-]?bye|have\s+a\s+(great|wonderful|good|nice|lovely)\s+(day|evening|night|weekend|one|rest\s+of))\b/i;
+
+        // Minimum finalized assistant turns before the closing backstop can
+        // fire. The greeting is turn 1; we want at least one Q&A exchange
+        // before we'll believe a closing-shaped phrase is actually a goodbye.
+        const MIN_ASSISTANT_TURNS_BEFORE_CLOSE = 3;
+
+        // Same flow as onEndCall, but extracted so the closing-message
+        // backstop can trigger it without going through the tool path
+        // (which would inject a second goodbye via forceEnd).
+        const drainAndEnd = () => {
+          const startedAt = Date.now();
+          const MAX_WAIT_MS = 8000;
+          const POLL_MS = 200;
+          const wait = () => {
+            const stillPlaying =
+              voiceLiveClientRef.current?.isPlayingAudio() ?? false;
+            if (stillPlaying && Date.now() - startedAt < MAX_WAIT_MS) {
+              setTimeout(wait, POLL_MS);
+
+              return;
+            }
+            voiceLiveClientRef.current?.stop();
+            setIsCalling(false);
+            setIsEnded(true);
+          };
+          wait();
+        };
+
+        const client = new VoiceLiveClient({
+          onStatus: (status) => {
+            if (status === "user_speaking") setActiveTurn("user");
+            else if (status === "assistant_speaking") setActiveTurn("agent");
+            // "listening" fires when the agent finishes its response (response.done).
+            // Without this, activeTurn stays "agent" after the agent stops speaking
+            // and the candidate never sees the "Your Turn" indicator.
+            else if (status === "listening") setActiveTurn("user");
+          },
+          onTranscript: (entries) => {
+            voiceLiveTranscriptRef.current = entries;
+            // Show partial assistant entries too — that's how Retell's UI
+            // streams text live as the agent speaks. The previous
+            // `!e.partial` filter delayed the box until the full sentence
+            // completed, making it feel laggy compared to Retell.
+            const lastUser = [...entries]
+              .reverse()
+              .find((e) => e.role === "user");
+            const lastAgent = [...entries]
+              .reverse()
+              .find((e) => e.role === "assistant");
+            if (lastUser) setLastUserResponse(lastUser.content);
+            if (lastAgent) setLastInterviewerResponse(lastAgent.content);
+
+            // Closing-message backstop — if the agent speaks a clear farewell
+            // but forgets to invoke the end_interview tool, end ourselves.
+            // Guards:
+            //  - At least MIN_ASSISTANT_TURNS_BEFORE_CLOSE finalized turns
+            //    (can't fire on the greeting).
+            //  - Last assistant turn must NOT contain a "?" — a closing is
+            //    a statement, never a question. Filters out cases like
+            //    "Do you usually have a great day at work?".
+            if (!voiceLiveClosingArmedRef.current) {
+              const finalizedAssistant = entries.filter(
+                (e) => e.role === "assistant" && !e.partial,
+              );
+              const lastFinalAssistant =
+                finalizedAssistant[finalizedAssistant.length - 1];
+              if (
+                lastFinalAssistant &&
+                finalizedAssistant.length >=
+                  MIN_ASSISTANT_TURNS_BEFORE_CLOSE &&
+                !lastFinalAssistant.content.includes("?") &&
+                CLOSING_PATTERN.test(lastFinalAssistant.content)
+              ) {
+                voiceLiveClosingArmedRef.current = true;
+                drainAndEnd();
+              }
+            }
+          },
+          onRefusalReported: () => {
+            // The agent decided (context-aware) that the candidate refused
+            // to answer. Count those calls — at 3 we force-end the session.
+            // The agent's prompt also tells it to end gracefully at 3, but
+            // this backstop fires regardless of whether it remembers.
+            if (voiceLiveRefusalCountRef.current < 0) return; // already armed
+            voiceLiveRefusalCountRef.current += 1;
+            if (voiceLiveRefusalCountRef.current >= 3) {
+              voiceLiveRefusalCountRef.current = -1; // arm only once
+              voiceLiveClientRef.current?.forceEnd(
+                "candidate_refused_to_answer",
+              );
+            }
+          },
+          onUsage: (usage) => {
+            voiceLiveUsageRef.current = usage;
+          },
+          onEndCall: () => {
+            // Agent invoked the `end_interview` tool. Don't end the session
+            // immediately — the agent has just said (or is finishing saying)
+            // a closing thank-you message, and tearing down the WebSocket
+            // now would cut off that audio. drainAndEnd waits for the
+            // playback queue to drain (hard 8s ceiling) before tearing down.
+            voiceLiveClosingArmedRef.current = true;
+            drainAndEnd();
+          },
+          onError: (msg) => {
+            console.error("Voice Live error:", msg);
+            toast.error(`Interview error: ${msg}`);
+            setIsCalling(false);
+            setIsEnded(true);
+          },
+        });
+
+        voiceLiveClientRef.current = client;
+
+        // Create the response row FIRST, before any audio starts streaming.
+        // This guarantees /api/voice-live/save-call finds the row at end-of-
+        // call, even if the candidate hangs up early. The Retell flow runs
+        // createResponse after startCall too, but Retell's webhook fires
+        // 30s+ later so the row has time to materialize regardless. Voice
+        // Live's save-call fires immediately on end, so we need the row
+        // already in place.
+        // If this returns empty, save-call will create the row defensively
+        // from the fallback fields we send in submitVoiceLiveSave.
+        await createResponse({
+          interview_id: interview.id,
+          call_id: newCallId,
+          email: email,
+          name: name,
+        });
+
+        try {
+          await client.start({
+            wsUrl: cfg.wsUrl,
+            sessionConfig: cfg.sessionConfig,
+          });
+        } catch (err) {
+          console.error("Voice Live start failed:", err);
+          toast.error("Could not start the interview. Please try again.");
+          setLoading(false);
+
+          return;
+        }
+
+        setIsCalling(true);
+        setIsStarted(true);
+        setCallId(newCallId);
+
+        try {
+          const startedAssignee =
+            await assigneeService.getAssigneeByEmailAndInterview(
+              email.toLowerCase(),
+              interview.id,
+            );
+          if (startedAssignee?.id) {
+            await assigneeService.updateAssignee(startedAssignee.id, {
+              allow_retake: false,
+            });
+          }
+        } catch {
+          // Non-critical
+        }
+
+        return; // ← Skip the Retell branch below
+      }
+
+      // ── Retell path (legacy / default) ─────────────────────────────────
       if (registerCallResponse.data.registerCallResponse.access_token) {
         await webClient
           .startCall({
@@ -649,10 +1055,11 @@ function Call({ interview }: InterviewProps) {
 
         // Lock the link immediately — prevent retake as soon as interview starts
         try {
-          const startedAssignee = await assigneeService.getAssigneeByEmailAndInterview(
-            email.toLowerCase(),
-            interview.id,
-          );
+          const startedAssignee =
+            await assigneeService.getAssigneeByEmailAndInterview(
+              email.toLowerCase(),
+              interview.id,
+            );
           if (startedAssignee?.id) {
             await assigneeService.updateAssignee(startedAssignee.id, {
               allow_retake: false,
@@ -699,34 +1106,70 @@ function Call({ interview }: InterviewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interview.interviewer_id]);
 
+  // Fire the Voice Live save-call endpoint once the interview ends.
+  // This is the Voice Live equivalent of Retell's response-webhook → get-call
+  // flow. The Retell branch is unaffected.
   useEffect(() => {
+    if (!isEnded) return;
+    if (
+      isVoiceLiveActiveRef.current &&
+      callId &&
+      !voiceLiveSaveSubmittedRef.current
+    ) {
+      submitVoiceLiveSave(callId);
+      // Also stop the client (idempotent — may already be stopped)
+      voiceLiveClientRef.current?.stop();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEnded, callId]);
+
+  useEffect(() => {
+    // Voice Live runs the entire end-of-call sequence (response write,
+    // violation merge, assignee update, recruiter email) inside the
+    // /api/voice-live/save-call route. Running it here too would race that
+    // server-side write. Retell still uses this client-side flow.
+    if (isVoiceLiveActiveRef.current) return;
+
     if (isEnded) {
       const updateInterview = async () => {
         // Use the real-time violation events captured with accurate timestamps.
         // If camera-off ended the interview, add a final event for that.
-        const endedDueToCameraOff = cameraOffStartTime !== null && cameraOffCountdown === 0;
+        const endedDueToCameraOff =
+          cameraOffStartTime !== null && cameraOffCountdown === 0;
         const violations: ViolationEvent[] = [...violationEventsRef.current];
 
         if (endedDueToCameraOff) {
           // Replace the last camera_off event (already recorded) with the auto-end detail,
           // or add one if the periodic tracker somehow missed it.
-          const lastCameraOff = [...violations].reverse().find(v => v.type === 'camera_off');
+          const lastCameraOff = [...violations]
+            .reverse()
+            .find((v) => v.type === "camera_off");
           if (lastCameraOff) {
-            lastCameraOff.details = 'Interview ended automatically: Camera was turned off for more than 2 minutes';
+            lastCameraOff.details =
+              "Interview ended automatically: Camera was turned off for more than 2 minutes";
           } else {
             violations.push({
-              type: 'camera_off',
+              type: "camera_off",
               timestamp: new Date().toISOString(),
-              details: 'Interview ended automatically: Camera was turned off for more than 2 minutes',
+              details:
+                "Interview ended automatically: Camera was turned off for more than 2 minutes",
             });
           }
         }
 
         // Derive counts from the real-time events list
-        const tabSwitchDelta = violations.filter(v => v.type === 'tab_switch').length;
-        const mismatchDelta = violations.filter(v => v.type === 'face_mismatch').length;
-        const cameraOffDelta = violations.filter(v => v.type === 'camera_off').length;
-        const multiplePersonDelta = violations.filter(v => v.type === 'multiple_person').length;
+        const tabSwitchDelta = violations.filter(
+          (v) => v.type === "tab_switch",
+        ).length;
+        const mismatchDelta = violations.filter(
+          (v) => v.type === "face_mismatch",
+        ).length;
+        const cameraOffDelta = violations.filter(
+          (v) => v.type === "camera_off",
+        ).length;
+        const multiplePersonDelta = violations.filter(
+          (v) => v.type === "multiple_person",
+        ).length;
 
         const faceMismatchTotal = faceVerificationTotal || 0;
         const cameraOffTotal = cameraStatus.totalChecks || 0;
@@ -740,11 +1183,11 @@ function Call({ interview }: InterviewProps) {
             camera_off_count: cameraOffDelta,
             multiple_person_count: multiplePersonDelta,
             // Default candidate status after interview: To Be Reviewed
-            candidate_status: 'NO_STATUS',
+            candidate_status: "NO_STATUS",
             face_mismatch_total: faceMismatchTotal,
             camera_off_total: cameraOffTotal,
             multiple_person_total: multiplePersonTotal,
-            violations_summary: violations
+            violations_summary: violations,
           },
           callId,
         );
@@ -753,15 +1196,16 @@ function Call({ interview }: InterviewProps) {
         // and update interview_status to INTERVIEW_COMPLETED
         try {
           if (email && interview?.id) {
-            const assignee = await assigneeService.getAssigneeByEmailAndInterview(
-              email.toLowerCase(),
-              interview.id,
-            );
+            const assignee =
+              await assigneeService.getAssigneeByEmailAndInterview(
+                email.toLowerCase(),
+                interview.id,
+              );
 
             if (assignee && assignee.id) {
               await assigneeService.updateAssignee(assignee.id, {
                 allow_retake: false,
-                interview_status: 'INTERVIEW_COMPLETED',
+                interview_status: "INTERVIEW_COMPLETED",
               });
             }
           }
@@ -772,10 +1216,10 @@ function Call({ interview }: InterviewProps) {
         // Send email notification to recruiter
         if (email && callId) {
           try {
-            await fetch('/api/send-recruiter-notification', {
-              method: 'POST',
+            await fetch("/api/send-recruiter-notification", {
+              method: "POST",
               headers: {
-                'Content-Type': 'application/json',
+                "Content-Type": "application/json",
               },
               body: JSON.stringify({
                 callId: callId,
@@ -793,38 +1237,47 @@ function Call({ interview }: InterviewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEnded]);
 
-
   return (
     <div className="flex justify-center items-center min-h-screen bg-gradient-to-br from-slate-50 via-indigo-50/30 to-purple-50/20">
       {/* Violation Warnings */}
-      {isStarted && <TabSwitchWarning isOpen={isTabSwitchDialogOpen} onUnderstand={handleTabSwitchUnderstand} />}
-      
+      {isStarted && !isEnded && (
+        <TabSwitchWarning
+          isOpen={isTabSwitchDialogOpen}
+          onUnderstand={handleTabSwitchUnderstand}
+        />
+      )}
+
       {/* Modern Violation Warnings */}
       <AnimatePresence>
         {isStarted && !isEnded && showMismatchWarning && (
-          <ViolationWarning type="face-mismatch" onDismiss={() => setShowMismatchWarning(false)} />
+          <ViolationWarning
+            type="face-mismatch"
+            onDismiss={() => setShowMismatchWarning(false)}
+          />
         )}
         {isStarted && !isEnded && showCameraWarning && !showCameraOffAlert && (
           <ViolationWarning type="camera" onDismiss={dismissCameraWarning} />
         )}
         {isStarted && !isEnded && showMultiplePersonWarning && (
-          <ViolationWarning type="multiple-person" onDismiss={dismissMultiplePersonWarning} />
-        )}
-        {isStarted && !isEnded && showCameraOffAlert && cameraOffCountdown !== null && (
-          <CameraOffCountdownAlert
-            countdown={cameraOffCountdown}
-            onDismiss={() => setShowCameraOffAlert(false)}
+          <ViolationWarning
+            type="multiple-person"
+            onDismiss={dismissMultiplePersonWarning}
           />
         )}
-        {isStarted && !isEnded && showTimeWarning && timeRemainingSeconds !== null && (
-          <div
-            style={{ zIndex: 9999 }}
-            className="fixed top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 font-semibold text-sm"
-          >
-            <AlarmClockIcon className="h-5 w-5 shrink-0" />
-            Interview ending in {timeRemainingSeconds}s — please wrap up your answer.
-          </div>
-        )}
+        {/* Camera-off countdown is shown inline in the left panel — no floating overlay needed */}
+        {isStarted &&
+          !isEnded &&
+          showTimeWarning &&
+          timeRemainingSeconds !== null && (
+            <div
+              style={{ zIndex: 9999 }}
+              className="fixed top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 font-semibold text-sm"
+            >
+              <AlarmClockIcon className="h-5 w-5 shrink-0" />
+              Interview ending in {timeRemainingSeconds}s — please wrap up your
+              answer.
+            </div>
+          )}
       </AnimatePresence>
 
       {/* Violation Tracker - Hidden per user request */}
@@ -869,7 +1322,7 @@ function Call({ interview }: InterviewProps) {
                 />
               </div>
             </div>
-            
+
             {/* Header */}
             <CardHeader className="items-center py-4 px-6">
               {!isEnded && (
@@ -881,17 +1334,17 @@ function Call({ interview }: InterviewProps) {
                 <div className="flex items-center gap-2 mt-2 px-4 py-1.5 rounded-full bg-indigo-50/80 border border-indigo-100">
                   <AlarmClockIcon
                     className="h-4 w-4"
-                    style={{ color: interview.theme_color || '#4F46E5' }}
+                    style={{ color: interview.theme_color || "#4F46E5" }}
                   />
                   <span className="text-sm text-slate-600">
                     Expected duration:{" "}
                     <span
                       className="font-semibold"
-                      style={{ color: interview.theme_color || '#4F46E5' }}
+                      style={{ color: interview.theme_color || "#4F46E5" }}
                     >
                       {interviewTimeDuration} mins
-                    </span>
-                    {" "}or less
+                    </span>{" "}
+                    or less
                   </span>
                 </div>
               )}
@@ -917,7 +1370,10 @@ function Call({ interview }: InterviewProps) {
                           <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-50 border border-indigo-100">
                             <AlarmClockIcon className="h-4 w-4 text-indigo-600" />
                             <span className="text-sm font-medium text-slate-700">
-                              Duration: <span className="text-indigo-600">{interviewTimeDuration} min</span>
+                              Duration:{" "}
+                              <span className="text-indigo-600">
+                                {interviewTimeDuration} min
+                              </span>
                             </span>
                           </div>
                         </div>
@@ -934,7 +1390,9 @@ function Call({ interview }: InterviewProps) {
                             <div className="p-2 rounded-lg bg-indigo-100">
                               <VideoIcon className="h-4 w-4 text-indigo-600" />
                             </div>
-                            <h3 className="text-sm font-semibold text-slate-800 uppercase tracking-wide">Camera Preview</h3>
+                            <h3 className="text-sm font-semibold text-slate-800 uppercase tracking-wide">
+                              Camera Preview
+                            </h3>
                           </div>
 
                           {/* Camera Container */}
@@ -945,7 +1403,10 @@ function Call({ interview }: InterviewProps) {
                                 <video
                                   ref={previewVideoRef}
                                   className="w-full h-full object-cover"
-                                  style={{ background: "#0f172a", transform: "scaleX(-1)" }}
+                                  style={{
+                                    background: "#0f172a",
+                                    transform: "scaleX(-1)",
+                                  }}
                                   autoPlay
                                   muted
                                   playsInline
@@ -957,8 +1418,12 @@ function Call({ interview }: InterviewProps) {
                                     <div className="w-16 h-16 rounded-full border-2 border-dashed border-slate-500 flex items-center justify-center mb-3 animate-pulse">
                                       <UserIcon className="h-8 w-8 text-slate-500" />
                                     </div>
-                                    <p className="text-slate-400 text-sm font-medium">Initializing camera...</p>
-                                    <p className="text-slate-500 text-xs mt-1">Please allow camera access</p>
+                                    <p className="text-slate-400 text-sm font-medium">
+                                      Initializing camera...
+                                    </p>
+                                    <p className="text-slate-500 text-xs mt-1">
+                                      Please allow camera access
+                                    </p>
                                   </div>
                                 )}
 
@@ -982,12 +1447,16 @@ function Call({ interview }: InterviewProps) {
                                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                                       <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
                                     </span>
-                                    <span className="text-sm font-medium">Camera Ready</span>
+                                    <span className="text-sm font-medium">
+                                      Camera Ready
+                                    </span>
                                   </div>
                                 ) : (
                                   <div className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-full shadow-lg shadow-amber-200">
                                     <span className="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full"></span>
-                                    <span className="text-sm font-medium">Connecting...</span>
+                                    <span className="text-sm font-medium">
+                                      Connecting...
+                                    </span>
                                   </div>
                                 )}
                               </div>
@@ -996,7 +1465,8 @@ function Call({ interview }: InterviewProps) {
 
                           {/* Camera Tips */}
                           <p className="text-xs text-slate-500 text-center mt-6">
-                            Position your face within the frame and ensure good lighting
+                            Position your face within the frame and ensure good
+                            lighting
                           </p>
                         </div>
                       </div>
@@ -1023,26 +1493,35 @@ function Call({ interview }: InterviewProps) {
                               <div className="mt-0.5 p-1 rounded-full bg-emerald-100">
                                 <Volume2Icon className="h-3 w-3 text-emerald-600" />
                               </div>
-                              <span className="text-sm text-slate-600">Ensure your volume is turned up</span>
+                              <span className="text-sm text-slate-600">
+                                Ensure your volume is turned up
+                              </span>
                             </li>
                             <li className="flex items-start gap-3">
                               <div className="mt-0.5 p-1 rounded-full bg-emerald-100">
                                 <MicIcon className="h-3 w-3 text-emerald-600" />
                               </div>
-                              <span className="text-sm text-slate-600">Grant microphone access when prompted</span>
+                              <span className="text-sm text-slate-600">
+                                Grant microphone access when prompted
+                              </span>
                             </li>
                             <li className="flex items-start gap-3">
                               <div className="mt-0.5 p-1 rounded-full bg-emerald-100">
                                 <VolumeXIcon className="h-3 w-3 text-emerald-600" />
                               </div>
-                              <span className="text-sm text-slate-600">Be in a quiet environment</span>
+                              <span className="text-sm text-slate-600">
+                                Be in a quiet environment
+                              </span>
                             </li>
                             <li className="flex items-start gap-3">
                               <div className="mt-0.5 p-1 rounded-full bg-amber-100">
                                 <AlertTriangleIcon className="h-3 w-3 text-amber-600" />
                               </div>
                               <span className="text-sm text-slate-600">
-                                Tab switching will be <span className="font-medium text-amber-700">monitored</span>
+                                Tab switching will be{" "}
+                                <span className="font-medium text-amber-700">
+                                  monitored
+                                </span>
                               </span>
                             </li>
                           </ul>
@@ -1082,14 +1561,16 @@ function Call({ interview }: InterviewProps) {
                           <Button
                             className="flex-1 h-12 rounded-xl font-semibold text-base shadow-lg hover:shadow-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
                             style={{
-                              backgroundColor: interview.theme_color ?? "#4F46E5",
-                              color: isLightColor(interview.theme_color ?? "#4F46E5")
+                              backgroundColor:
+                                interview.theme_color ?? "#4F46E5",
+                              color: isLightColor(
+                                interview.theme_color ?? "#4F46E5",
+                              )
                                 ? "#1e293b"
                                 : "white",
                             }}
                             disabled={
-                              Loading ||
-                              (!isValidEmail || !name || !videoStream)
+                              Loading || !isValidEmail || !name || !videoStream
                             }
                             onClick={startConversation}
                           >
@@ -1114,13 +1595,18 @@ function Call({ interview }: InterviewProps) {
                             </AlertDialogTrigger>
                             <AlertDialogContent className="rounded-2xl">
                               <AlertDialogHeader>
-                                <AlertDialogTitle className="text-xl">Exit Interview?</AlertDialogTitle>
+                                <AlertDialogTitle className="text-xl">
+                                  Exit Interview?
+                                </AlertDialogTitle>
                                 <AlertDialogDescription className="text-slate-600">
-                                  Are you sure you want to exit without starting the interview?
+                                  Are you sure you want to exit without starting
+                                  the interview?
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter className="gap-2">
-                                <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+                                <AlertDialogCancel className="rounded-xl">
+                                  Cancel
+                                </AlertDialogCancel>
                                 <AlertDialogAction
                                   className="bg-indigo-600 hover:bg-indigo-700 rounded-xl"
                                   onClick={async () => {
@@ -1146,6 +1632,30 @@ function Call({ interview }: InterviewProps) {
                   <div className="h-full grid grid-cols-1 lg:grid-cols-2">
                     {/* Left Panel - Interviewer */}
                     <div className="relative flex flex-col bg-gradient-to-br from-indigo-50/30 via-white to-slate-50/50 p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-slate-100">
+                      {/* Camera-off countdown — lives in the empty space at the top of the left panel */}
+                      {showCameraOffAlert && cameraOffCountdown !== null && (
+                        <div className={`mb-4 rounded-xl border-2 overflow-hidden ${cameraOffCountdown <= 30 ? 'border-red-400 bg-red-50' : 'border-orange-400 bg-orange-50'}`}>
+                          <div className="h-1 bg-gray-200">
+                            <div
+                              className={`h-full transition-all duration-1000 ease-linear ${cameraOffCountdown <= 30 ? 'bg-red-500' : 'bg-orange-400'}`}
+                              style={{ width: `${(cameraOffCountdown / 120) * 100}%` }}
+                            />
+                          </div>
+                          <div className="flex items-center gap-3 px-4 py-3">
+                            <div className={`p-1.5 rounded-full flex-shrink-0 ${cameraOffCountdown <= 30 ? 'bg-red-100' : 'bg-orange-100'}`}>
+                              <XCircleIcon className={`h-4 w-4 ${cameraOffCountdown <= 30 ? 'text-red-600' : 'text-orange-500'}`} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-xs font-semibold ${cameraOffCountdown <= 30 ? 'text-red-700' : 'text-orange-700'}`}>
+                                Please turn your camera on. The interview will be auto-ended after 2 minutes.
+                              </p>
+                            </div>
+                            <span className={`text-2xl font-black tabular-nums tracking-tight flex-shrink-0 ${cameraOffCountdown <= 30 ? 'text-red-600' : 'text-orange-500'}`}>
+                              {Math.floor(cameraOffCountdown / 60)}:{String(cameraOffCountdown % 60).padStart(2, '0')}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                       {/* Section Label */}
                       <div className="flex items-center justify-between mb-6">
                         <div className="flex items-center gap-3">
@@ -1153,8 +1663,12 @@ function Call({ interview }: InterviewProps) {
                             <MicIcon className="h-4 w-4 text-indigo-600" />
                           </div>
                           <div>
-                            <h3 className="text-sm font-semibold text-slate-800 uppercase tracking-wide">Interviewer</h3>
-                            <p className="text-xs text-slate-500">AI Assistant</p>
+                            <h3 className="text-sm font-semibold text-slate-800 uppercase tracking-wide">
+                              Interviewer
+                            </h3>
+                            <p className="text-xs text-slate-500">
+                              AI Assistant
+                            </p>
                           </div>
                         </div>
                         {/* Speaking Indicator */}
@@ -1164,18 +1678,22 @@ function Call({ interview }: InterviewProps) {
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                               <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
                             </span>
-                            <span className="text-xs font-semibold">Speaking</span>
+                            <span className="text-xs font-semibold">
+                              Speaking
+                            </span>
                           </div>
                         )}
                       </div>
 
                       {/* Interviewer Avatar Card */}
                       <div className="flex justify-center mb-6">
-                        <div className={`relative p-1 rounded-full transition-all duration-300 ${
-                          activeTurn === "agent"
-                            ? "bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 shadow-xl shadow-indigo-200"
-                            : "bg-slate-200"
-                        }`}>
+                        <div
+                          className={`relative p-1 rounded-full transition-all duration-300 ${
+                            activeTurn === "agent"
+                              ? "bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-500 shadow-xl shadow-indigo-200"
+                              : "bg-slate-200"
+                          }`}
+                        >
                           <div className="bg-white p-1.5 rounded-full">
                             {interviewerImg ? (
                               <Image
@@ -1207,7 +1725,9 @@ function Call({ interview }: InterviewProps) {
                       {/* Transcript Box */}
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Live Transcript</span>
+                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                            Live Transcript
+                          </span>
                           <div className="flex-1 h-px bg-slate-200"></div>
                         </div>
                         <div className="flex-1 bg-slate-50/80 rounded-xl p-5 border border-slate-100 overflow-y-auto min-h-[140px] max-h-[220px] lg:max-h-[280px]">
@@ -1216,8 +1736,14 @@ function Call({ interview }: InterviewProps) {
                               <span className="text-slate-400 italic flex items-center gap-2">
                                 <span className="flex gap-1">
                                   <span className="w-2 h-2 bg-slate-300 rounded-full animate-bounce"></span>
-                                  <span className="w-2 h-2 bg-slate-300 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
-                                  <span className="w-2 h-2 bg-slate-300 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                                  <span
+                                    className="w-2 h-2 bg-slate-300 rounded-full animate-bounce"
+                                    style={{ animationDelay: "0.1s" }}
+                                  ></span>
+                                  <span
+                                    className="w-2 h-2 bg-slate-300 rounded-full animate-bounce"
+                                    style={{ animationDelay: "0.2s" }}
+                                  ></span>
                                 </span>
                                 Waiting for interviewer...
                               </span>
@@ -1236,7 +1762,9 @@ function Call({ interview }: InterviewProps) {
                             <VideoIcon className="h-4 w-4 text-emerald-600" />
                           </div>
                           <div>
-                            <h3 className="text-sm font-semibold text-slate-800 uppercase tracking-wide">{name || "Candidate"}</h3>
+                            <h3 className="text-sm font-semibold text-slate-800 uppercase tracking-wide">
+                              {name || "Candidate"}
+                            </h3>
                             <p className="text-xs text-slate-500">You</p>
                           </div>
                         </div>
@@ -1247,23 +1775,30 @@ function Call({ interview }: InterviewProps) {
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                               <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
                             </span>
-                            <span className="text-xs font-semibold">Your Turn</span>
+                            <span className="text-xs font-semibold">
+                              Your Turn
+                            </span>
                           </div>
                         )}
                       </div>
 
                       {/* Video Container */}
                       <div className="flex justify-center mb-6">
-                        <div className={`relative p-1 rounded-2xl transition-all duration-300 ${
-                          activeTurn === "user"
-                            ? "bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 shadow-xl shadow-emerald-200"
-                            : "bg-slate-200"
-                        }`}>
+                        <div
+                          className={`relative p-1 rounded-2xl transition-all duration-300 ${
+                            activeTurn === "user"
+                              ? "bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 shadow-xl shadow-emerald-200"
+                              : "bg-slate-200"
+                          }`}
+                        >
                           <div className="relative bg-slate-900 rounded-xl overflow-hidden">
                             <video
                               ref={interviewVideoRef}
                               className="w-full max-w-[320px] sm:max-w-[380px] lg:max-w-[420px] aspect-video object-cover"
-                              style={{ background: "#0f172a", transform: "scaleX(-1)" }}
+                              style={{
+                                background: "#0f172a",
+                                transform: "scaleX(-1)",
+                              }}
                               autoPlay
                               muted
                               playsInline
@@ -1283,14 +1818,20 @@ function Call({ interview }: InterviewProps) {
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
                               </span>
-                              <span className="text-[10px] text-white font-bold tracking-wider">REC</span>
+                              <span className="text-[10px] text-white font-bold tracking-wider">
+                                REC
+                              </span>
                             </div>
 
                             {/* Face Verification Status */}
                             {hasReferenceImage && (
                               <VerificationStatus
                                 isVerifying={verificationLoading}
-                                isMatch={verificationResult.lastChecked ? verificationResult.isMatch : null}
+                                isMatch={
+                                  verificationResult.lastChecked
+                                    ? verificationResult.isMatch
+                                    : null
+                                }
                                 hasReference={hasReferenceImage}
                               />
                             )}
@@ -1301,7 +1842,9 @@ function Call({ interview }: InterviewProps) {
                       {/* User Response Box */}
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Your Response</span>
+                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                            Your Response
+                          </span>
                           <div className="flex-1 h-px bg-slate-200"></div>
                         </div>
                         <div
@@ -1310,7 +1853,9 @@ function Call({ interview }: InterviewProps) {
                         >
                           <p className="text-base lg:text-lg text-slate-700 leading-relaxed">
                             {lastUserResponse || (
-                              <span className="text-slate-400 italic">Your response will appear here as you speak...</span>
+                              <span className="text-slate-400 italic">
+                                Your response will appear here as you speak...
+                              </span>
                             )}
                           </p>
                         </div>
@@ -1334,13 +1879,18 @@ function Call({ interview }: InterviewProps) {
                     </AlertDialogTrigger>
                     <AlertDialogContent className="rounded-2xl">
                       <AlertDialogHeader>
-                        <AlertDialogTitle className="text-xl">End Interview?</AlertDialogTitle>
+                        <AlertDialogTitle className="text-xl">
+                          End Interview?
+                        </AlertDialogTitle>
                         <AlertDialogDescription className="text-slate-600">
-                          This action cannot be undone. Are you sure you want to end the interview now?
+                          This action cannot be undone. Are you sure you want to
+                          end the interview now?
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter className="gap-2">
-                        <AlertDialogCancel className="rounded-xl">Cancel</AlertDialogCancel>
+                        <AlertDialogCancel className="rounded-xl">
+                          Cancel
+                        </AlertDialogCancel>
                         <AlertDialogAction
                           className="bg-red-600 hover:bg-red-700 rounded-xl"
                           onClick={async () => {
@@ -1363,17 +1913,17 @@ function Call({ interview }: InterviewProps) {
                   <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-200">
                     <CheckCircleIcon className="h-8 w-8 text-white" />
                   </div>
-                  
+
                   <h2 className="text-2xl font-semibold text-slate-800 mb-3">
                     {isStarted ? "Interview Complete!" : "Thank You!"}
                   </h2>
-                  
+
                   <p className="text-slate-600 mb-4">
                     {isStarted
                       ? "Thank you for taking the time to participate in this interview. Your responses have been recorded."
                       : "Thank you for your consideration. We appreciate your time."}
                   </p>
-                  
+
                   <p className="text-sm text-slate-500 mb-6">
                     You can safely close this tab now.
                   </p>
@@ -1400,7 +1950,7 @@ function Call({ interview }: InterviewProps) {
                         </AlertDialogContent>
                       </AlertDialog>
                     )}
-                    
+
                     {isFeedbackSubmitted && (
                       <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-full text-sm font-medium">
                         <CheckCircleIcon className="h-4 w-4" />
@@ -1411,31 +1961,28 @@ function Call({ interview }: InterviewProps) {
                 </div>
               </div>
             )}
-            
           </div>
         </Card>
-        
+
         {/* Footer */}
         <div className="flex justify-center items-center mt-4 mb-2">
           <a
             className="group flex items-center gap-2 px-4 py-2 rounded-full bg-white/60 backdrop-blur-sm border border-slate-200/60 hover:bg-white hover:border-slate-300 transition-all duration-200 shadow-sm"
             href="https://folo-up.co/"
-            target="_blank">
+            target="_blank"
+          >
             <span className="text-sm text-slate-600">
               Powered by{" "}
               <a
-            className="font-bold underline"
-            href="https://dynatechconsultancy.com/"
-            target="_blank"
-          >
-           <span className="text-indigo-600">DynaTech Systems</span>
-
-            
-          </a>
+                className="font-bold underline"
+                href="https://dynatechconsultancy.com/"
+                target="_blank"
+              >
+                <span className="text-indigo-600">DynaTech Systems</span>
+              </a>
             </span>
             <ArrowUpRightSquareIcon className="h-4 w-4 text-indigo-500 group-hover:text-indigo-600 transition-colors" />
           </a>
-
         </div>
       </div>
     </div>

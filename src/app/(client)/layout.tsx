@@ -34,7 +34,7 @@ const metadata = {
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { isLoading } = useAuth();
+  const { isLoading, user } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
   
@@ -69,8 +69,10 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     }
   }, [pathname, isMobile]);
   
-  // Show loading screen while checking authentication (only for protected routes)
-  if (isLoading && !isPublicRoute) {
+  // Show loading screen while checking authentication OR while we have no
+  // user yet on a protected route. The `!user` check is what prevents the
+  // flash of protected content between isLoading=false and the redirect.
+  if ((isLoading || !user) && !isPublicRoute) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
         <div className="text-center">

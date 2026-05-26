@@ -9,11 +9,19 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-const useTabSwitchPrevention = () => {
+const useTabSwitchPrevention = (enabled: boolean = true) => {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [tabSwitchCount, setTabSwitchCount] = useState(0);
 
   useEffect(() => {
+    if (!enabled) {
+      // Make sure the dialog is dismissed when we disable tracking
+      // (e.g. when the interview ends while the dialog is still open).
+      setIsDialogOpen(false);
+
+      return;
+    }
+
     const handleVisibilityChange = () => {
       if (document.hidden) {
         setIsDialogOpen(true);
@@ -23,16 +31,14 @@ const useTabSwitchPrevention = () => {
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [enabled]);
 
   const handleUnderstand = () => {
     setIsDialogOpen(false);
   };
-
 
   return { isDialogOpen, tabSwitchCount, handleUnderstand };
 };

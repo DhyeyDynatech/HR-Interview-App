@@ -14,7 +14,8 @@ import { useAuth } from '@/contexts/auth.context';
 import { useToast } from '@/components/ui/use-toast';
 import { Interview } from '@/types/interview';
 import { ResumeViewer } from './ResumeViewer';
-import { FileText, Eye, X } from 'lucide-react';
+import { FileText, Eye, X, Search, Check, ChevronDown } from 'lucide-react';
+import * as PopoverPrimitive from '@radix-ui/react-popover';
 
 interface CreateAssigneeModalProps {
   isOpen: boolean;
@@ -111,6 +112,8 @@ export function CreateAssigneeModal({
 
 
   const [isLoading, setIsLoading] = useState(false);
+  const [interviewOpen, setInterviewOpen] = useState(false);
+  const [interviewSearch, setInterviewSearch] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -452,22 +455,75 @@ export function CreateAssigneeModal({
 
           <div className="space-y-2">
             <Label htmlFor="interview_id">Interview</Label>
-            <Select
-              value={formData.interview_id || 'none'}
-              onValueChange={(value) => handleInputChange('interview_id', value === 'none' ? '' : value)}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select interview" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">No Interview</SelectItem>
-                {interviews.map((interview: Interview) => (
-                  <SelectItem key={interview.id} value={interview.id}>
-                    {interview.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <PopoverPrimitive.Root open={interviewOpen} onOpenChange={setInterviewOpen}>
+              <PopoverPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                >
+                  <span className={!formData.interview_id ? 'text-muted-foreground' : ''}>
+                    {formData.interview_id
+                      ? (interviews.find((i: Interview) => i.id === formData.interview_id)?.name ?? 'Select interview')
+                      : 'No Interview'}
+                  </span>
+                  <ChevronDown className="h-4 w-4 opacity-50" />
+                </button>
+              </PopoverPrimitive.Trigger>
+              <PopoverPrimitive.Content
+                align="start"
+                sideOffset={4}
+                style={{ width: 'var(--radix-popover-trigger-width)' }}
+                className="z-50 rounded-md border bg-popover text-popover-foreground shadow-md outline-none"
+              >
+                <div className="flex items-center border-b px-3">
+                  <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+                  <input
+                    className="flex h-9 w-full bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                    placeholder="Search interview..."
+                    value={interviewSearch}
+                    onChange={(e) => setInterviewSearch(e.target.value)}
+                  />
+                </div>
+                <div className="max-h-[200px] overflow-y-auto p-1">
+                  <button
+                    type="button"
+                    className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground"
+                    onClick={() => {
+                      handleInputChange('interview_id', '');
+                      setInterviewOpen(false);
+                      setInterviewSearch('');
+                    }}
+                  >
+                    {!formData.interview_id
+                      ? <Check className="mr-2 h-4 w-4 shrink-0" />
+                      : <span className="mr-6" />}
+                    No Interview
+                  </button>
+                  {interviews
+                    .filter((i: Interview) => i.name.toLowerCase().includes(interviewSearch.toLowerCase()))
+                    .map((interview: Interview) => (
+                      <button
+                        key={interview.id}
+                        type="button"
+                        className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground"
+                        onClick={() => {
+                          handleInputChange('interview_id', interview.id);
+                          setInterviewOpen(false);
+                          setInterviewSearch('');
+                        }}
+                      >
+                        {formData.interview_id === interview.id
+                          ? <Check className="mr-2 h-4 w-4 shrink-0" />
+                          : <span className="mr-6" />}
+                        {interview.name}
+                      </button>
+                    ))}
+                  {interviews.filter((i: Interview) => i.name.toLowerCase().includes(interviewSearch.toLowerCase())).length === 0 && (
+                    <p className="py-6 text-center text-sm text-muted-foreground">No interview found.</p>
+                  )}
+                </div>
+              </PopoverPrimitive.Content>
+            </PopoverPrimitive.Root>
           </div>
 
           <div className="space-y-2">
