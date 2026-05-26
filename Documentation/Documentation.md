@@ -41,12 +41,13 @@
 
 | Feature | Description |
 |---------|-------------|
-| AI Voice Interviews | Retell SDK-powered real-time voice conversations with AI interviewers |
+| AI Voice Interviews | Real-time voice conversations with AI interviewers. Two interchangeable providers selectable via `USE_VOICE_LIVE` env flag: **Retell SDK** (default) or **Azure Voice Live** (WebSocket Realtime API). |
 | Real-Time Proctoring | Face verification, tab-switch detection, multi-person detection, camera monitoring |
 | ATS Resume Scoring | gpt-5-mini-based resume scoring against job descriptions with server-side queue processing |
 | Company Finder | Automated company extraction + web-enriched research from resumes; Dynatech Relevant filter (SAP/Dynamics) |
 | Candidate Management | Bulk import, assignment, tagging, status tracking |
 | Interview Analytics | Transcript analysis, communication scoring, AI-generated insights |
+| Interview Recording | Mono Opus/webm audio recording of the candidate + agent (Voice Live path) uploaded to Azure Blob Storage |
 | Cost Tracking | Real token-based cost tracking across 8 categories including web search call pricing |
 
 ---
@@ -85,8 +86,10 @@
 |-----------|---------|
 | Azure OpenAI (gpt-5-mini) | All LLM tasks: question generation, ATS scoring, analytics, company extraction |
 | OpenAI Direct (Responses API) | Company enrichment with built-in web_search tool |
-| Retell SDK (v4.19.0) | Server-side voice call management |
-| Retell Client SDK (v2.0.0) | Browser-side voice call interface |
+| Retell SDK (v4.19.0) | Server-side voice call management (default voice provider) |
+| Retell Client SDK (v2.0.0) | Browser-side voice call interface (default voice provider) |
+| Azure Voice Live API (Realtime) | Alternate voice provider — WebSocket-based realtime audio with server-side VAD, function calling (`end_interview`, `report_refusal`), and Azure Neural voice synthesis. Enabled via `USE_VOICE_LIVE=true`. |
+| Azure Blob Storage (`@azure/storage-blob` v12.31) | Voice Live interview audio recordings |
 
 ### File Processing & Utilities
 
@@ -124,40 +127,49 @@
 ## 3. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      CLIENT BROWSER                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────────┐            │
-│  │ Dashboard │  │ Call UI  │  │ Proctoring │            │
-│  │  (React)  │  │ (Retell) │  │ (face-api) │            │
-│  └─────┬─────┘  └─────┬────┘  └─────┬──────┘            │
-└────────┼──────────────┼─────────────┼────────────────────┘
-         │              │             │
-         ▼              ▼             │
-┌─────────────────────────────────────┼────────────────────┐
-│              NEXT.JS SERVER (Vercel)│                     │
-│  ┌──────────┐  ┌──────────┐  ┌─────┴─────┐              │
-│  │ API Routes│  │Middleware │  │ Webhooks  │              │
-│  │  (55+)   │  │  (Auth)  │  │ (Retell)  │              │
-│  └─────┬─────┘  └──────────┘  └───────────┘              │
-│        │                                                  │
-│  ┌─────┴──────────────────────────────────────┐          │
-│  │            SERVICE LAYER                    │          │
-│  │  interviews · responses · analytics         │          │
-│  │  users · ats-job · company-finder · cost    │          │
-│  └─────┬──────────────┬───────────────┬───────┘          │
-└────────┼──────────────┼───────────────┼──────────────────┘
-         │              │               │
-         ▼              ▼               ▼
-┌──────────────┐ ┌────────────────┐ ┌──────────────┐
-│   Supabase   │ │  Azure OpenAI  │ │ Vercel Blob  │
-│ (PostgreSQL) │ │  (gpt-5-mini)  │ │  (Storage)   │
-└──────────────┘ └────────────────┘ └──────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                          CLIENT BROWSER                          │
+│  ┌──────────┐  ┌──────────────────────┐  ┌────────────┐         │
+│  │Dashboard │  │ Call UI              │  │ Proctoring │         │
+│  │ (React)  │  │ Retell SDK ──or──    │  │ (face-api) │         │
+│  │          │  │ VoiceLiveClient (WS) │  │            │         │
+│  └─────┬────┘  └──────────┬───────────┘  └─────┬──────┘         │
+└────────┼──────────────────┼─────────────────────┼───────────────┘
+         │                  │                     │
+         ▼                  ▼                     │
+┌────────────────────────────────────────────────┼───────────────┐
+│                  NEXT.JS SERVER (Vercel)        │                │
+│  ┌──────────┐  ┌──────────┐  ┌─────────────────┴┐              │
+│  │API Routes│  │Middleware│  │ Webhooks /        │              │
+│  │  (55+)   │  │  (Auth)  │  │ end-of-call hooks │              │
+│  └─────┬────┘  └──────────┘  └───────────────────┘              │
+│        │                                                         │
+│  ┌─────┴────────────────────────────────────────┐               │
+│  │             SERVICE LAYER                     │               │
+│  │  interviews · responses · analytics           │               │
+│  │  users · ats-job · company-finder · cost      │               │
+│  └─────┬───────────────┬──────────────┬─────────┘               │
+└────────┼───────────────┼──────────────┼─────────────────────────┘
+         │               │              │
+         ▼               ▼              ▼
+┌──────────────┐ ┌────────────────┐ ┌──────────────┐ ┌──────────────────┐
+│   Supabase   │ │  Azure OpenAI  │ │ Vercel Blob  │ │ Azure Blob       │
+│ (PostgreSQL) │ │  (gpt-5-mini)  │ │ (resumes,    │ │ Storage          │
+│              │ │                │ │  images)     │ │ (call recordings)│
+└──────────────┘ └────────┬───────┘ └──────────────┘ └──────────────────┘
                           │
                  ┌────────┴────────┐
                  │ OpenAI Direct   │
                  │ (Responses API) │
                  │ + web_search    │
                  └─────────────────┘
+
+Voice provider (chosen per-call via USE_VOICE_LIVE env flag):
+  ┌─────────────────┐                     ┌──────────────────────────┐
+  │ Retell platform │ ←── default ──      │ Azure Voice Live         │
+  │ (WebRTC + SDK)  │     │               │ (WebSocket Realtime API) │
+  └─────────────────┘     │               └──────────────────────────┘
+                          └── USE_VOICE_LIVE=true ──┘
 ```
 
 ---
@@ -217,6 +229,10 @@ HR-Interviewer/
 │   │   │   │           └── retry-failed/route.ts # POST retry failed tasks
 │   │   │   ├── users/                # User management + bulk import
 │   │   │   ├── cost-analysis/        # Cost metrics + diagnostics
+│   │   │   ├── voice-live/
+│   │   │   │   └── save-call/route.ts     # End-of-call sink for Voice Live: persists transcript + analytics + cost + violations + assignee status + recruiter email
+│   │   │   ├── upload-call-recording/
+│   │   │   │   └── route.ts               # Streams candidate audio blob to Azure Blob Storage; returns the public URL stored on the response row
 │   │   │   └── ...                   # Webhooks, uploads, AI generation
 │   │   ├── layout.tsx
 │   │   └── globals.css
@@ -279,13 +295,14 @@ HR-Interviewer/
 │   │
 │   ├── lib/
 │   │   ├── auth.ts
-│   │   ├── constants.ts
+│   │   ├── constants.ts              # Retell + Voice Live system prompts (buildVoiceLiveInterviewPrompt)
 │   │   ├── enum.tsx
 │   │   ├── utils.ts
 │   │   ├── logger.ts
 │   │   ├── normalize-company-key.ts  # Company name normalisation for deduplication
 │   │   ├── processing-store.ts       # Module-level processing state (pub/sub)
 │   │   ├── openai-client.ts          # Azure OpenAI + OpenAI Direct clients
+│   │   ├── voice-live-client.ts      # Azure Voice Live WebSocket client (mic capture, PCM playback, recording, silence watchdog)
 │   │   ├── user-activity-log.ts
 │   │   └── prompts/
 │   │       ├── analytics.ts
@@ -320,6 +337,9 @@ HR-Interviewer/
 │   └── complete_database_setup.sql
 │
 ├── public/
+│   ├── audio-worklets/
+│   │   └── pcm-recorder.js           # AudioWorklet that downsamples mic to 24kHz int16 PCM for Voice Live
+│   └── ...
 ├── Documentation/
 ├── next.config.js
 ├── tailwind.config.ts
@@ -691,11 +711,13 @@ Session Check → GET /api/auth/session
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/register-call` | Register Retell voice call |
-| GET | `/api/get-call` | Fetch call details + save voice usage |
+| POST | `/api/register-call` | Register a voice call. Branches on `USE_VOICE_LIVE`: when **false** (default) creates a Retell web call; when **true** returns a Voice Live `wsUrl` + `sessionConfig` (system prompt, voice, VAD threshold, function tools `end_interview` / `report_refusal`) for the browser to open a WebSocket directly. |
+| GET | `/api/get-call` | Fetch call details + save voice usage (Retell path) |
 | POST | `/api/refetch-call` | Refresh call info |
 | POST | `/api/save-response` | Save interview response |
 | POST | `/api/response-webhook` | Retell webhook for call completion |
+| POST | `/api/voice-live/save-call` | End-of-call sink for the Voice Live path. Owns the entire post-call sequence in a single call: persists transcript + violation counts + violations_summary to the `response` row, runs `generateInterviewAnalytics`, records voice cost into `api_usage` with `service="azure-voicelive"`, marks the assignee `INTERVIEW_COMPLETED` + locks retake, and triggers the recruiter notification email. |
+| POST | `/api/upload-call-recording` | Streams the Voice Live audio blob (mono Opus/webm, up to 200 MB, accepted only within 2 h of the response row being created) to Azure Blob Storage and returns the public URL stored on the response row. |
 
 ### AI Generation
 
@@ -988,29 +1010,79 @@ Each enrichment API call may internally trigger multiple sub-searches. Actual se
 | Server-side call management | `retell-sdk` (v4.19.0) | Register calls, manage agents, webhook handling |
 | Client-side call interface | `retell-client-js-sdk` (v2.0.0) | Browser WebRTC connection to Retell voice agent |
 
+### Voice Provider Switcher
+
+The voice interviewer can run on either Retell or Azure Voice Live. The choice is made server-side per-call inside `/api/register-call` based on the `USE_VOICE_LIVE` env flag — the candidate-side UI in [src/components/call/index.tsx](src/components/call/index.tsx) detects the response shape and instantiates the matching client.
+
+| | Retell (default) | Azure Voice Live |
+|---|---|---|
+| Trigger | `USE_VOICE_LIVE` unset / false | `USE_VOICE_LIVE=true` |
+| Transport | WebRTC via `retell-client-js-sdk` | WebSocket (Realtime API) via `src/lib/voice-live-client.ts` |
+| System prompt | `RETELL_AGENT_GENERAL_PROMPT` (Retell dashboard) | `buildVoiceLiveInterviewPrompt()` in [src/lib/constants.ts](src/lib/constants.ts) |
+| Voice | Configured per agent in Retell dashboard | `AZURE_VOICELIVE_VOICE` env (any Azure Neural voice, e.g. `en-IN-Diya:DragonHDLatestNeural`) |
+| Turn detection | Retell built-in | `server_vad` (threshold 0.7, silence_duration_ms 1200, prefix_padding_ms 300) |
+| Transcription | Retell built-in | `whisper-1` (locked to English) |
+| Backchanneling ("mm-hmm" mid-turn) | ✅ Platform feature | ❌ Not supported — compensated for via prompt-level per-answer acknowledgments |
+| Idle / silence handling | ✅ Platform feature | ✅ Client-side silence watchdog in `voice-live-client.ts` |
+| Function calling | N/A (prompt-only ending) | `end_interview(reason)`, `report_refusal(reason)` |
+| End-of-call data path | `/api/response-webhook` (server-pushed) | `/api/voice-live/save-call` (browser-pushed) |
+| Audio recording | Retell stores recording on its platform | Browser captures via `MediaRecorder` → `/api/upload-call-recording` → Azure Blob Storage |
+| Cost record `service` field | `retell` | `azure-voicelive` |
+
+#### Voice Live client (`src/lib/voice-live-client.ts`)
+
+Self-contained `VoiceLiveClient` class wraps the entire candidate-side voice pipeline:
+
+| Concern | Implementation |
+|---------|----------------|
+| Mic capture | `AudioWorklet` (`public/audio-worklets/pcm-recorder.js`) downsamples to 24 kHz int16 PCM, base64-encodes, streams as `input_audio_buffer.append` events |
+| Agent playback | Decodes streamed `response.audio.delta` int16 PCM chunks, schedules them on `AudioContext.currentTime` with an ~80 ms lead to avoid gaps |
+| Echo prevention | Mic track disabled while agent is speaking (`response.audio.delta`) and re-enabled only AFTER the agent's playback queue drains — prevents `server_vad` triggering on the agent's own audio |
+| Interruption | `input_audio_buffer.speech_started` flushes the playback queue so the candidate can cut in |
+| Tool calls | Accumulates `response.function_call_arguments.delta` chunks, dispatches `end_interview` / `report_refusal` on `.done`, sends matching `function_call_output` back so the Realtime API conversation history stays valid |
+| Silence watchdog | After every `response.done` re-enables the mic AND arms a 12 s timer. If no speech detected, sends a `response.create` instructing the agent to gently check in and re-ask the same question. Allows 2 such check-ins before calling `forceEnd("candidate_unresponsive")` (which still delivers a spoken goodbye). Counter resets on every transcribed candidate reply. |
+| Graceful ending | When agent calls `end_interview` or `forceEnd()` is invoked, queues a closing "goodbye" `response.create` if not already spoken, and only fires `onEndCall` after that audio finishes streaming |
+| Recording | Mixes candidate mic + agent PCM into a single mono `MediaStreamAudioDestinationNode`, encoded by `MediaRecorder` into Opus/webm (64 kbps) — uploaded via `/api/upload-call-recording` on session end |
+
 ---
 
 ## 12. Real-Time Video & Audio
 
 | Technology | Purpose |
 |-----------|---------|
-| Retell AI SDK | Core platform for AI voice interviews (real-time audio streaming) |
-| WebRTC MediaStream API | Captures camera/microphone from browser |
-| MediaRecorder API | Records video as WebM format at 1280x720 |
+| Retell AI SDK | Default voice platform for AI interviews (real-time audio streaming) |
+| Azure Voice Live API (Realtime) | Alternate voice provider — WebSocket-based PCM streaming, server-side VAD, function calling |
+| WebRTC MediaStream API | Captures camera/microphone from browser (both providers) |
+| AudioWorklet (`pcm-recorder.js`) | Voice Live only — downsamples mic to 24 kHz int16 PCM before websocket send |
+| MediaRecorder API | Records video (WebM 1280×720) and, for Voice Live, the mixed candidate+agent audio (Opus/webm mono) |
 
 ### Real-Time Transcription
 
-- **Provider:** Retell's built-in speech-to-text engine
-- **Format:** Word-level timing with start/end timestamps
+| Provider | Engine | Notes |
+|---------|--------|-------|
+| Retell | Built-in speech-to-text | Word-level timing with start/end timestamps |
+| Voice Live | `whisper-1` (Azure-hosted) | Hard-locked to English in [src/app/api/register-call/route.ts](src/app/api/register-call/route.ts) (`input_audio_transcription.language: "en"`) so non-English accents don't drift the agent into another language |
 
 ### AI Interviewer Pipeline
 
-| Component | Technology |
-|-----------|------------|
-| Voice Conversation | Retell SDK (real-time AI voice agent) |
-| Text-to-Speech | Retell's built-in TTS |
-| Question Generation | gpt-5-mini (pre-generates interview questions) |
-| Post-Interview Analysis | gpt-5-mini (evaluates candidate responses) |
+| Component | Retell path | Voice Live path |
+|-----------|-------------|-----------------|
+| Voice Conversation | Retell SDK | `VoiceLiveClient` (WebSocket Realtime) |
+| Text-to-Speech | Retell's built-in TTS | Azure Neural voice from `AZURE_VOICELIVE_VOICE` |
+| Question Generation | gpt-5-mini | gpt-5-mini |
+| Live agent model | Configured per agent in Retell dashboard | `AZURE_VOICELIVE_MODEL` env (`gpt-4o-mini-realtime-preview` / `gpt-realtime-mini` / `gpt-5-mini`) |
+| Post-Interview Analysis | gpt-5-mini | gpt-5-mini |
+
+### Voice Live conditions that end the interview
+
+1. **Agent invokes `end_interview` tool** (after speaking a goodbye) — reasons: `all_questions_covered`, `candidate_refused_to_answer`, `candidate_requested_end`, `time_expired`.
+2. **Closing-message pattern matched** in `src/components/call/index.tsx` — agent spoke a closing-style line without invoking the tool; client drains audio queue and ends.
+3. **3 refusals reached** — client-side counter in `onRefusalReported` calls `forceEnd("candidate_refused_to_answer")` if the model didn't end on its own.
+4. **Candidate unresponsive** — silence watchdog fires 2 unanswered check-ins, then calls `forceEnd("candidate_unresponsive")` (still delivers a spoken goodbye).
+5. **Interview duration cap exceeded** — component-level timer at [src/components/call/index.tsx](src/components/call/index.tsx) against `currentTimeDuration`.
+6. **Anti-cheat triggers** — camera off >2 min ends abruptly (no goodbye).
+7. **WebSocket error / transport failure** — abrupt end via `fail()` path.
+8. **Candidate clicks "End Call" or hangs up.**
 
 ---
 
@@ -1318,6 +1390,11 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 - Custom animations for accordions
 - Plugins: `tailwindcss-animate`, `tailwind-scrollbar-hide`
 
+### `package.json` resolutions
+
+- `@supabase/supabase-js` pinned to `^2.39.3` to avoid auth-helper drift.
+- `zod-to-json-schema` pinned to `3.22.5` — newer transitive versions (3.24+) import from `zod/v3`, a subpath that didn't exist until `zod@3.25.x`. The project pins `zod@3.23.8`, so the older `zod-to-json-schema` is what keeps the Vercel build green. Drop this pin if/when `zod` is bumped to `≥3.25`.
+
 ---
 
 ## 22. Environment Variables
@@ -1339,6 +1416,16 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob storage token |
 | `POWER_AUTOMATE_FLOW_URL` | Microsoft Power Automate webhook URL |
 | `FIXED_RECRUITER_EMAIL` | Default recruiter notification email |
+| `USE_VOICE_LIVE` | Master switch (`true`/`false`) — when `true`, `/api/register-call` returns a Voice Live session instead of registering a Retell call |
+| `AZURE_VOICELIVE_ENDPOINT` | Azure AI Foundry / Speech resource endpoint, e.g. `https://<resource>.services.ai.azure.com` |
+| `AZURE_VOICELIVE_API_KEY` | API key for the Voice Live realtime endpoint |
+| `AZURE_VOICELIVE_MODEL` | Realtime model deployment (e.g. `gpt-4o-mini-realtime-preview`, `gpt-realtime-mini`, `gpt-5-mini`) |
+| `AZURE_VOICELIVE_VOICE` | Azure Neural voice name (e.g. `en-IN-Diya:DragonHDLatestNeural`) |
+| `AZURE_VOICELIVE_API_VERSION` | API version string (e.g. `2025-10-01`) |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Azure Blob Storage account name (3–24 lowercase alphanumeric chars) for call recordings |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Azure Blob Storage account key |
+| `AZURE_STORAGE_CONTAINER` | Container name for recordings (default `interview-recordings`) |
+| `AZURE_STORAGE_ENDPOINT` | Optional override — defaults to `https://<account>.blob.core.windows.net` |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Clerk sign-up redirect URL (legacy — not actively used, auth is custom JWT) |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Clerk post-sign-in redirect (legacy) |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Clerk post-sign-up redirect (legacy) |
@@ -1491,4 +1578,4 @@ Upload Resumes ──▶ Parse (browser) ──▶ Upload to Blob ──▶ POST
 
 ---
 
-*Last updated: March 31, 2026*
+*Last updated: May 26, 2026*
