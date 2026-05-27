@@ -5,7 +5,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { useLoading } from "@/contexts/loading.context";
 import { useAuth } from "@/contexts/auth.context";
-import { LogOut, User, Settings, Menu, X } from "lucide-react";
+import { LogOut, User, Menu, X } from "lucide-react";
 
 interface NavbarProps {
   onMenuToggle?: () => void;
@@ -126,16 +126,6 @@ function Navbar({ onMenuToggle, isMenuOpen = false }: NavbarProps) {
                   <User className="h-4 w-4 text-gray-400" />
                   Profile
                 </Link>
-                <button
-                  onClick={() => {
-                    setShowUserMenu(false);
-                    // TODO: Navigate to settings
-                  }}
-                  className="w-full flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                >
-                  <Settings className="h-4 w-4 text-gray-400" />
-                  Settings
-                </button>
                 <div className="border-t border-gray-100 my-1" />
                 <button
                   onClick={handleLogout}
