@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HR Interviewer — Project Overview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0e0d0b;--surface:#1a1916;--card:#232118;--border:#2e2b24;
+  --gold:#d4a853;--amber:#c97b3a;--text:#e8e3da;--muted:#8a7f72;
+  --green:#5fba7d;--red:#e85c4a;--blue:#6ba3d4;
+  --font-head:'Playfair Display',serif;--font-body:'Inter',sans-serif;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:15px;line-height:1.65}
+a{color:var(--gold);text-decoration:none}
+
+/* NAV */
+#nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(14,13,11,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 32px}
+#nav .logo{font-family:var(--font-head);font-size:1rem;font-weight:700;color:var(--gold);letter-spacing:.02em}
+#nav ul{list-style:none;display:flex;gap:4px}
+#nav ul li a{color:var(--muted);font-size:.8rem;font-weight:500;padding:6px 10px;border-radius:6px;transition:all .2s;letter-spacing:.03em;text-transform:uppercase}
+#nav ul li a.active,#nav ul li a:hover{color:var(--text);background:rgba(212,168,83,.1)}
+
+/* UTIL */
+.section{padding:80px 0;opacity:0;transform:translateY(24px);transition:opacity .6s,transform .6s}
+.section.visible{opacity:1;transform:none}
+.container{max-width:1160px;margin:0 auto;padding:0 32px}
+.section-label{font-size:.7rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--gold);margin-bottom:12px}
+.section-title{font-family:var(--font-head);font-size:2.2rem;font-weight:700;line-height:1.2;margin-bottom:16px}
+.section-sub{color:var(--muted);max-width:560px;font-size:.95rem;line-height:1.7}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:.7rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:3px 10px;border-radius:20px}
+.badge-live{background:rgba(95,186,125,.12);color:var(--green);border:1px solid rgba(95,186,125,.25)}
+.badge-planned{background:rgba(138,127,114,.12);color:var(--muted);border:1px solid rgba(138,127,114,.2)}
+.badge-progress{background:rgba(212,168,83,.12);color:var(--gold);border:1px solid rgba(212,168,83,.25)}
+.badge-live::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green)}
+.badge-planned::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.badge-progress::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--gold)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px}
+.divider{height:1px;background:var(--border);margin:0}
+
+/* HERO */
+#hero{padding:140px 0 60px;position:relative;overflow:hidden}
+#hero::before{content:'';position:absolute;top:-100px;left:50%;transform:translateX(-50%);width:700px;height:700px;background:radial-gradient(circle,rgba(212,168,83,.06) 0%,transparent 70%);pointer-events:none}
+.hero-eyebrow{display:inline-flex;align-items:center;gap:8px;background:rgba(212,168,83,.08);border:1px solid rgba(212,168,83,.2);border-radius:20px;padding:6px 14px;font-size:.75rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);margin-bottom:24px}
+.hero-title{font-family:var(--font-head);font-size:clamp(2.4rem,5vw,4rem);font-weight:900;line-height:1.1;margin-bottom:20px;max-width:820px}
+.hero-title span{color:var(--gold)}
+.hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:48px;max-width:860px}
+.hero-block{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px}
+.hero-block-label{font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px}
+.hero-block-label.problem{color:#e85c4a}
+.hero-block-label.solution{color:var(--green)}
+.hero-block p{color:var(--muted);font-size:.9rem;line-height:1.7}
+
+/* DELIVERABLES STRIP */
+.deliverables{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:20px 0;overflow:hidden}
+.deliverables-inner{display:flex;gap:0;align-items:stretch}
+.deliv-item{flex:1;display:flex;align-items:center;gap:12px;padding:0 28px;border-right:1px solid var(--border)}
+.deliv-item:last-child{border-right:none}
+.deliv-icon{width:36px;height:36px;border-radius:8px;background:rgba(212,168,83,.1);border:1px solid rgba(212,168,83,.2);display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
+.deliv-text strong{display:block;font-size:.85rem;font-weight:600;color:var(--text)}
+.deliv-text span{font-size:.75rem;color:var(--muted)}
+
+/* STATS BAR */
+.stats-bar{background:var(--card);border:1px solid var(--border);border-radius:16px;display:grid;grid-template-columns:repeat(5,1fr);overflow:hidden;margin-top:32px}
+.stat-item{padding:28px 24px;border-right:1px solid var(--border);text-align:center}
+.stat-item:last-child{border-right:none}
+.stat-value{font-family:var(--font-head);font-size:2rem;font-weight:700;color:var(--gold);line-height:1}
+.stat-label{font-size:.75rem;color:var(--muted);margin-top:6px;line-height:1.4}
+
+/* ARCHITECTURE */
+#architecture{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.arch-svg-wrap{background:var(--bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-top:32px;position:relative}
+.arch-svg-wrap svg{width:100%;height:auto;display:block}
+.arch-node{cursor:pointer;transition:all .2s}
+.arch-node:hover rect{stroke-width:2.5}
+.arch-node.selected rect{stroke-width:2.5}
+.arch-detail{margin-top:24px;display:none}
+.arch-detail.visible{display:block}
+.arch-detail-header{display:flex;align-items:center;gap:16px;margin-bottom:20px}
+.arch-detail-header h3{font-family:var(--font-head);font-size:1.4rem;font-weight:700}
+.arch-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.arch-detail-col h4{font-size:.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+.arch-detail-col p{font-size:.9rem;color:var(--muted);line-height:1.7;margin-bottom:16px}
+.file-list{display:flex;flex-direction:column;gap:6px}
+.file-pill{background:rgba(212,168,83,.07);border:1px solid rgba(212,168,83,.15);border-radius:6px;padding:5px 10px;font-size:.75rem;font-family:monospace;color:var(--gold)}
+.conn-grid{display:flex;flex-direction:column;gap:8px}
+.conn-item{display:flex;align-items:center;gap:10px;font-size:.8rem}
+.conn-arrow{color:var(--gold);font-size:.9rem}
+.conn-label{color:var(--muted)}
+
+/* STEPPER */
+.stepper-nav{display:flex;align-items:center;gap:16px;margin-bottom:32px}
+.step-dots{display:flex;gap:8px}
+.step-dot{width:8px;height:8px;border-radius:50%;background:var(--border);cursor:pointer;transition:all .3s}
+.step-dot.active{background:var(--gold);transform:scale(1.3)}
+.stepper-btn{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.85rem;font-weight:500;transition:all .2s}
+.stepper-btn:hover{border-color:var(--gold);color:var(--gold)}
+.stepper-btn:disabled{opacity:.35;cursor:default}
+.step-counter{font-size:.8rem;color:var(--muted);margin-left:auto}
+.step-panel{display:none;animation:fadeSlide .35s ease}
+.step-panel.active{display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:start}
+@keyframes fadeSlide{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.step-num{font-family:var(--font-head);font-size:3.5rem;font-weight:900;color:rgba(212,168,83,.15);line-height:1;margin-bottom:4px}
+.step-title{font-family:var(--font-head);font-size:1.4rem;font-weight:700;margin-bottom:12px}
+.step-desc{color:var(--muted);font-size:.92rem;line-height:1.75}
+.step-tech{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.step-tech h4{font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin-bottom:14px}
+.tech-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:.82rem}
+.tech-row:last-child{border-bottom:none}
+.tech-row .key{color:var(--muted)}
+.tech-row .val{color:var(--text);font-weight:500;text-align:right;max-width:55%}
+.step-visual{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px}
+.step-visual h4{font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin-bottom:14px}
+.flow-nodes{display:flex;flex-direction:column;gap:8px}
+.flow-node{display:flex;align-items:center;gap:10px;font-size:.82rem;padding:8px 12px;border-radius:8px;background:rgba(212,168,83,.05);border:1px solid rgba(212,168,83,.12)}
+.flow-node span{color:var(--gold);font-size:.9rem}
+.flow-arrow-down{text-align:center;color:var(--muted);font-size:.75rem;margin:2px 0}
+
+/* PHASES */
+.progress-wrap{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:28px}
+.progress-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.progress-header h3{font-size:.9rem;font-weight:600}
+.progress-pct{font-family:var(--font-head);font-size:1.6rem;font-weight:700;color:var(--gold)}
+.progress-bar{height:8px;background:var(--border);border-radius:4px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--amber),var(--gold));border-radius:4px;transition:width .8s ease}
+.phase-list{display:flex;flex-direction:column;gap:10px}
+.phase-item{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.phase-header{display:flex;align-items:center;gap:14px;padding:18px 20px;cursor:pointer;transition:background .2s}
+.phase-header:hover{background:rgba(212,168,83,.04)}
+.phase-num{font-family:var(--font-head);font-size:1.1rem;font-weight:700;color:var(--gold);width:28px;flex-shrink:0}
+.phase-info{flex:1}
+.phase-name{font-weight:600;font-size:.95rem}
+.phase-desc{font-size:.8rem;color:var(--muted);margin-top:2px}
+.phase-chevron{color:var(--muted);transition:transform .3s;font-size:.9rem}
+.phase-item.open .phase-chevron{transform:rotate(180deg)}
+.phase-body{display:none;padding:0 20px 20px;border-top:1px solid var(--border)}
+.phase-item.open .phase-body{display:block}
+.phase-body-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px}
+.checklist{display:flex;flex-direction:column;gap:8px}
+.check-item{display:flex;align-items:flex-start;gap:10px;font-size:.85rem;color:var(--muted)}
+.check-item::before{content:'✓';color:var(--green);font-weight:700;flex-shrink:0;margin-top:1px}
+.check-item.planned::before{content:'○';color:var(--muted)}
+.phase-tech-para{font-size:.85rem;color:var(--muted);line-height:1.75}
+.impact-box{background:rgba(212,168,83,.06);border:1px solid rgba(212,168,83,.2);border-radius:10px;padding:16px;margin-top:16px;font-size:.85rem;color:var(--gold);line-height:1.65}
+.impact-box strong{display:block;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;color:var(--amber)}
+
+/* DATABASE */
+.db-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}
+.db-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;cursor:pointer;transition:all .25s}
+.db-card:hover{border-color:var(--gold);transform:translateY(-2px)}
+.db-card-role{width:8px;height:8px;border-radius:50%;margin-bottom:12px;flex-shrink:0}
+.role-core{background:#6ba3d4}
+.role-pipeline{background:#c97b3a}
+.role-output{background:#5fba7d}
+.role-tracking{background:#a07fd4}
+.db-card-name{font-family:monospace;font-size:.95rem;font-weight:600;margin-bottom:6px;color:var(--gold)}
+.db-card-desc{font-size:.82rem;color:var(--muted);line-height:1.6}
+.db-card-cols{margin-top:12px;font-size:.75rem;color:var(--muted)}
+.db-card-cols span{background:rgba(212,168,83,.07);border:1px solid rgba(212,168,83,.1);border-radius:4px;padding:2px 7px;margin:2px;display:inline-block;font-family:monospace}
+.db-legend{display:flex;gap:20px;margin-top:20px;flex-wrap:wrap}
+.db-legend-item{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--muted)}
+.db-legend-item::before{content:'';width:8px;height:8px;border-radius:50%}
+.legend-core::before{background:#6ba3d4}
+.legend-pipeline::before{background:#c97b3a}
+.legend-output::before{background:#5fba7d}
+.legend-tracking::before{background:#a07fd4}
+
+/* MODAL */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center;padding:24px}
+.modal-overlay.open{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;max-width:700px;width:100%;max-height:85vh;overflow-y:auto;padding:32px}
+.modal-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:24px}
+.modal-header h3{font-family:var(--font-head);font-size:1.5rem;font-weight:700}
+.modal-close{background:var(--card);border:1px solid var(--border);color:var(--muted);width:36px;height:36px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;transition:all .2s}
+.modal-close:hover{border-color:var(--red);color:var(--red)}
+.modal-purpose{font-size:.9rem;color:var(--muted);line-height:1.7;margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+.col-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.col-table th{text-align:left;padding:10px 14px;background:var(--card);color:var(--muted);font-weight:600;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+.col-table td{padding:10px 14px;border-bottom:1px solid rgba(46,43,36,.5);color:var(--text);vertical-align:top}
+.col-table td:first-child{font-family:monospace;color:var(--gold)}
+.col-table td:nth-child(2){color:var(--blue)}
+.modal-usage{background:rgba(212,168,83,.06);border:1px solid rgba(212,168,83,.15);border-radius:10px;padding:16px;margin-top:20px;font-size:.85rem;color:var(--muted);line-height:1.7}
+.modal-usage strong{color:var(--gold);display:block;margin-bottom:6px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
+
+/* SERVICES */
+.services-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:28px}
+.svc-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px}
+.svc-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;margin-bottom:14px}
+.svc-name{font-weight:600;font-size:.95rem;margin-bottom:6px}
+.svc-desc{font-size:.82rem;color:var(--muted);line-height:1.65;margin-bottom:12px}
+.svc-tag{display:inline-block;background:rgba(107,163,212,.1);border:1px solid rgba(107,163,212,.2);color:var(--blue);border-radius:5px;font-size:.7rem;font-weight:600;padding:3px 9px;font-family:monospace}
+
+/* FOOTER */
+footer{border-top:1px solid var(--border);padding:32px;text-align:center;color:var(--muted);font-size:.8rem}
+
+/* SCROLLBAR */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+@media(max-width:768px){
+  .hero-grid,.arch-detail-grid,.step-panel.active,.phase-body-grid,.db-grid,.services-grid{grid-template-columns:1fr}
+  .stats-bar{grid-template-columns:repeat(2,1fr)}
+  .stats-bar .stat-item:nth-child(5){grid-column:span 2}
+  .deliverables-inner{flex-wrap:wrap}
+  .deliv-item{flex:0 0 50%;border-right:none;border-bottom:1px solid var(--border)}
+  #nav ul{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- STICKY NAV -->
+<nav id="nav">
+  <div class="logo">HR Interviewer</div>
+  <ul>
+    <li><a href="#hero">Overview</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#howitworks">How It Works</a></li>
+    <li><a href="#phases">Phases</a></li>
+    <li><a href="#database">Database</a></li>
+    <li><a href="#services">Services</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section id="hero" class="section visible">
+  <div class="container">
+    <div class="hero-eyebrow">
+      <span>SaaS · Internal Tool</span>
+      <span style="color:var(--muted)">·</span>
+      <span>Enterprise Recruitment</span>
+    </div>
+    <h1 class="hero-title">
+      AI that interviews candidates<br>so your <span>recruiters don't have to</span>
+    </h1>
+    <p style="color:var(--muted);max-width:600px;font-size:1rem;line-height:1.75">
+      HR Interviewer conducts live, voice-driven AI interviews with candidates, scores their responses and resumes automatically, and surfaces ranked candidates to your hiring team — all without a human on the other end of the call.
+    </p>
+    <div class="hero-grid">
+      <div class="hero-block">
+        <div class="hero-block-label problem">The Problem</div>
+        <p>Initial screening interviews are a bottleneck. Recruiters spend hours on 30-minute calls that could be automated, introducing human bias, inconsistency, and high per-hire cost. Resume review is manual and slow. Key hiring signal disappears in unstructured notes.</p>
+      </div>
+      <div class="hero-block">
+        <div class="hero-block-label solution">The Solution</div>
+        <p>An AI agent runs every first-round interview by voice — asking consistent, structured questions, following up intelligently, detecting cheating, recording everything, and scoring both the conversation and the resume automatically. Recruiters see only ranked, analyzed candidates.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- DELIVERABLES STRIP -->
+  <div class="deliverables" style="margin-top:40px">
+    <div class="container">
+      <div class="deliverables-inner">
+        <div class="deliv-item">
+          <div class="deliv-icon">🎙️</div>
+          <div class="deliv-text"><strong>Voice Interview</strong><span>Real-time AI voice agent call</span></div>
+        </div>
+        <div class="deliv-item">
+          <div class="deliv-icon">📊</div>
+          <div class="deliv-text"><strong>Communication Score</strong><span>0–10 with quotes &amp; feedback</span></div>
+        </div>
+        <div class="deliv-item">
+          <div class="deliv-icon">📄</div>
+          <div class="deliv-text"><strong>ATS Resume Score</strong><span>Skills match, SWOT, candidate profile</span></div>
+        </div>
+        <div class="deliv-item">
+          <div class="deliv-icon">🎥</div>
+          <div class="deliv-text"><strong>Video Recording</strong><span>Full session with violation flags</span></div>
+        </div>
+        <div class="deliv-item">
+          <div class="deliv-icon">🏢</div>
+          <div class="deliv-text"><strong>Company Insights</strong><span>Enriched employer history</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS BAR -->
+  <div class="container">
+    <div class="stats-bar">
+      <div class="stat-item">
+        <div class="stat-value">GPT-5</div>
+        <div class="stat-label">Azure OpenAI<br>mini (default)</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">$0.07</div>
+        <div class="stat-label">Per interview minute<br>(Retell voice)</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">9</div>
+        <div class="stat-label">Cost-tracked<br>pipeline stages</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">4</div>
+        <div class="stat-label">Anti-cheat<br>violation types</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">50+</div>
+        <div class="stat-label">API routes across<br>the platform</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ARCHITECTURE -->
+<section id="architecture" class="section">
+  <div class="container">
+    <div class="section-label">System Architecture</div>
+    <h2 class="section-title">How all the pieces connect</h2>
+    <p class="section-sub">Click any component to see what it does, which files power it, and how it connects to the rest of the system.</p>
+
+    <div class="arch-svg-wrap">
+      <svg viewBox="0 0 1160 480" xmlns="http://www.w3.org/2000/svg" style="font-family:Inter,sans-serif">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#8a7f72"/>
+          </marker>
+          <marker id="arr-gold" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#d4a853"/>
+          </marker>
+        </defs>
+
+        <!-- ROW 1: Users -->
+        <!-- Candidate -->
+        <g class="arch-node" id="node-candidate" onclick="showArchDetail('candidate')">
+          <rect x="60" y="40" width="180" height="64" rx="10" fill="#232118" stroke="#6ba3d4" stroke-width="1.5"/>
+          <text x="150" y="68" text-anchor="middle" fill="#e8e3da" font-size="13" font-weight="600">Candidate Browser</text>
+          <text x="150" y="86" text-anchor="middle" fill="#8a7f72" font-size="10">/call/[interviewId]</text>
+          <title>Candidate-facing page: voice call, face verify, video recording, anti-cheat detection</title>
+        </g>
+
+        <!-- Recruiter -->
+        <g class="arch-node" id="node-recruiter" onclick="showArchDetail('recruiter')">
+          <rect x="920" y="40" width="180" height="64" rx="10" fill="#232118" stroke="#5fba7d" stroke-width="1.5"/>
+          <text x="1010" y="68" text-anchor="middle" fill="#e8e3da" font-size="13" font-weight="600">Recruiter Dashboard</text>
+          <text x="1010" y="86" text-anchor="middle" fill="#8a7f72" font-size="10">/dashboard + sub-routes</text>
+          <title>Recruiter UI: create interviews, assign candidates, view analytics, ATS scoring, cost tracking</title>
+        </g>
+
+        <!-- ROW 2: App -->
+        <g class="arch-node" id="node-nextjs" onclick="showArchDetail('nextjs')">
+          <rect x="380" y="180" width="400" height="64" rx="10" fill="#232118" stroke="#d4a853" stroke-width="1.5"/>
+          <text x="580" y="208" text-anchor="middle" fill="#e8e3da" font-size="14" font-weight="700">Next.js 14 App Router</text>
+          <text x="580" y="228" text-anchor="middle" fill="#8a7f72" font-size="10">API Routes · Server Components · Middleware · Auth</text>
+          <title>Central application server: handles all API requests, auth, AI calls, database writes, webhooks</title>
+        </g>
+
+        <!-- ROW 3: Services -->
+        <g class="arch-node" id="node-supabase" onclick="showArchDetail('supabase')">
+          <rect x="30" y="360" width="140" height="60" rx="10" fill="#232118" stroke="#6ba3d4" stroke-width="1.5"/>
+          <text x="100" y="386" text-anchor="middle" fill="#e8e3da" font-size="12" font-weight="600">Supabase</text>
+          <text x="100" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">PostgreSQL DB</text>
+          <title>Primary database: all interview, response, candidate, user, and cost data persisted here</title>
+        </g>
+
+        <g class="arch-node" id="node-retell" onclick="showArchDetail('retell')">
+          <rect x="195" y="360" width="140" height="60" rx="10" fill="#232118" stroke="#c97b3a" stroke-width="1.5"/>
+          <text x="265" y="386" text-anchor="middle" fill="#e8e3da" font-size="12" font-weight="600">Retell AI</text>
+          <text x="265" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">Voice Agent</text>
+          <title>Runs the AI voice interview: manages the call, delivers questions, returns transcript via webhook</title>
+        </g>
+
+        <g class="arch-node" id="node-openai" onclick="showArchDetail('openai')">
+          <rect x="360" y="360" width="150" height="60" rx="10" fill="#232118" stroke="#d4a853" stroke-width="1.5"/>
+          <text x="435" y="386" text-anchor="middle" fill="#e8e3da" font-size="12" font-weight="600">Azure OpenAI</text>
+          <text x="435" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">GPT-5-mini LLM</text>
+          <title>Powers analytics, communication scoring, ATS resume scoring, insight generation, question creation</title>
+        </g>
+
+        <g class="arch-node" id="node-voicelive" onclick="showArchDetail('voicelive')">
+          <rect x="535" y="360" width="150" height="60" rx="10" fill="#232118" stroke="#a07fd4" stroke-width="1.5"/>
+          <text x="610" y="386" text-anchor="middle" fill="#e8e3da" font-size="12" font-weight="600">Azure Voice Live</text>
+          <text x="610" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">Realtime Alt.</text>
+          <title>Alternative to Retell: Azure realtime voice API using gpt-4o-mini or gpt-5-mini, toggled by USE_VOICE_LIVE env var</title>
+        </g>
+
+        <g class="arch-node" id="node-blob" onclick="showArchDetail('blob')">
+          <rect x="710" y="360" width="140" height="60" rx="10" fill="#232118" stroke="#5fba7d" stroke-width="1.5"/>
+          <text x="780" y="386" text-anchor="middle" fill="#e8e3da" font-size="12" font-weight="600">Vercel Blob</text>
+          <text x="780" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">Video Storage</text>
+          <title>Stores candidate video recordings from the interview session; also holds resume files</title>
+        </g>
+
+        <g class="arch-node" id="node-automate" onclick="showArchDetail('automate')">
+          <rect x="875" y="360" width="160" height="60" rx="10" fill="#232118" stroke="#e85c4a" stroke-width="1.5"/>
+          <text x="955" y="386" text-anchor="middle" fill="#e8e3da" font-size="12" font-weight="600">Power Automate</text>
+          <text x="955" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">Email Notifications</text>
+          <title>Sends interview invitation emails to candidates via Power Automate HTTP trigger flow</title>
+        </g>
+
+        <g class="arch-node" id="node-faceapi" onclick="showArchDetail('faceapi')">
+          <rect x="1060" y="360" width="80" height="60" rx="10" fill="#232118" stroke="#6ba3d4" stroke-width="1"/>
+          <text x="1100" y="386" text-anchor="middle" fill="#e8e3da" font-size="11" font-weight="600">face-api</text>
+          <text x="1100" y="404" text-anchor="middle" fill="#8a7f72" font-size="10">.js models</text>
+          <title>Client-side face detection: matches candidate's live video to their stored profile photo for identity verification</title>
+        </g>
+
+        <!-- ARROWS: Candidate ↔ Next.js -->
+        <line x1="200" y1="104" x2="440" y2="180" stroke="#6ba3d4" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="255" y="122" width="84" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="297" y="135" text-anchor="middle" fill="#6ba3d4" font-size="9" font-weight="600">voice + face data</text>
+
+        <!-- Recruiter ↔ Next.js -->
+        <line x1="920" y1="100" x2="780" y2="180" stroke="#5fba7d" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="810" y="118" width="88" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="854" y="131" text-anchor="middle" fill="#5fba7d" font-size="9" font-weight="600">manage &amp; view</text>
+
+        <!-- Next.js → Supabase -->
+        <line x1="440" y1="244" x2="140" y2="360" stroke="#6ba3d4" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="218" y="278" width="78" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="257" y="291" text-anchor="middle" fill="#6ba3d4" font-size="9" font-weight="600">read / write</text>
+
+        <!-- Next.js → Retell -->
+        <line x1="480" y1="244" x2="295" y2="360" stroke="#c97b3a" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="330" y="285" width="90" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="375" y="298" text-anchor="middle" fill="#c97b3a" font-size="9" font-weight="600">register + webhook</text>
+
+        <!-- Next.js → Azure OpenAI -->
+        <line x1="540" y1="244" x2="460" y2="360" stroke="#d4a853" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="455" y="290" width="74" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="492" y="303" text-anchor="middle" fill="#d4a853" font-size="9" font-weight="600">analyze / score</text>
+
+        <!-- Next.js → Voice Live -->
+        <line x1="600" y1="244" x2="615" y2="360" stroke="#a07fd4" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arr)"/>
+        <rect x="580" y="292" width="72" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="616" y="305" text-anchor="middle" fill="#a07fd4" font-size="9" font-weight="600">realtime voice</text>
+
+        <!-- Next.js → Blob -->
+        <line x1="680" y1="244" x2="760" y2="360" stroke="#5fba7d" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="672" y="286" width="84" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="714" y="299" text-anchor="middle" fill="#5fba7d" font-size="9" font-weight="600">store video</text>
+
+        <!-- Next.js → Power Automate -->
+        <line x1="740" y1="234" x2="910" y2="360" stroke="#e85c4a" stroke-width="1.2" marker-end="url(#arr)"/>
+        <rect x="800" y="274" width="80" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="840" y="287" text-anchor="middle" fill="#e85c4a" font-size="9" font-weight="600">send email</text>
+
+        <!-- Candidate → face-api -->
+        <line x1="240" y1="72" x2="1060" y2="375" stroke="#6ba3d4" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arr)"/>
+        <rect x="640" y="44" width="82" height="18" rx="9" fill="#1a1916" stroke="#2e2b24"/>
+        <text x="681" y="57" text-anchor="middle" fill="#6ba3d4" font-size="9" font-weight="600">face verify</text>
+
+        <!-- Legend -->
+        <rect x="30" y="450" width="10" height="2" fill="#a07fd4"/>
+        <text x="48" y="456" fill="#8a7f72" font-size="9">dashed = optional/fallback</text>
+      </svg>
+    </div>
+
+    <!-- DETAIL PANEL -->
+    <div id="arch-detail" class="arch-detail card" style="margin-top:20px">
+      <div class="arch-detail-header">
+        <h3 id="detail-title">—</h3>
+        <div id="detail-badge"></div>
+      </div>
+      <div class="arch-detail-grid">
+        <div class="arch-detail-col" id="detail-left"></div>
+        <div class="arch-detail-col" id="detail-right"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- HOW IT WORKS -->
+<section id="howitworks" class="section">
+  <div class="container">
+    <div class="section-label">How It Works</div>
+    <h2 class="section-title">From job post to ranked candidate</h2>
+    <p class="section-sub">Walk through every stage of an interview, from configuration through final scoring.</p>
+
+    <div class="stepper-nav" style="margin-top:32px">
+      <button class="stepper-btn" id="btn-prev" onclick="changeStep(-1)" disabled>← Prev</button>
+      <div class="step-dots" id="step-dots"></div>
+      <button class="stepper-btn" id="btn-next" onclick="changeStep(1)">Next →</button>
+      <span class="step-counter" id="step-counter"></span>
+    </div>
+    <div id="step-panels"></div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- PHASES -->
+<section id="phases" class="section">
+  <div class="container">
+    <div class="section-label">Roadmap</div>
+    <h2 class="section-title">Build phases &amp; progress</h2>
+    <p class="section-sub">Each phase added a distinct capability layer. Click any phase to see what was built and why it matters.</p>
+
+    <div class="progress-wrap" style="margin-top:32px">
+      <div class="progress-header">
+        <h3>Overall Completion</h3>
+        <span class="progress-pct">75%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" style="width:75%"></div></div>
+      <p style="font-size:.78rem;color:var(--muted);margin-top:10px">5 of 7 phases complete · 2 in roadmap</p>
+    </div>
+
+    <div class="phase-list" id="phase-list"></div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- DATABASE -->
+<section id="database" class="section">
+  <div class="container">
+    <div class="section-label">Data Schema</div>
+    <h2 class="section-title">Database tables</h2>
+    <p class="section-sub">All data lives in Supabase (PostgreSQL). Click any table to see its full column list and how it's used in the app.</p>
+
+    <div class="db-legend">
+      <div class="db-legend-item legend-core">Core data</div>
+      <div class="db-legend-item legend-pipeline">Pipeline / jobs</div>
+      <div class="db-legend-item legend-output">Output / results</div>
+      <div class="db-legend-item legend-tracking">Tracking / audit</div>
+    </div>
+    <div class="db-grid" id="db-grid"></div>
+  </div>
+</section>
+
+<!-- DB MODAL -->
+<div class="modal-overlay" id="db-modal" onclick="closeModal(event)">
+  <div class="modal" id="modal-content">
+    <div class="modal-header">
+      <h3 id="modal-title">Table</h3>
+      <button class="modal-close" onclick="closeDbModal()">✕</button>
+    </div>
+    <p class="modal-purpose" id="modal-purpose"></p>
+    <table class="col-table">
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody id="modal-cols"></tbody>
+    </table>
+    <div class="modal-usage" id="modal-usage"></div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<!-- SERVICES -->
+<section id="services" class="section">
+  <div class="container">
+    <div class="section-label">External Services</div>
+    <h2 class="section-title">Third-party integrations</h2>
+    <p class="section-sub">Every external service used, why it's there, and what it costs.</p>
+    <div class="services-grid" id="services-grid"></div>
+  </div>
+</section>
+
+<footer>
+  <p>HR Interviewer · Built by DynaTech Systems · Next.js 14 + Supabase + Retell AI + Azure OpenAI</p>
+  <p style="margin-top:6px;font-size:.72rem">This document is auto-generated from the live codebase and reflects current implementation status.</p>
+</footer>
+
+<script>
+// ─── DATA ───────────────────────────────────────────────────────────────────
+
+const ARCH_NODES = {
+  candidate: {
+    title: 'Candidate Browser',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'The public-facing interview page where candidates take their AI-driven voice interview. It loads the Retell (or Azure Voice Live) client, activates the webcam, runs face verification, monitors for cheating signals, and records the entire session as video.',
+      files: [
+        'src/app/(user)/call/[interviewId]/page.tsx',
+        'src/components/call/index.tsx',
+        'src/components/call/FaceMismatchWarning.tsx',
+        'src/components/call/ViolationWarnings.tsx',
+        'src/components/call/tabSwitchPrevention.tsx',
+        'src/components/call/VideoRecorder.tsx',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '→', target: 'Next.js API', label: 'register-call · save-response · upload-recording' },
+        { arrow: '→', target: 'Retell AI SDK', label: 'RetellWebClient.startCall(accessToken)' },
+        { arrow: '→', target: 'Azure Voice Live', label: 'Realtime audio stream (if USE_VOICE_LIVE=true)' },
+        { arrow: '→', target: 'face-api.js', label: 'Local face matching against assignee photo' },
+        { arrow: '→', target: 'Vercel Blob', label: 'Video upload via API route' },
+      ]
+    }
+  },
+  recruiter: {
+    title: 'Recruiter Dashboard',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'The authenticated recruiter UI. Recruiters create and configure interview templates (with AI-generated questions), assign candidates, view response analytics, run ATS resume scoring, find company histories, and track per-interview costs — all in one place.',
+      files: [
+        'src/app/(client)/dashboard/',
+        'src/app/(client)/interviews/[interviewId]/',
+        'src/app/(client)/dashboard/ats-scoring/',
+        'src/app/(client)/dashboard/company-finder/',
+        'src/app/(client)/dashboard/cost-analysis/',
+        'src/app/(client)/dashboard/users/',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '→', target: 'Next.js API', label: 'All CRUD operations via fetch/axios' },
+        { arrow: '←', target: 'Auth Context', label: 'JWT token from auth_token cookie' },
+        { arrow: '←', target: 'Supabase (browser)', label: 'Live data via @supabase/ssr anon client' },
+        { arrow: '→', target: 'React Query', label: 'Context-based data caching and refresh' },
+      ]
+    }
+  },
+  nextjs: {
+    title: 'Next.js 14 App Router',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'The central application server. Every API call flows through here — authentication, database writes, AI model calls, webhook handling, file uploads, and email triggers. Built with Next.js 14 App Router, all API routes are serverless functions with per-request Supabase connections.',
+      files: [
+        'src/app/api/ (50+ route handlers)',
+        'src/middleware.ts (route protection)',
+        'src/lib/auth.ts (custom JWT)',
+        'src/lib/openai-client.ts (AI factory)',
+        'src/lib/constants.ts (agent prompts)',
+        'src/lib/prompts/ (6 prompt chains)',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '↔', target: 'Supabase', label: 'Service-role client, no-store cache, per-request' },
+        { arrow: '→', target: 'Retell AI', label: 'Call registration, transcript retrieval' },
+        { arrow: '→', target: 'Azure OpenAI', label: 'GPT-5-mini for all analysis tasks' },
+        { arrow: '→', target: 'Direct OpenAI', label: 'Web search tool for company enrichment' },
+        { arrow: '→', target: 'Vercel Blob', label: 'Video & resume file storage' },
+        { arrow: '→', target: 'Power Automate', label: 'HTTP POST for email triggers' },
+      ]
+    }
+  },
+  supabase: {
+    title: 'Supabase (PostgreSQL)',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'The primary data store for everything: users, interview templates, candidate responses, assignee rosters, ATS scoring jobs, company scans, cost tracking, and more. Server-side code uses the service-role key (bypasses RLS); browser code uses the anon key with RLS policies enforced.',
+      files: [
+        'src/lib/auth.ts → getSupabaseClient()',
+        'src/services/*.service.ts (browser client)',
+        'NEXT_PUBLIC_SUPABASE_URL',
+        'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+        'SUPABASE_SERVICE_ROLE_KEY',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'API Routes', label: 'Server-side writes via service-role key' },
+        { arrow: '←', target: 'Browser Services', label: 'Read-heavy via @supabase/ssr anon client' },
+        { arrow: '→', target: 'All tables', label: 'user, interview, response, interview_assignee, api_usage, feedback' },
+      ]
+    }
+  },
+  retell: {
+    title: 'Retell AI',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'Runs the live AI voice interview. The server registers a call (passing dynamic variables like candidate name and interview questions), then the browser SDK connects to Retell\'s infrastructure and streams the AI agent voice in real time. When the call ends, Retell sends a webhook with the full transcript.',
+      files: [
+        'src/app/api/register-call/route.ts',
+        'src/app/api/response-webhook/route.ts',
+        'src/app/api/get-call/route.ts',
+        'src/app/api/refetch-call/route.ts',
+        'RETELL_API_KEY',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'Next.js /register-call', label: 'POST: create call, return access_token' },
+        { arrow: '→', target: 'Browser SDK', label: 'RetellWebClient.startCall(access_token)' },
+        { arrow: '→', target: 'Next.js /response-webhook', label: 'POST: call_analyzed event with transcript' },
+        { arrow: '→', target: 'api_usage table', label: 'Cost logged: $0.07/min × duration' },
+      ]
+    }
+  },
+  openai: {
+    title: 'Azure OpenAI',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'Powers all AI analysis tasks: generating interview questions, scoring communication skills from transcripts, producing 3-sentence insights, running detailed ATS resume scoring with SWOT analysis, and extracting companies from resumes. The default model is GPT-5-mini deployed on Azure.',
+      files: [
+        'src/lib/openai-client.ts → getOpenAIClient()',
+        'src/lib/prompts/communication-analysis.ts',
+        'src/lib/prompts/ats-scoring.ts',
+        'src/lib/prompts/generate-questions.ts',
+        'src/lib/prompts/generate-insights.ts',
+        'AZURE_OPENAI_DEPLOYMENT_GPT5_MINI',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'Next.js API', label: 'Called from 6+ API route handlers' },
+        { arrow: '→', target: 'api_usage table', label: 'Input/output tokens logged per call' },
+        { arrow: '→', target: 'response.analytics', label: 'Communication score + quotes stored' },
+        { arrow: '→', target: 'interview.insights', label: 'Cross-response summary insights stored' },
+      ]
+    }
+  },
+  voicelive: {
+    title: 'Azure Voice Live',
+    badge: 'progress',
+    left: {
+      heading: 'What it does',
+      body: 'An alternative to Retell for real-time voice interviews, using Azure\'s gpt-4o-mini-realtime-preview or gpt-5-mini realtime model. Toggle it on with USE_VOICE_LIVE=true. Recordings are stored directly to Azure Blob Storage. Offers warm acknowledgment phrases and a more conversational opening.',
+      files: [
+        'src/app/api/voice-live/save-call/route.ts',
+        'src/lib/constants.ts → buildVoiceLiveInterviewPrompt()',
+        'AZURE_VOICELIVE_ENDPOINT',
+        'AZURE_VOICELIVE_API_KEY',
+        'USE_VOICE_LIVE (env toggle)',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'Candidate Browser', label: 'Realtime audio stream (WebSocket)' },
+        { arrow: '→', target: 'Azure Blob Storage', label: 'Recording saved to interview-recordings container' },
+        { arrow: '→', target: 'Next.js /voice-live/save-call', label: 'POST: persist call result on end' },
+      ]
+    }
+  },
+  blob: {
+    title: 'Vercel Blob',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'Stores candidate video recordings captured during the interview. The VideoRecorder component in the browser encodes frames from the webcam canvas and the final blob is uploaded via an API route. Resume files are also stored here during ATS scoring.',
+      files: [
+        'src/app/api/upload-call-recording/route.ts',
+        'src/app/api/upload-resume/route.ts',
+        'src/components/call/VideoRecorder.tsx',
+        'BLOB_READ_WRITE_TOKEN',
+        '@vercel/blob SDK',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'Browser VideoRecorder', label: 'POST recorded video blob' },
+        { arrow: '←', target: 'ATS Upload', label: 'Resume files (PDF/DOCX) stored before parse' },
+        { arrow: '→', target: 'response.details', label: 'Blob URL persisted in Supabase response row' },
+        { arrow: '→', target: 'Recruiter Dashboard', label: 'Video playback URL in response view' },
+      ]
+    }
+  },
+  automate: {
+    title: 'Power Automate',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'Handles outbound email notifications to candidates. When a recruiter assigns someone to an interview, the Next.js API posts to a Power Automate HTTP trigger URL, which runs a Flow that sends the interview invitation email with the candidate\'s personal link.',
+      files: [
+        'src/app/api/send-assignee-emails/route.ts',
+        'src/app/api/send-recruiter-notification/route.ts',
+        'POWER_AUTOMATE_FLOW_URL',
+        'FIXED_RECRUITER_EMAIL',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'Next.js API', label: 'HTTP POST with email + interview link payload' },
+        { arrow: '→', target: 'Candidate email', label: 'Interview invitation with personalized URL' },
+        { arrow: '→', target: 'Recruiter email', label: 'Notification of completed interview' },
+      ]
+    }
+  },
+  faceapi: {
+    title: 'face-api.js',
+    badge: 'live',
+    left: {
+      heading: 'What it does',
+      body: 'A client-side face recognition library that runs entirely in the browser. When the interview starts, it loads pre-trained models from /public/models/, then continuously compares the candidate\'s live webcam feed to their stored profile photo to verify identity. Mismatches are logged as violations.',
+      files: [
+        'src/app/(user)/call/[interviewId]/ → useFaceVerification()',
+        'src/components/call/FaceMismatchWarning.tsx',
+        'public/models/ (ssd_mobilenetv1, face_recognition, etc.)',
+        'src/app/api/get-assignee-photo/route.ts',
+      ]
+    },
+    right: {
+      heading: 'Connections',
+      items: [
+        { arrow: '←', target: 'Browser webcam', label: 'Live video frames analysed every N seconds' },
+        { arrow: '←', target: '/api/get-assignee-photo', label: 'Fetches stored candidate photo to compare' },
+        { arrow: '→', target: 'response.face_mismatch_count', label: 'Mismatch count persisted in Supabase' },
+        { arrow: '→', target: 'ViolationWarnings modal', label: 'User-facing warning on mismatch' },
+      ]
+    }
+  }
+};
+
+const STEPS = [
+  {
+    num: '01', title: 'Recruiter Creates Interview',
+    desc: 'A recruiter opens the dashboard and fills in the interview name, objective, and number of questions. The platform calls Azure OpenAI to automatically generate a set of structured, relevant interview questions based on the job context. The interview is saved with a unique shareable slug and URL.',
+    tech: [
+      { key: 'API Route', val: 'POST /api/create-interview' },
+      { key: 'AI Model', val: 'Azure OpenAI GPT-5-mini' },
+      { key: 'Prompt', val: 'src/lib/prompts/generate-questions.ts' },
+      { key: 'Storage', val: 'Supabase interview table' },
+      { key: 'Output', val: 'interview.questions (JSON)' },
+    ],
+    flow: ['Recruiter fills form', 'POST /api/create-interview', 'GPT-5-mini generates questions', 'Saved to Supabase → interview row']
+  },
+  {
+    num: '02', title: 'Candidates Are Assigned',
+    desc: 'The recruiter adds candidates to the interview — individually or by bulk CSV import. Each candidate gets an entry in interview_assignee with a personal invite link. Power Automate sends the invitation email automatically. Recruiters can track who has opened, started, or completed the interview.',
+    tech: [
+      { key: 'API Route', val: 'POST /assignees/bulk-assign-interview' },
+      { key: 'Email', val: 'POST /send-assignee-emails → Power Automate' },
+      { key: 'CSV Parse', val: 'PapaParse (browser)' },
+      { key: 'Storage', val: 'Supabase interview_assignee table' },
+      { key: 'Status tracking', val: 'NOT_SENT → LINK_SENT → INTERVIEW_STARTED…' },
+    ],
+    flow: ['CSV upload or manual entry', 'POST /assignees bulk ops', 'Power Automate HTTP trigger', 'Email sent to candidate']
+  },
+  {
+    num: '03', title: 'Candidate Verification',
+    desc: 'When the candidate opens their interview link, the page loads their profile photo from storage and starts face-api.js in the browser. Before the interview begins, the system confirms the person on camera matches the expected candidate. Tab-switching, multiple people in frame, and camera blocking are also detected from this point on.',
+    tech: [
+      { key: 'Face library', val: 'face-api.js (browser, no server)' },
+      { key: 'Models', val: 'public/models/ (ssd_mobilenetv1 etc.)' },
+      { key: 'Photo fetch', val: 'GET /api/get-assignee-photo' },
+      { key: 'Detection hooks', val: 'useFaceVerification, useMultiplePersonDetection' },
+      { key: 'Violations', val: 'ViolationEvent[] stored in response row' },
+    ],
+    flow: ['Candidate opens link', 'Webcam activated', 'face-api loads models', 'Continuous match vs. stored photo']
+  },
+  {
+    num: '04', title: 'AI Voice Interview',
+    desc: 'The system registers the call with Retell (or Azure Voice Live), passing the candidate name, interview questions, and agent persona as dynamic variables. The browser SDK connects and the AI agent speaks — asking one question at a time, waiting for the answer, following up with a probing question, and managing time across all questions.',
+    tech: [
+      { key: 'Call register', val: 'POST /api/register-call' },
+      { key: 'Browser SDK', val: 'RetellWebClient.startCall(accessToken)' },
+      { key: 'Agent prompt', val: 'RETELL_AGENT_GENERAL_PROMPT in constants.ts' },
+      { key: 'Persona', val: 'Lisa / Bob (audio in public/interviewers/)' },
+      { key: 'End condition', val: '3 refusals OR time limit OR all questions done' },
+    ],
+    flow: ['POST /register-call', 'Retell returns access_token', 'Browser SDK starts call', 'AI agent runs interview']
+  },
+  {
+    num: '05', title: 'Recording & Webhook',
+    desc: 'While the call runs, the VideoRecorder captures the candidate\'s webcam as a video file and uploads it to Vercel Blob. When the interview ends, Retell sends a webhook to the server with the full call transcript and call metadata. The server saves the response and triggers analysis.',
+    tech: [
+      { key: 'Video upload', val: 'POST /api/upload-call-recording → Vercel Blob' },
+      { key: 'Webhook endpoint', val: 'POST /api/response-webhook' },
+      { key: 'Signature verify', val: 'Retell webhook secret validation' },
+      { key: 'Transcript', val: 'response.details (JSON) in Supabase' },
+      { key: 'Voice alt.', val: 'Azure Blob Storage (if Voice Live mode)' },
+    ],
+    flow: ['VideoRecorder → Vercel Blob', 'Retell fires call_analyzed event', 'POST /response-webhook', 'Transcript + cost saved to Supabase']
+  },
+  {
+    num: '06', title: 'AI Analytics Generation',
+    desc: 'After the transcript arrives, the system automatically generates two sets of analytics. Communication Analysis scores the candidate 0–10 on speaking ability, pulling supporting quotes and listing strengths and areas to improve. Interview Insights generates 3 concise sentences summarising patterns observed across all responses for that interview.',
+    tech: [
+      { key: 'Comm. analysis', val: 'POST /api/analyze-communication' },
+      { key: 'Insights', val: 'POST /api/generate-insights' },
+      { key: 'Model', val: 'Azure OpenAI GPT-5-mini' },
+      { key: 'Output', val: 'response.analytics + interview.insights' },
+      { key: 'Cost logged', val: 'api_usage (communication_analysis, insights)' },
+    ],
+    flow: ['Transcript received', 'POST /analyze-communication', 'POST /generate-insights', 'Scores + quotes stored → Supabase']
+  },
+  {
+    num: '07', title: 'ATS Resume Scoring',
+    desc: 'The recruiter can upload a job description and batch of resumes to the ATS Scoring section. Each resume is parsed (PDF/DOCX/image), then scored against the job description using GPT-5-mini. The output includes an overall match score, category scores, matched/missing skills, SWOT analysis, and a candidate profile summary.',
+    tech: [
+      { key: 'Resume parse', val: 'POST /api/upload-resume (pdf-parse, mammoth, mupdf)' },
+      { key: 'Scoring job', val: 'POST /api/ats-scoring/jobs/[id]/process' },
+      { key: 'Scoring scale', val: '0–10 per category (skills/experience/education)' },
+      { key: 'Output', val: 'overallScore, matchedSkills, missingSkills, SWOT' },
+      { key: 'Storage', val: 'Supabase ats_job table + Vercel Blob (resume files)' },
+    ],
+    flow: ['Upload JD + resumes', 'POST /upload-resume (parse)', 'POST /ats-scoring/process', 'Scores + SWOT stored → displayed in dashboard']
+  },
+  {
+    num: '08', title: 'Company Enrichment',
+    desc: 'The Company Finder feature extracts every employer mentioned across a batch of uploaded resumes, then enriches each company with live web data: company type, HQ, founding year, countries of operation, and a relevance assessment. It uses a direct OpenAI connection (not Azure) to access the web_search tool.',
+    tech: [
+      { key: 'Extract', val: 'POST /api/company-finder/extract (Azure OpenAI)' },
+      { key: 'Enrich', val: 'POST /api/company-finder/enrich (Direct OpenAI + web_search)' },
+      { key: 'Cache check', val: 'POST /api/company-finder/cache (avoid re-fetching)' },
+      { key: 'Web cost', val: '$0.01 per web_search call' },
+      { key: 'Storage', val: 'Supabase company_finder_scan table' },
+    ],
+    flow: ['Upload resumes', '/extract → company names', '/cache → deduplicate', '/enrich → web search → full profile']
+  },
+];
+
+const PHASES = [
+  {
+    num: 1, name: 'Core Interview Engine', status: 'live',
+    desc: 'Voice AI integration, call management, candidate flow',
+    items: ['Next.js 14 App Router setup with TypeScript','Custom JWT authentication system','Retell AI call registration and browser SDK integration','Candidate interview page with real-time voice agent','Response webhook handler and transcript storage','Supabase database schema and service layer'],
+    tech: 'The foundation: a Next.js 14 App Router application wired to Retell AI for voice interviews. A custom JWT system (MD5 hash + 7-day expiry) handles authentication. The candidate-facing page at /call/[interviewId] loads the Retell Web Client SDK and streams the AI agent voice in real time. Transcripts arrive via Retell\'s webhook on call completion.',
+    impact: 'Established the core value: a candidate can take a complete AI-driven voice interview from a browser, with the full transcript stored and ready for analysis. Every other phase builds on top of this foundation.'
+  },
+  {
+    num: 2, name: 'Anti-Cheat & Verification', status: 'live',
+    desc: 'Face ID, multi-person detection, tab-switch tracking, video recording',
+    items: ['face-api.js integration with pre-trained browser models','Continuous face matching against stored candidate photo','Multiple-person detection hook','Camera blocking / camera-off detection','Tab-switch prevention and blur event tracking','Video recording via canvas + Vercel Blob upload'],
+    tech: 'Face-api.js runs entirely in the browser — no server round-trip for verification. Pre-trained models load from /public/models/ and compare a live webcam frame against the candidate\'s stored photo every few seconds. A separate hook tracks blur events (tab switches) and flags multiple faces. The entire webcam feed is encoded and uploaded to Vercel Blob as a video file.',
+    impact: 'Recruiters can trust that the person who appeared on screen was the assigned candidate. Violation counts (tab switches, face mismatches, camera off, multiple people) are visible in the response detail view, enabling fair and defensible screening decisions.'
+  },
+  {
+    num: 3, name: 'AI Analytics Suite', status: 'live',
+    desc: 'Communication scoring, interview insights, cost tracking',
+    items: ['Communication analysis: 0–10 score with quotes','Strengths and improvement areas extraction','Cross-response insights (3 x 25-word summaries)','Interview question-level summary breakdown','api_usage table for per-call cost logging','9-category cost tracking (voice, LLM, storage, web search)'],
+    tech: 'Two post-call pipelines run automatically. The communication analysis prompt sends the transcript to GPT-5-mini and returns a structured JSON object with a score, supporting quotes, strengths, and improvement areas. The insights prompt aggregates all response summaries for an interview and returns three 25-word observations. Every AI call logs token counts and calculated cost to api_usage.',
+    impact: 'Recruiters no longer need to read full transcripts. A scored summary with verbatim evidence is surfaced immediately after each interview ends. Cost visibility means hiring managers can see the real cost per screened candidate — typically under $1.'
+  },
+  {
+    num: 4, name: 'ATS Resume Scoring', status: 'live',
+    desc: 'Multi-format resume parsing + structured JD-match scoring',
+    items: ['PDF, DOCX, image resume parsing (pdf-parse, mammoth, mupdf)','Job description upload and storage','Per-resume scoring: overall + category scores (0–10)','Matched and missing skills extraction','SWOT analysis and candidate profile generation','Bulk CSV export of ATS results','Supabase ats_job table for persistent results'],
+    tech: 'Resumes are parsed server-side using format-specific libraries (pdf-parse for PDF, mammoth for DOCX, mupdf for scanned images). Parsed text is passed to a GPT-5-mini prompt alongside the job description. The model returns a deeply structured object: overall score, four category scores, matched skills, missing skills, experience match, full SWOT, and a recruiter-facing candidate profile paragraph.',
+    impact: 'A recruiter can upload 50 resumes and a JD and within minutes have every candidate ranked by fit score — with clear explanations for why. Eliminates hours of manual resume screening and surfaces candidates who might otherwise be overlooked.'
+  },
+  {
+    num: 5, name: 'Company Finder', status: 'live',
+    desc: 'Company extraction and web-search enrichment from resumes',
+    items: ['Company name extraction from bulk resumes','Cache layer to avoid re-enriching known companies','Live web search enrichment via Direct OpenAI Responses API','Company type, HQ, founded year, countries, relevance score','Retry logic for failed enrichments','Pivot table view with exportable results'],
+    tech: 'A three-stage pipeline: extract (GPT-5-mini identifies all company names from resumes), cache (check Supabase for already-enriched companies), enrich (Direct OpenAI with web_search tool fetches live company data). The Responses API\'s web_search is only available on Direct OpenAI (not Azure), hence the separate client. Each enrichment costs $0.01 for the web search.',
+    impact: 'Recruiters can map the competitive landscape — which companies their candidates have worked at, whether those companies are relevant to the role, and where they operate globally. Useful for sourcing, competitive intelligence, and understanding a candidate pool.'
+  },
+  {
+    num: 6, name: 'Azure Voice Live', status: 'progress',
+    desc: 'Alternative real-time voice provider using Azure AI',
+    items: ['Azure Voice Live realtime client integration','buildVoiceLiveInterviewPrompt with acknowledgment phrases','Warm greeting + framing opening turn (under 20 seconds)','end_interview tool call for clean session termination','Azure Blob Storage for recording archival','USE_VOICE_LIVE env toggle for A/B switching'],
+    tech: 'Azure Voice Live uses a WebSocket-based realtime API (gpt-4o-mini-realtime-preview or gpt-5-mini) instead of Retell\'s infrastructure. The prompt was adapted with warmer transitions between questions ("Got it.", "Makes sense.") and an explicit tool call to end the session cleanly. Recordings write to a dedicated Azure Blob Storage container.',
+    impact: 'Reduces dependency on a single voice provider and opens the door to Azure enterprise contracts with volume pricing. The toggle-based rollout lets the team compare quality and cost before full migration.'
+  },
+  {
+    num: 7, name: 'ATS Platform Integrations', status: 'planned',
+    desc: 'Two-way sync with Greenhouse, Lever, and LinkedIn Recruiter',
+    items: ['OAuth integration with Greenhouse ATS','Lever API candidate push/pull','LinkedIn Recruiter candidate import','Automated status sync back to ATS on interview completion','Webhook receiver for ATS-initiated interviews'],
+    tech: 'OAuth 2.0 flows for each platform, mapping the internal interview_assignee and response schema to each ATS\'s candidate model. Status changes (interview completed, score above threshold) would push back to the ATS in real time via their REST APIs.',
+    impact: 'Removes manual data entry between HR Interviewer and existing ATS workflows. Candidates screened in HR Interviewer automatically update their status in Greenhouse/Lever, and recruiters manage everything from their existing ATS.',
+    planned: true
+  },
+];
+
+const DB_TABLES = [
+  {
+    name: 'user', role: 'core', roleColor: '#6ba3d4',
+    desc: 'System users: recruiters, admins, and managers who access the dashboard.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'email', type: 'text', note: 'Unique login email' },
+      { name: 'first_name / last_name', type: 'text', note: '' },
+      { name: 'role', type: 'enum', note: 'admin | manager | interviewer | viewer | hr_consultant' },
+      { name: 'organization_id', type: 'uuid', note: 'Tenant isolation' },
+      { name: 'avatar_url', type: 'text', note: 'Profile photo URL' },
+      { name: 'last_login', type: 'timestamptz', note: 'Tracked for audit' },
+    ],
+    usage: 'Read on every authenticated request to load the user\'s org context. Written on signup/profile update. Used to gate dashboard access and scope all data queries to organization_id.'
+  },
+  {
+    name: 'interview', role: 'core', roleColor: '#6ba3d4',
+    desc: 'Interview templates: the definition of a job role, questions, and configuration.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'name', type: 'text', note: 'Role/position name' },
+      { name: 'objective', type: 'text', note: 'What to assess' },
+      { name: 'questions', type: 'jsonb', note: 'AI-generated [{question}]' },
+      { name: 'time_duration', type: 'int', note: 'Minutes allotted' },
+      { name: 'readable_slug', type: 'text', note: 'URL-safe unique ID' },
+      { name: 'insights', type: 'jsonb', note: 'Cross-response AI summaries' },
+      { name: 'theme_color / logo_url', type: 'text', note: 'Branding per interview' },
+      { name: 'is_active', type: 'bool', note: 'Controls access to call page' },
+    ],
+    usage: 'Central reference for every interview session. Candidate page loads it to pass questions to the Retell agent. Dashboard uses it to display config, response count, and insights.'
+  },
+  {
+    name: 'response', role: 'output', roleColor: '#5fba7d',
+    desc: 'One row per completed candidate interview. Stores the transcript, scores, video URL, and all violation data.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'interview_id', type: 'uuid', note: 'FK → interview' },
+      { name: 'call_id', type: 'text', note: 'Retell call identifier' },
+      { name: 'details', type: 'jsonb', note: 'Transcript + call metadata' },
+      { name: 'analytics', type: 'jsonb', note: 'Communication score + quotes' },
+      { name: 'candidate_status', type: 'text', note: 'Recruiter review status' },
+      { name: 'tab_switch_count', type: 'int', note: 'Anti-cheat violation' },
+      { name: 'face_mismatch_count', type: 'int', note: 'Anti-cheat violation' },
+      { name: 'violations_summary', type: 'jsonb', note: 'Full ViolationEvent[]' },
+      { name: 'is_analysed', type: 'bool', note: 'Analytics generated?' },
+    ],
+    usage: 'The primary output record. Recruiters read this table to review candidate performance. Analytics pipelines write scores back here. The response view page loads the video URL, analytics JSON, and violations in one query.'
+  },
+  {
+    name: 'interview_assignee', role: 'core', roleColor: '#6ba3d4',
+    desc: 'The candidate roster for each interview — who is expected to take it and what happened.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'interview_id', type: 'uuid', note: 'FK → interview' },
+      { name: 'email / first_name / last_name', type: 'text', note: 'Candidate identity' },
+      { name: 'avatar_url / resume_url', type: 'text', note: 'Files for verification + ATS' },
+      { name: 'status', type: 'enum', note: 'active | inactive | pending' },
+      { name: 'interview_status', type: 'enum', note: 'NOT_SENT → CANDIDATE_REJECTED (8 states)' },
+      { name: 'allow_retake', type: 'bool', note: 'Recruiter can grant one retry' },
+      { name: 'tag / review_status', type: 'text', note: 'Recruiter classification' },
+    ],
+    usage: 'Controls who can access each interview link. The candidate page checks assignee status before starting. Recruiters use bulk operations (tag, status update, delete) against this table. Face verification loads avatar_url for comparison.'
+  },
+  {
+    name: 'api_usage', role: 'tracking', roleColor: '#a07fd4',
+    desc: 'Per-request cost logging for every AI and storage call in the platform.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'category', type: 'enum', note: 'interview_creation | voice_call | ats_scoring | company_finder | …9 types' },
+      { name: 'service', type: 'enum', note: 'openai | retell | azure-voicelive | vercel' },
+      { name: 'input_tokens / output_tokens', type: 'int', note: 'LLM token counts' },
+      { name: 'duration_seconds', type: 'float', note: 'For voice calls' },
+      { name: 'cost_usd', type: 'float', note: 'Calculated at request time' },
+      { name: 'model', type: 'text', note: 'Model name used' },
+      { name: 'interview_id / response_id', type: 'uuid', note: 'Attribution for cost analysis' },
+    ],
+    usage: 'Powers the Cost Analysis dashboard. Every AI or storage call writes here immediately. The cost-analysis API aggregates by category, date range, and interview to produce breakdowns that help clients understand their per-hire screening cost.'
+  },
+  {
+    name: 'feedback', role: 'output', roleColor: '#5fba7d',
+    desc: 'Post-interview satisfaction ratings submitted voluntarily by candidates.',
+    cols: [
+      { name: 'interview_id', type: 'uuid', note: 'FK → interview' },
+      { name: 'email', type: 'text', note: 'Candidate email' },
+      { name: 'satisfaction', type: 'int', note: '1–5 rating' },
+      { name: 'feedback', type: 'text', note: 'Optional free-text comment' },
+    ],
+    usage: 'Displayed in the interview detail view so recruiters can gauge candidate experience quality. Used to monitor whether the AI agent feels natural and fair to candidates.'
+  },
+  {
+    name: 'ats_job', role: 'pipeline', roleColor: '#c97b3a',
+    desc: 'A resume-scoring job: links a job description to a set of resumes and stores the scoring results.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'interview_id', type: 'uuid', note: 'Scoped to an interview' },
+      { name: 'jd_text / jd_filename', type: 'text', note: 'The uploaded job description' },
+      { name: 'results', type: 'jsonb', note: 'Per-resume ATS scores array' },
+      { name: 'created_at', type: 'timestamptz', note: '' },
+    ],
+    usage: 'Created when a recruiter starts an ATS scoring run. The /process route writes individual scores back into results[]. The ATS Scoring dashboard reads this table to show the ranked candidate list with score breakdowns.'
+  },
+  {
+    name: 'company_finder_scan', role: 'pipeline', roleColor: '#c97b3a',
+    desc: 'A company enrichment scan job: tracks the extraction and enrichment of employers from a resume batch.',
+    cols: [
+      { name: 'id', type: 'uuid', note: 'Primary key' },
+      { name: 'name', type: 'text', note: 'Scan label' },
+      { name: 'resume_count', type: 'int', note: 'How many resumes were processed' },
+      { name: 'company_count', type: 'int', note: 'Distinct companies found' },
+      { name: 'results', type: 'jsonb', note: 'Enriched company profiles array' },
+      { name: 'created_at', type: 'timestamptz', note: '' },
+    ],
+    usage: 'One scan per resume batch upload. Results are written incrementally as companies are enriched (each enrichment may take a second due to web search). The Company Finder dashboard polls for updates and renders a pivot table when complete.'
+  },
+];
+
+const SERVICES = [
+  {
+    name: 'Supabase', icon: '🗄️', color: '#1a3a2a',
+    desc: 'PostgreSQL database for all application data. Browser client uses anon key with RLS; server uses service-role key. Built-in auth is NOT used — custom JWT handles sessions.',
+    tag: 'PostgreSQL + RLS',
+    why: 'Single source of truth with row-level security and a clean TypeScript SDK'
+  },
+  {
+    name: 'Retell AI', icon: '🎙️', color: '#2a1a0a',
+    desc: 'Runs the live AI voice interview. The server registers a call, returns an access token, and the browser SDK streams audio to/from the Retell infrastructure. The transcript arrives via webhook on completion.',
+    tag: 'Voice AI / WebRTC',
+    why: '$0.07/min, production-grade voice agent infrastructure'
+  },
+  {
+    name: 'Azure OpenAI', icon: '🤖', color: '#1a1a2a',
+    desc: 'GPT-5-mini deployed on Azure. Powers question generation, communication analysis, ATS scoring, and insights. Default model for all AI tasks. Costs $0.00025 per 1K input tokens and $0.002 per 1K output tokens.',
+    tag: 'LLM · GPT-5-mini',
+    why: 'Enterprise compliance, data residency, and Azure billing consolidation'
+  },
+  {
+    name: 'Direct OpenAI', icon: '🔍', color: '#0a1a1a',
+    desc: 'Used only for the Company Finder enrichment step which needs the Responses API web_search tool — not available on Azure. Adds live web data to extracted company names.',
+    tag: 'Responses API + web_search',
+    why: 'Azure OpenAI does not expose the Responses API with web_search tool (2025)'
+  },
+  {
+    name: 'Azure Voice Live', icon: '🗣️', color: '#1a0a2a',
+    desc: 'Alternative realtime voice provider. Uses gpt-4o-mini-realtime-preview or gpt-5-mini over a WebSocket for voice interviews. Toggle with USE_VOICE_LIVE=true in environment.',
+    tag: 'Realtime WebSocket',
+    why: 'Reduces single-vendor dependency and enables Azure volume pricing for voice'
+  },
+  {
+    name: 'Vercel Blob', icon: '📦', color: '#0a0a1a',
+    desc: 'Object storage for candidate video recordings and uploaded resume files. Videos are uploaded from the browser via an API route proxy. Cost: $0.023/GB/month stored + $0.05/GB transferred.',
+    tag: 'Object Storage',
+    why: 'Zero-config storage that integrates natively with Vercel deployments'
+  },
+  {
+    name: 'Azure Blob Storage', icon: '☁️', color: '#0a1a2a',
+    desc: 'Used specifically for interview recording archival when Voice Live mode is active. A dedicated container (interview-recordings) stores audio/video from Azure Voice Live sessions.',
+    tag: 'Azure Storage SDK',
+    why: 'Co-located with Azure Voice Live for minimal latency and unified billing'
+  },
+  {
+    name: 'Power Automate', icon: '📧', color: '#0a0a2a',
+    desc: 'Handles all outbound email notifications to candidates and recruiters. The app sends an HTTP POST to a Power Automate Flow URL; the Flow composes and sends the email. No SMTP server or transactional email provider required.',
+    tag: 'HTTP Trigger Flow',
+    why: 'Leverages existing Microsoft 365 licensing; no separate email service cost'
+  },
+  {
+    name: 'face-api.js', icon: '👤', color: '#1a0a0a',
+    desc: 'Client-side face detection and recognition using pre-trained TensorFlow.js models. Runs entirely in the candidate\'s browser — no biometric data leaves the client. Used for identity verification and multi-person detection.',
+    tag: 'TensorFlow.js (browser)',
+    why: 'Zero server cost for face matching; privacy-preserving (no server upload of biometric data)'
+  },
+];
+
+// ─── RENDER FUNCTIONS ──────────────────────────────────────────────────────
+
+function showArchDetail(id) {
+  const node = ARCH_NODES[id];
+  if (!node) return;
+  const panel = document.getElementById('arch-detail');
+  const title = document.getElementById('detail-title');
+  const badge = document.getElementById('detail-badge');
+  const left = document.getElementById('detail-left');
+  const right = document.getElementById('detail-right');
+
+  const badgeMap = { live: 'badge-live', planned: 'badge-planned', progress: 'badge-progress' };
+  const badgeLabel = { live: 'LIVE', planned: 'PLANNED', progress: 'IN PROGRESS' };
+
+  title.textContent = node.title;
+  badge.innerHTML = `<span class="badge ${badgeMap[node.badge]}">${badgeLabel[node.badge]}</span>`;
+
+  left.innerHTML = `
+    <h4>${node.left.heading}</h4>
+    <p>${node.left.body}</p>
+    <div class="file-list">${node.left.files.map(f => `<div class="file-pill">${f}</div>`).join('')}</div>
+  `;
+
+  right.innerHTML = `
+    <h4>${node.right.heading}</h4>
+    <div class="conn-grid">
+      ${node.right.items.map(c => `
+        <div class="conn-item">
+          <span class="conn-arrow">${c.arrow}</span>
+          <div><strong style="font-size:.82rem">${c.target}</strong><div class="conn-label">${c.label}</div></div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  panel.classList.add('visible');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  document.querySelectorAll('.arch-node').forEach(n => n.classList.remove('selected'));
+  const nodeEl = document.getElementById('node-' + id);
+  if (nodeEl) nodeEl.classList.add('selected');
+}
+
+// ─── STEPPER ───────────────────────────────────────────────────────────────
+let currentStep = 0;
+
+function renderSteps() {
+  const dotsEl = document.getElementById('step-dots');
+  const panelsEl = document.getElementById('step-panels');
+
+  dotsEl.innerHTML = STEPS.map((_, i) =>
+    `<div class="step-dot ${i === 0 ? 'active' : ''}" onclick="goStep(${i})"></div>`
+  ).join('');
+
+  panelsEl.innerHTML = STEPS.map((s, i) => `
+    <div class="step-panel ${i === 0 ? 'active' : ''}" id="step-${i}">
+      <div>
+        <div class="step-num">${s.num}</div>
+        <h3 class="step-title">${s.title}</h3>
+        <p class="step-desc">${s.desc}</p>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="step-tech">
+          <h4>Technical Detail</h4>
+          ${s.tech.map(t => `<div class="tech-row"><span class="key">${t.key}</span><span class="val">${t.val}</span></div>`).join('')}
+        </div>
+        <div class="step-visual">
+          <h4>Data Path</h4>
+          <div class="flow-nodes">
+            ${s.flow.map((f, fi) => `
+              ${fi > 0 ? '<div class="flow-arrow-down">↓</div>' : ''}
+              <div class="flow-node"><span>⬡</span>${f}</div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  updateStepCounter();
+}
+
+function goStep(i) {
+  document.getElementById(`step-${currentStep}`).classList.remove('active');
+  document.querySelectorAll('.step-dot')[currentStep].classList.remove('active');
+  currentStep = i;
+  document.getElementById(`step-${currentStep}`).classList.add('active');
+  document.querySelectorAll('.step-dot')[currentStep].classList.add('active');
+  updateStepCounter();
+}
+
+function changeStep(dir) {
+  const next = currentStep + dir;
+  if (next < 0 || next >= STEPS.length) return;
+  goStep(next);
+}
+
+function updateStepCounter() {
+  document.getElementById('step-counter').textContent = `Step ${currentStep + 1} of ${STEPS.length}`;
+  document.getElementById('btn-prev').disabled = currentStep === 0;
+  document.getElementById('btn-next').disabled = currentStep === STEPS.length - 1;
+}
+
+// ─── PHASES ────────────────────────────────────────────────────────────────
+function renderPhases() {
+  const list = document.getElementById('phase-list');
+  list.innerHTML = PHASES.map((p, i) => {
+    const badgeCls = p.planned ? 'badge-planned' : (p.status === 'progress' ? 'badge-progress' : 'badge-live');
+    const badgeLabel = p.planned ? 'PLANNED' : (p.status === 'progress' ? 'IN PROGRESS' : 'LIVE');
+    return `
+    <div class="phase-item" id="phase-${i}">
+      <div class="phase-header" onclick="togglePhase(${i})">
+        <div class="phase-num">${p.num}</div>
+        <div class="phase-info">
+          <div class="phase-name">${p.name}</div>
+          <div class="phase-desc">${p.desc}</div>
+        </div>
+        <span class="badge ${badgeCls}" style="flex-shrink:0">${badgeLabel}</span>
+        <span class="phase-chevron">▾</span>
+      </div>
+      <div class="phase-body">
+        <div class="phase-body-grid">
+          <div>
+            <h4 style="font-size:.7rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">What was built</h4>
+            <div class="checklist">
+              ${p.items.map(item => `<div class="check-item ${p.planned ? 'planned' : ''}">${item}</div>`).join('')}
+            </div>
+          </div>
+          <div>
+            <h4 style="font-size:.7rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">How it works</h4>
+            <p class="phase-tech-para">${p.tech}</p>
+          </div>
+        </div>
+        <div class="impact-box">
+          <strong>Why it matters</strong>
+          ${p.impact}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function togglePhase(i) {
+  const el = document.getElementById(`phase-${i}`);
+  el.classList.toggle('open');
+}
+
+// ─── DATABASE ──────────────────────────────────────────────────────────────
+function renderDB() {
+  const grid = document.getElementById('db-grid');
+  grid.innerHTML = DB_TABLES.map((t, i) => `
+    <div class="db-card" onclick="openModal(${i})">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <div class="db-card-role" style="background:${t.roleColor}"></div>
+        <div class="db-card-name">${t.name}</div>
+      </div>
+      <div class="db-card-desc">${t.desc}</div>
+      <div class="db-card-cols">${t.cols.slice(0,4).map(c => `<span>${c.name}</span>`).join('')}${t.cols.length > 4 ? `<span>+${t.cols.length-4} more</span>` : ''}</div>
+    </div>
+  `).join('');
+}
+
+function openModal(i) {
+  const t = DB_TABLES[i];
+  document.getElementById('modal-title').textContent = t.name;
+  document.getElementById('modal-purpose').textContent = t.desc;
+  document.getElementById('modal-cols').innerHTML = t.cols.map(c =>
+    `<tr><td>${c.name}</td><td>${c.type}</td><td style="color:var(--muted)">${c.note}</td></tr>`
+  ).join('');
+  document.getElementById('modal-usage').innerHTML = `<strong>How it\'s used in the app</strong>${t.usage}`;
+  document.getElementById('db-modal').classList.add('open');
+}
+
+function closeDbModal() {
+  document.getElementById('db-modal').classList.remove('open');
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('db-modal')) closeDbModal();
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDbModal(); });
+
+// ─── SERVICES ──────────────────────────────────────────────────────────────
+function renderServices() {
+  const grid = document.getElementById('services-grid');
+  grid.innerHTML = SERVICES.map(s => `
+    <div class="svc-card">
+      <div class="svc-icon" style="background:${s.color}">${s.icon}</div>
+      <div class="svc-name">${s.name}</div>
+      <div class="svc-desc">${s.desc}</div>
+      <div class="svc-tag">${s.tag}</div>
+    </div>
+  `).join('');
+}
+
+// ─── NAV HIGHLIGHT ─────────────────────────────────────────────────────────
+const sections = ['hero', 'architecture', 'howitworks', 'phases', 'database', 'services'];
+const navLinks = document.querySelectorAll('#nav ul li a');
+
+function updateNav() {
+  let current = sections[0];
+  sections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && window.scrollY >= el.offsetTop - 80) current = id;
+  });
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+}
+
+// ─── SCROLL ANIMATIONS ─────────────────────────────────────────────────────
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.08 });
+
+document.querySelectorAll('.section:not(#hero)').forEach(s => observer.observe(s));
+window.addEventListener('scroll', updateNav, { passive: true });
+
+// ─── INIT ──────────────────────────────────────────────────────────────────
+renderSteps();
+renderPhases();
+renderDB();
+renderServices();
+updateNav();
+</script>
+</body>
+</html>

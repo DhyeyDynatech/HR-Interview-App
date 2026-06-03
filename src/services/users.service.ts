@@ -555,6 +555,9 @@ export const createUser = async (
         {
           id: userId, // Explicitly provide the ID
           ...userData,
+          // Store emails lowercased so case variants are treated as the same
+          // user (matches the case-insensitive duplicate check on read).
+          email: userData.email.toLowerCase(),
           created_by: createdBy,
         },
       ])
@@ -577,7 +580,9 @@ export const getUserByEmail = async (email: string): Promise<ClientUser | null> 
     const { data, error } = await supabase
       .from('user')
       .select('*')
-      .eq('email', email)
+      // Case-insensitive match so "John@x.com" and "john@x.com" are treated
+      // as the same user (consistent with validate-user's email lookup).
+      .ilike('email', email)
       .single();
 
     if (error) {
