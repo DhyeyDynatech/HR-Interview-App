@@ -54,28 +54,32 @@ export const assigneeService = {
   // Also checks records with NULL org_id to catch legacy data
   async getAssigneeByEmail(email: string, organizationId?: string | null): Promise<InterviewAssignee | null> {
     try {
+      // Case-insensitive match so "John@x.com" and "john@x.com" are treated as
+      // the same assignee. Use .limit(1) (not .single()) so pre-existing
+      // duplicate rows don't surface as a 406/PGRST116 and silently pass the
+      // duplicate check.
       if (organizationId) {
         // First check with the provided org_id
         const { data, error } = await supabase
           .from('interview_assignee')
           .select('*')
-          .eq('email', email)
+          .ilike('email', email)
           .eq('organization_id', organizationId)
-          .single();
+          .limit(1);
 
-        if (!error && data) return data;
-        if (error && error.code !== 'PGRST116') throw error;
+        if (error) throw error;
+        if (data && data.length > 0) return data[0];
 
         // Fallback: check for records with NULL org_id
         const { data: nullData, error: nullError } = await supabase
           .from('interview_assignee')
           .select('*')
-          .eq('email', email)
+          .ilike('email', email)
           .is('organization_id', null)
-          .single();
+          .limit(1);
 
-        if (!nullError && nullData) return nullData;
-        if (nullError && nullError.code !== 'PGRST116') throw nullError;
+        if (nullError) throw nullError;
+        if (nullData && nullData.length > 0) return nullData[0];
 
         return null;
       }
@@ -84,12 +88,12 @@ export const assigneeService = {
       const { data, error } = await supabase
         .from('interview_assignee')
         .select('*')
-        .eq('email', email)
-        .single();
+        .ilike('email', email)
+        .limit(1);
 
-      if (error && error.code !== 'PGRST116') throw error;
+      if (error) throw error;
 
-      return data || null;
+      return data && data.length > 0 ? data[0] : null;
     } catch (error) {
       logger.error('Error fetching assignee by email:', error instanceof Error ? error.message : JSON.stringify(error));
       throw error;
@@ -104,6 +108,11 @@ export const assigneeService = {
       const dataToInsert: any = {
         ...assigneeData,
         organization_id: assigneeData.organization_id || null,
+        // Store emails lowercased so case variants are treated as the same
+        // assignee (matches the case-insensitive duplicate check on read).
+        ...(assigneeData.email
+          ? { email: assigneeData.email.toLowerCase() }
+          : {}),
       };
 
       // Only remove applicant_id if it's explicitly empty/null - let database auto-generate
