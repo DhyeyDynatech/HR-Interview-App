@@ -3,7 +3,9 @@
 import { Interview, Question } from "@/types/interview";
 import React, { useEffect, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
-import { Plus, SaveIcon, TrashIcon } from "lucide-react";
+import axios from "axios";
+import { Plus, SaveIcon, TrashIcon, Sparkles, Loader2 } from "lucide-react";
+import { useAuth } from "@/contexts/auth.context";
 import { useInterviewers } from "@/contexts/interviewers.context";
 import QuestionCard from "@/components/dashboard/interview/create-popup/questionCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,6 +34,7 @@ type EditInterviewProps = {
 };
 
 function EditInterview({ interview }: EditInterviewProps) {
+  const { user } = useAuth();
   const { interviewers } = useInterviewers();
   const { fetchInterviews } = useInterviews();
 
@@ -60,6 +63,7 @@ function EditInterview({ interview }: EditInterviewProps) {
   const isAnonymous = false;
 
   const [isClicked, setIsClicked] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const endOfListRef = useRef<HTMLDivElement>(null);
   const prevQuestionLengthRef = useRef(questions.length);
@@ -95,6 +99,78 @@ function EditInterview({ interview }: EditInterviewProps) {
         ...questions,
         { id: uuidv4(), question: "", follow_up_count: 1 },
       ]);
+    }
+  };
+
+  const onGenerateQuestions = async () => {
+    if (!name.trim() || !objective.trim()) {
+      toast.error(
+        "Please provide an interview name and objective before generating questions.",
+        { position: "bottom-right", duration: 3000 },
+      );
+
+      return;
+    }
+
+    setIsGenerating(true);
+
+    // Same payload and parsing as the create flow (DetailsPopup.onGenrateQuestions)
+    const data = {
+      name: name.trim(),
+      objective: objective.trim(),
+      number: Number(numQuestions),
+      context: "",
+      userId: user?.id,
+      organizationId: user?.organization_id,
+      numberOfQuestions: Number(numQuestions),
+      interviewName: name.trim(),
+      interviewId: interview?.id,
+    };
+
+    try {
+      const token =
+        typeof window !== "undefined"
+          ? localStorage.getItem("auth_token")
+          : null;
+      const generatedQuestions = (await axios.post(
+        "/api/generate-interview-questions",
+        data,
+        {
+          // Server route allows up to 60s (maxDuration). Keep the client
+          // timeout above that so the browser doesn't abort a request the
+          // server is still successfully completing (was 55s, which fired
+          // right as generation finished).
+          timeout: 120000,
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      )) as any;
+
+      const generatedQuestionsResponse = JSON.parse(
+        generatedQuestions?.data?.response,
+      );
+
+      const updatedQuestions = generatedQuestionsResponse.questions.map(
+        (question: Question) => ({
+          id: uuidv4(),
+          question: question.question.trim(),
+          follow_up_count: 1,
+        }),
+      );
+
+      setQuestions(updatedQuestions);
+      setNumQuestions(updatedQuestions.length);
+      toast.success("New questions generated. Click Save to apply.", {
+        position: "bottom-right",
+        duration: 3000,
+      });
+    } catch (error) {
+      console.error("Failed to generate questions:", error);
+      toast.error("Failed to generate questions. Please try again.", {
+        position: "bottom-right",
+        duration: 3000,
+      });
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -141,11 +217,11 @@ function EditInterview({ interview }: EditInterviewProps) {
     try {
       await InterviewService.deleteInterview(interview.id);
       router.push("/dashboard");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error deleting interview:", error);
-      toast.error("Failed to delete the interview.", {
+      toast.error(error?.message || "Failed to delete the interview.", {
         position: "bottom-right",
-        duration: 3000,
+        duration: 5000,
       });
     }
   };
@@ -194,7 +270,7 @@ function EditInterview({ interview }: EditInterviewProps) {
           </p>
           <div className="flex flex-row gap-3">
             <Button
-              disabled={isClicked}
+              disabled={isClicked || isGenerating}
               className="bg-indigo-600 hover:bg-indigo-800 mt-2"
               onClick={() => {
                 setIsClicked(true);
@@ -206,7 +282,7 @@ function EditInterview({ interview }: EditInterviewProps) {
             <AlertDialog>
               <AlertDialogTrigger>
                 <Button
-                  disabled={isClicked}
+                  disabled={isClicked || isGenerating}
                   className="bg-red-500 hover:bg-red-600 mr-5 mt-2 p-2"
                 >
                   <TrashIcon size={16} className="" />
@@ -306,7 +382,7 @@ function EditInterview({ interview }: EditInterviewProps) {
             <input
               type="number"
               step="1"
-              max="5"
+              max="10"
               min={questions.length.toString()}
               className="border-2 text-center focus:outline-none  bg-slate-100 rounded-md border-gray-500 w-14 px-2 py-0.5 ml-3"
               value={numQuestions}
@@ -316,8 +392,8 @@ function EditInterview({ interview }: EditInterviewProps) {
                   value === "" ||
                   (Number.isInteger(Number(value)) && Number(value) > 0)
                 ) {
-                  if (Number(value) > 5) {
-                    value = "5";
+                  if (Number(value) > 10) {
+                    value = "10";
                   }
                   setNumQuestions(Number(value));
                 }
@@ -329,7 +405,7 @@ function EditInterview({ interview }: EditInterviewProps) {
             <input
               type="number"
               step="1"
-              max="10"
+              max="20"
               min="1"
               className="border-2 text-center focus:outline-none bg-slate-100 rounded-md border-gray-500 w-14 px-2 py-0.5 ml-3"
               value={Number(duration)}
@@ -339,8 +415,8 @@ function EditInterview({ interview }: EditInterviewProps) {
                   value === "" ||
                   (Number.isInteger(Number(value)) && Number(value) > 0)
                 ) {
-                  if (Number(value) > 10) {
-                    value = "10";
+                  if (Number(value) > 20) {
+                    value = "20";
                   }
                   setDuration(Number(value));
                 }
@@ -348,7 +424,26 @@ function EditInterview({ interview }: EditInterviewProps) {
             />
           </div>
         </div>
-        <p className="mt-3 mb-1 ml-2 font-medium">Questions</p>
+        <div className="flex flex-row items-center justify-between w-[75%] ml-2 mt-3">
+          <p className="mb-1 font-medium">Questions</p>
+          <Button
+            disabled={isGenerating || isClicked}
+            className="bg-indigo-600 hover:bg-indigo-800"
+            onClick={onGenerateQuestions}
+          >
+            {isGenerating ? (
+              <>
+                Generating...
+                <Loader2 size={16} className="ml-2 animate-spin" />
+              </>
+            ) : (
+              <>
+                Generate Questions
+                <Sparkles size={16} className="ml-2" />
+              </>
+            )}
+          </Button>
+        </div>
         <ScrollArea className="flex ml-2 p-2 pr-4 mb-4 flex-col justify-center items-center w-[75%] max-h-[500px] bg-slate-100 rounded-md text-sm mt-3">
           {questions.map((question, index) => (
             <QuestionCard

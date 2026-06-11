@@ -139,7 +139,10 @@ function DetailsPopup({
         "/api/generate-interview-questions",
         data,
         {
-          timeout: 55000,
+          // Server route allows up to 60s (maxDuration). Keep the client
+          // timeout above that so the browser doesn't abort a request the
+          // server is still successfully completing (was 55s).
+          timeout: 120000,
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         },
       )) as any;

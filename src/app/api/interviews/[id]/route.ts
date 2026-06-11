@@ -131,6 +131,31 @@ export async function DELETE(
       }
     }
 
+    // Block deletion if the interview is still in use by data the recruiter can
+    // manage in the UI: assigned candidates, responses, or ATS scoring data.
+    // (Feedback is auto-deleted in deleteInterview — it has no UI to manage.)
+    const { assigneeCount, responseCount, atsCount } =
+      await InterviewService.getInterviewDeletionBlockers(interviewId);
+    if (assigneeCount > 0 || responseCount > 0 || atsCount > 0) {
+      const blockers: string[] = [];
+      if (assigneeCount > 0) {
+        blockers.push(`${assigneeCount} assigned candidate(s)`);
+      }
+      if (responseCount > 0) {
+        blockers.push(`${responseCount} response(s)`);
+      }
+      if (atsCount > 0) {
+        blockers.push(`${atsCount} ATS scoring job(s)`);
+      }
+
+      return NextResponse.json(
+        {
+          error: `Cannot delete "${existingInterview.name}" because it still has ${blockers.join(", ")}. Unassign the candidate(s) and remove any results/ATS data first, then delete the interview.`,
+        },
+        { status: 409 }
+      );
+    }
+
     // Store interview info before deletion for logging
     const interviewInfo = {
       id: existingInterview.id,
@@ -140,7 +165,10 @@ export async function DELETE(
       updated_at: existingInterview.updated_at,
     };
 
-    // Delete interview
+    // All foreign keys to interview (interview_assignee, response, feedback)
+    // are confirmed empty by the block check above, so the delete can proceed.
+    // api_usage / ATS tables hold interview_id as plain columns (no FK), so they
+    // need no cleanup. See DB setup/complete_database_setup.sql.
     await InterviewService.deleteInterview(interviewId);
 
     // Log interview deletion activity
