@@ -63,6 +63,7 @@ import {
   VoiceLiveClient,
   VoiceLiveUsage,
   TranscriptEntry,
+  isRecordingSupported,
 } from "@/lib/voice-live-client";
 
 // Type assertion needed because RetellWebClient extends EventEmitter but types don't expose event methods
@@ -119,6 +120,12 @@ function Call({ interview }: InterviewProps) {
   const [baseMismatchCount, setBaseMismatchCount] = useState(0);
   const [baseCameraOffCount, setBaseCameraOffCount] = useState(0);
   const [baseMultiplePersonCount, setBaseMultiplePersonCount] = useState(0);
+  // Whether this browser can record the interview audio (MediaRecorder + a
+  // supported codec). Checked once on mount. When false we block the Start
+  // button and tell the candidate to switch to Chrome/Edge — otherwise they'd
+  // complete the interview with no recording and we'd only find out afterward.
+  // Starts true so SSR/first paint doesn't flash the warning before the check.
+  const [recordingSupported, setRecordingSupported] = useState(true);
 
   // ── Voice Live (Azure) state ─────────────────────────────────────────────
   // When the register-call response says provider=voicelive, we run a
@@ -214,6 +221,14 @@ function Call({ interview }: InterviewProps) {
     enabled: isStarted && !isEnded && !!videoStream,
     checkInterval: 5000, // Check every 5 seconds
   });
+
+  // Detect, once on mount, whether this browser can record the interview
+  // audio. Runs in the browser only (MediaRecorder is undefined during SSR).
+  // When unsupported we block Start and surface a "use Chrome/Edge" notice —
+  // the same gating model as the camera check (no video stream → can't start).
+  useEffect(() => {
+    setRecordingSupported(isRecordingSupported());
+  }, []);
 
   // Monitor camera status and start countdown when camera goes off
   useEffect(() => {
@@ -608,15 +623,11 @@ function Call({ interview }: InterviewProps) {
           blob,
           `${callIdForSave}.${blob.type.includes("mp4") ? "mp4" : "webm"}`,
         );
-        const uploadRes = await axios.post(
-          "/api/upload-call-recording",
-          form,
-          {
-            headers: { "Content-Type": "multipart/form-data" },
-            // Big uploads can take a few seconds — don't let axios cut it off.
-            timeout: 60_000,
-          },
-        );
+        const uploadRes = await axios.post("/api/upload-call-recording", form, {
+          headers: { "Content-Type": "multipart/form-data" },
+          // Big uploads can take a few seconds — don't let axios cut it off.
+          timeout: 60_000,
+        });
         recordingUrl = uploadRes.data?.recording_url;
       }
     } catch (err) {
@@ -767,6 +778,19 @@ function Call({ interview }: InterviewProps) {
 
     if (!name.trim()) {
       toast.error("Please enter your name before starting the interview.");
+      setLoading(false);
+
+      return;
+    }
+
+    // 0b. Hard block on browsers that can't record. The Start button is
+    // already disabled in this case, but guard here too so the interview can
+    // never begin without recording capability (e.g. if start is triggered
+    // some other way).
+    if (!isRecordingSupported()) {
+      toast.error(
+        "Your browser can't record this interview. Please use Google Chrome or Microsoft Edge on a desktop.",
+      );
       setLoading(false);
 
       return;
@@ -941,8 +965,7 @@ function Call({ interview }: InterviewProps) {
                 finalizedAssistant[finalizedAssistant.length - 1];
               if (
                 lastFinalAssistant &&
-                finalizedAssistant.length >=
-                  MIN_ASSISTANT_TURNS_BEFORE_CLOSE &&
+                finalizedAssistant.length >= MIN_ASSISTANT_TURNS_BEFORE_CLOSE &&
                 !lastFinalAssistant.content.includes("?") &&
                 CLOSING_PATTERN.test(lastFinalAssistant.content)
               ) {
@@ -1527,6 +1550,36 @@ function Call({ interview }: InterviewProps) {
                           </ul>
                         </div>
 
+                        {/* Unsupported-browser notice — recording requires
+                            MediaRecorder, which older Safari/iOS and many
+                            in-app browsers lack. We block Start so a candidate
+                            is never interviewed without a recording. */}
+                        {!recordingSupported && (
+                          <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
+                            <div className="mt-0.5 p-1 rounded-full bg-red-100">
+                              <AlertTriangleIcon className="h-4 w-4 text-red-600" />
+                            </div>
+                            <div className="text-sm text-red-800">
+                              <p className="font-semibold">
+                                Your browser can&apos;t record this interview
+                              </p>
+                              <p className="mt-1 text-red-700">
+                                Interview audio must be recorded. Please reopen
+                                this link in{" "}
+                                <span className="font-semibold">
+                                  Google Chrome
+                                </span>{" "}
+                                or{" "}
+                                <span className="font-semibold">
+                                  Microsoft Edge
+                                </span>{" "}
+                                on a desktop or laptop to continue. (Safari,
+                                iOS, and in-app browsers are not supported.)
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Form Fields */}
                         <div className="space-y-4 mb-6">
                           <div>
@@ -1570,7 +1623,11 @@ function Call({ interview }: InterviewProps) {
                                 : "white",
                             }}
                             disabled={
-                              Loading || !isValidEmail || !name || !videoStream
+                              Loading ||
+                              !isValidEmail ||
+                              !name ||
+                              !videoStream ||
+                              !recordingSupported
                             }
                             onClick={startConversation}
                           >
@@ -1634,24 +1691,38 @@ function Call({ interview }: InterviewProps) {
                     <div className="relative flex flex-col bg-gradient-to-br from-indigo-50/30 via-white to-slate-50/50 p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-slate-100">
                       {/* Camera-off countdown — lives in the empty space at the top of the left panel */}
                       {showCameraOffAlert && cameraOffCountdown !== null && (
-                        <div className={`mb-4 rounded-xl border-2 overflow-hidden ${cameraOffCountdown <= 30 ? 'border-red-400 bg-red-50' : 'border-orange-400 bg-orange-50'}`}>
+                        <div
+                          className={`mb-4 rounded-xl border-2 overflow-hidden ${cameraOffCountdown <= 30 ? "border-red-400 bg-red-50" : "border-orange-400 bg-orange-50"}`}
+                        >
                           <div className="h-1 bg-gray-200">
                             <div
-                              className={`h-full transition-all duration-1000 ease-linear ${cameraOffCountdown <= 30 ? 'bg-red-500' : 'bg-orange-400'}`}
-                              style={{ width: `${(cameraOffCountdown / 120) * 100}%` }}
+                              className={`h-full transition-all duration-1000 ease-linear ${cameraOffCountdown <= 30 ? "bg-red-500" : "bg-orange-400"}`}
+                              style={{
+                                width: `${(cameraOffCountdown / 120) * 100}%`,
+                              }}
                             />
                           </div>
                           <div className="flex items-center gap-3 px-4 py-3">
-                            <div className={`p-1.5 rounded-full flex-shrink-0 ${cameraOffCountdown <= 30 ? 'bg-red-100' : 'bg-orange-100'}`}>
-                              <XCircleIcon className={`h-4 w-4 ${cameraOffCountdown <= 30 ? 'text-red-600' : 'text-orange-500'}`} />
+                            <div
+                              className={`p-1.5 rounded-full flex-shrink-0 ${cameraOffCountdown <= 30 ? "bg-red-100" : "bg-orange-100"}`}
+                            >
+                              <XCircleIcon
+                                className={`h-4 w-4 ${cameraOffCountdown <= 30 ? "text-red-600" : "text-orange-500"}`}
+                              />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className={`text-xs font-semibold ${cameraOffCountdown <= 30 ? 'text-red-700' : 'text-orange-700'}`}>
-                                Please turn your camera on. The interview will be auto-ended after 2 minutes.
+                              <p
+                                className={`text-xs font-semibold ${cameraOffCountdown <= 30 ? "text-red-700" : "text-orange-700"}`}
+                              >
+                                Please turn your camera on. The interview will
+                                be auto-ended after 2 minutes.
                               </p>
                             </div>
-                            <span className={`text-2xl font-black tabular-nums tracking-tight flex-shrink-0 ${cameraOffCountdown <= 30 ? 'text-red-600' : 'text-orange-500'}`}>
-                              {Math.floor(cameraOffCountdown / 60)}:{String(cameraOffCountdown % 60).padStart(2, '0')}
+                            <span
+                              className={`text-2xl font-black tabular-nums tracking-tight flex-shrink-0 ${cameraOffCountdown <= 30 ? "text-red-600" : "text-orange-500"}`}
+                            >
+                              {Math.floor(cameraOffCountdown / 60)}:
+                              {String(cameraOffCountdown % 60).padStart(2, "0")}
                             </span>
                           </div>
                         </div>

@@ -56,6 +56,37 @@ export type SessionResponse = {
 const INPUT_SAMPLE_RATE = 24000;
 const OUTPUT_SAMPLE_RATE = 24000;
 
+// The MediaRecorder containers/codecs we attempt, in priority order. Mirrors
+// the list in VoiceLiveClient.initRecording — keep the two in sync. Opus webm
+// is the target; mp4 is the Safari fallback. A browser that supports none of
+// these cannot record the interview audio.
+const RECORDING_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4;codecs=mp4a.40.2",
+  "audio/mp4",
+];
+
+/**
+ * True if the current browser can record the interview audio. Recording needs
+ * the MediaRecorder API plus at least one supported container/codec from
+ * RECORDING_MIME_CANDIDATES. Chrome/Edge/Firefox pass; older Safari/iOS and
+ * many in-app webviews fail. Callers use this to block the interview from
+ * starting (so a candidate isn't recorded-lessly interviewed) and to show a
+ * "use Chrome or Edge" notice.
+ */
+export function isRecordingSupported(): boolean {
+  if (typeof MediaRecorder === "undefined") return false;
+
+  return RECORDING_MIME_CANDIDATES.some((m) => {
+    try {
+      return MediaRecorder.isTypeSupported(m);
+    } catch {
+      return false;
+    }
+  });
+}
+
 export class VoiceLiveClient {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
@@ -315,14 +346,10 @@ export class VoiceLiveClient {
 
     // Pick the best supported container/codec. Opus webm is the target —
     // small (~32 kbps stereo) and natively playable in <audio>. Fall back
-    // to plain webm or mp4 if the browser ships without Opus.
-    const candidates = [
-      "audio/webm;codecs=opus",
-      "audio/webm",
-      "audio/mp4;codecs=mp4a.40.2",
-      "audio/mp4",
-    ];
-    const chosen = candidates.find((m) => {
+    // to plain webm or mp4 if the browser ships without Opus. The candidate
+    // list is shared with isRecordingSupported() so the pre-flight gate and
+    // the actual recorder agree on what counts as "supported".
+    const chosen = RECORDING_MIME_CANDIDATES.find((m) => {
       try {
         return MediaRecorder.isTypeSupported(m);
       } catch {
