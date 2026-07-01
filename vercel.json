@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/voice-live/sweep-stale",
-      "schedule": "0 * * * *"
+      "schedule": "0 2 * * *"
     }
   ]
 }
