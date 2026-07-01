@@ -78,7 +78,7 @@
 |-----------|---------|---------|
 | Supabase | 2.39.3 | PostgreSQL database + auth infrastructure |
 | Prisma | 5.6.0 | ORM / database client |
-| Vercel Blob | 2.0.0 | File storage (resumes, images) |
+| Azure Blob Storage | @azure/storage-blob 12.31 | File storage for all assets — recordings, resumes, images (each in its own container) |
 
 ### AI & Voice
 
@@ -89,7 +89,7 @@
 | Retell SDK (v4.19.0) | Server-side voice call management (default voice provider) |
 | Retell Client SDK (v2.0.0) | Browser-side voice call interface (default voice provider) |
 | Azure Voice Live API (Realtime) | Alternate voice provider — WebSocket-based realtime audio with server-side VAD, function calling (`end_interview`, `report_refusal`), and Azure Neural voice synthesis. Enabled via `USE_VOICE_LIVE=true`. |
-| Azure Blob Storage (`@azure/storage-blob` v12.31) | Voice Live interview audio recordings |
+| Azure Blob Storage (`@azure/storage-blob` v12.31) | All file storage — Voice Live audio recordings, resumes, and user images (separate containers) |
 
 ### File Processing & Utilities
 
@@ -152,11 +152,11 @@
 └────────┼───────────────┼──────────────┼─────────────────────────┘
          │               │              │
          ▼               ▼              ▼
-┌──────────────┐ ┌────────────────┐ ┌──────────────┐ ┌──────────────────┐
-│   Supabase   │ │  Azure OpenAI  │ │ Vercel Blob  │ │ Azure Blob       │
-│ (PostgreSQL) │ │  (gpt-5-mini)  │ │ (resumes,    │ │ Storage          │
-│              │ │                │ │  images)     │ │ (call recordings)│
-└──────────────┘ └────────┬───────┘ └──────────────┘ └──────────────────┘
+┌──────────────┐ ┌────────────────┐ ┌──────────────────────────────────┐
+│   Supabase   │ │  Azure OpenAI  │ │ Azure Blob Storage               │
+│ (PostgreSQL) │ │  (gpt-5-mini)  │ │ (recordings, resumes, images —   │
+│              │ │                │ │  separate containers)            │
+└──────────────┘ └────────┬───────┘ └──────────────────────────────────┘
                           │
                  ┌────────┴────────┐
                  │ OpenAI Direct   │
@@ -302,7 +302,8 @@ HR-Interviewer/
 │   │   ├── normalize-company-key.ts  # Company name normalisation for deduplication
 │   │   ├── processing-store.ts       # Module-level processing state (pub/sub)
 │   │   ├── openai-client.ts          # Azure OpenAI + OpenAI Direct clients
-│   │   ├── voice-live-client.ts      # Azure Voice Live WebSocket client (mic capture, PCM playback, recording, silence watchdog)
+│   │   ├── azure-blob.ts             # Shared Azure Blob client factory + container helpers (recordings, resumes, images)
+│   │   ├── voice-live-client.ts      # Azure Voice Live WebSocket client (mic capture, PCM playback, chunked recording, silence watchdog, hard time cap)
 │   │   ├── user-activity-log.ts
 │   │   └── prompts/
 │   │       ├── analytics.ts
@@ -515,7 +516,7 @@ Session Check → GET /api/auth/session
 | interview_id | text | Job FK |
 | organization_id | text | Organization FK |
 | resume_name | text | Resume filename |
-| resume_url | text | Vercel Blob URL |
+| resume_url | text | Azure Blob URL (older rows may hold legacy Vercel Blob URLs) |
 | overall_score | numeric | 0–100 ATS score |
 | category_scores | jsonb | Breakdown by category |
 | category_details | jsonb | Detailed category analysis |
@@ -716,8 +717,9 @@ Session Check → GET /api/auth/session
 | POST | `/api/refetch-call` | Refresh call info |
 | POST | `/api/save-response` | Save interview response |
 | POST | `/api/response-webhook` | Retell webhook for call completion |
-| POST | `/api/voice-live/save-call` | End-of-call sink for the Voice Live path. Owns the entire post-call sequence in a single call: persists transcript + violation counts + violations_summary to the `response` row, runs `generateInterviewAnalytics`, records voice cost into `api_usage` with `service="azure-voicelive"`, marks the assignee `INTERVIEW_COMPLETED` + locks retake, and triggers the recruiter notification email. |
-| POST | `/api/upload-call-recording` | Streams the Voice Live audio blob (mono Opus/webm, up to 200 MB, accepted only within 2 h of the response row being created) to Azure Blob Storage and returns the public URL stored on the response row. |
+| POST | `/api/voice-live/save-call` | End-of-call sink for the Voice Live path. Persists transcript + violation counts + violations_summary to the `response` row, runs `generateInterviewAnalytics`, records voice cost into `api_usage` with `service="azure-voicelive"`, marks the assignee `INTERVIEW_COMPLETED` + locks retake, and triggers the recruiter notification email. The client saves the **transcript first** (retried up to 3× with backoff) so a slow/failed recording step can never block it, then attaches the recording URL/status. Also supports an `attach_recording_only` fast-path (patches `details.recording_url`/`recording_status` without re-running analytics/email). A `pagehide`/`visibilitychange` `sendBeacon` fallback fires this save even if the candidate closes the tab mid-call. |
+| POST | `/api/upload-call-recording` | Uploads Voice Live audio to Azure Blob Storage (mono Opus/webm, ≤200 MB, within 6 h of row creation). Two modes: **append/chunk** (a `seq` form field — `seq=0` creates an append-blob, `seq>0` appends, used for the incremental in-call upload) and **full-blob** (no `seq`, end-of-call fallback). Returns the public URL stored on the response row. |
+| GET/POST | `/api/voice-live/sweep-stale` | Cron watchdog (Vercel cron, daily). Finalizes any Voice Live `response` row left `is_ended=false` past its interview's `time_duration` + 5 min grace: marks it ended+visible, runs analytics on any saved transcript, stamps `details.finalized_by="server_sweep"`, and unlocks the assignee's retake. Guards the "device died mid-call" case the browser can't. Gated by `CRON_SECRET` (Vercel auto-injects `Authorization: Bearer`); fails closed if unset. |
 
 ### AI Generation
 
@@ -1026,7 +1028,7 @@ The voice interviewer can run on either Retell or Azure Voice Live. The choice i
 | Idle / silence handling | ✅ Platform feature | ✅ Client-side silence watchdog in `voice-live-client.ts` |
 | Function calling | N/A (prompt-only ending) | `end_interview(reason)`, `report_refusal(reason)` |
 | End-of-call data path | `/api/response-webhook` (server-pushed) | `/api/voice-live/save-call` (browser-pushed) |
-| Audio recording | Retell stores recording on its platform | Browser captures via `MediaRecorder` → `/api/upload-call-recording` → Azure Blob Storage |
+| Audio recording | Retell stores recording on its platform | Browser captures via `MediaRecorder`, uploaded incrementally (~15 s append-blob chunks) to Azure Blob Storage during the call via `/api/upload-call-recording`, with an end-of-call full-blob fallback |
 | Cost record `service` field | `retell` | `azure-voicelive` |
 
 #### Voice Live client (`src/lib/voice-live-client.ts`)
@@ -1042,7 +1044,8 @@ Self-contained `VoiceLiveClient` class wraps the entire candidate-side voice pip
 | Tool calls | Accumulates `response.function_call_arguments.delta` chunks, dispatches `end_interview` / `report_refusal` on `.done`, sends matching `function_call_output` back so the Realtime API conversation history stays valid |
 | Silence watchdog | After every `response.done` re-enables the mic AND arms a 12 s timer. If no speech detected, sends a `response.create` instructing the agent to gently check in and re-ask the same question. Allows 2 such check-ins before calling `forceEnd("candidate_unresponsive")` (which still delivers a spoken goodbye). Counter resets on every transcribed candidate reply. |
 | Graceful ending | When agent calls `end_interview` or `forceEnd()` is invoked, queues a closing "goodbye" `response.create` if not already spoken, and only fires `onEndCall` after that audio finishes streaming |
-| Recording | Mixes candidate mic + agent PCM into a single mono `MediaStreamAudioDestinationNode`, encoded by `MediaRecorder` into Opus/webm (64 kbps) — uploaded via `/api/upload-call-recording` on session end |
+| Hard time cap | Three independent layers enforce the interview `time_duration`: (1) the agent's own `end_interview`; (2) a wall-clock React countdown in the call page; (3) a tab-throttle-proof `setTimeout(limit + 30 s grace)` inside the client that calls `forceEnd("time_expired")`. The server-side `sweep-stale` cron is the final backstop for a suspended/crashed tab. |
+| Recording | Mixes candidate mic + agent PCM into a single mono `MediaStreamAudioDestinationNode`, encoded by `MediaRecorder` into Opus/webm (64 kbps). Each ~15 s chunk is appended to an Azure append-blob during the call (`onRecordingChunk`), with a full-blob upload at session end as fallback. |
 
 ---
 
@@ -1116,7 +1119,7 @@ Scores resumes against job descriptions using gpt-5-mini. Supports bulk upload (
 ```
 1.  Recruiter uploads resumes (PDF/DOCX) + selects job posting
 2.  Client parses resumes browser-side (pdf-parse / mammoth)
-3.  Client uploads files to Vercel Blob (parallel, with deduplication)
+3.  Client uploads files to Azure Blob via `/api/upload-resume` (parallel, with deduplication)
 4.  POST /api/ats-scoring/jobs/queue
       → Creates ats_batch_jobs record (status=processing)
       → Creates one ats_job_tasks row per resume (status=pending)
@@ -1194,7 +1197,7 @@ Combined — POST /api/company-finder/scans/[id]/process
 
 ### Key Implementation Details
 
-- **Vercel Blob uploads:** Enabled — files uploaded in background immediately on drop; also awaited before analysis starts so resume URLs are available
+- **Resume uploads (Azure Blob):** Enabled — files uploaded in background immediately on drop; also awaited before analysis starts so resume URLs are available
 - **Stale task recovery:** Tasks stuck >3 min (CF extract) or >7 min (process) reset to pending
 - **Company cache:** `company_cache` prevents re-enriching already-known companies across scans
 - **Company name deduplication:** `normalizeCompanyKey()` strips legal suffixes (Ltd, Limited, Pvt, Inc, Corp, GmbH, LLC, SA, AG, etc.) to produce a consistent key used for upsert conflict detection — e.g. `"Infosys Limited"`, `"Infosys Ltd."`, `"Infosys Pvt Ltd"` all resolve to `"infosys"`
@@ -1204,22 +1207,42 @@ Combined — POST /api/company-finder/scans/[id]/process
 
 ## 16. File Upload & Storage
 
-### Vercel Blob Storage
+### Azure Blob Storage
+
+All uploads now go to **Azure Blob Storage** (the same account used for interview
+recordings). Vercel Blob is no longer used by any code path. The shared client
+lives in [src/lib/azure-blob.ts](src/lib/azure-blob.ts) (`getAzureContainerClient`,
+container-name helpers, `buildBlobUrl`); each asset type has its **own container**:
+
+| Asset | Container (default) | Env override | Endpoint |
+|-------|--------------------|--------------|----------|
+| Interview recordings (audio) | `interview-recordings` | `AZURE_STORAGE_CONTAINER` | `/api/upload-call-recording` |
+| Resumes | `interview-resumes` | `AZURE_STORAGE_RESUME_CONTAINER` | `/api/upload-resume` |
+| User/candidate images | `interview-images` | `AZURE_STORAGE_IMAGE_CONTAINER` | `/api/upload-user-image` |
+
+All three containers use public-blob read access (URLs resolve directly in
+`<img>` / viewers without SAS signing) and are auto-created on first upload via
+`createIfNotExists`. They all share `AZURE_STORAGE_ACCOUNT_NAME` /
+`AZURE_STORAGE_ACCOUNT_KEY`.
 
 | Upload Type | Endpoint | Purpose |
 |------------|----------|---------|
 | Resume files | `/api/upload-resume` | PDF/DOCX resume storage with email extraction |
 | Profile images | `/api/upload-user-image` | Avatar/profile photo storage |
-| CF preview files | Client-side `uploadFilesForPreview()` | Background upload for View Resume buttons |
-| CF analysis files | Client-side `uploadResumeFiles()` | Upload before analysis starts |
+| CF preview files | Client-side `uploadFilesForPreview()` | Background upload for View Resume buttons (posts to `/api/upload-resume`) |
+| CF analysis files | Client-side `uploadResumeFiles()` | Upload before analysis starts (posts to `/api/upload-resume`) |
+
+> **Migration note:** Files uploaded before the Azure migration remain on Vercel
+> Blob and keep working via their stored URLs; only new uploads go to Azure. The
+> `@vercel/blob` npm package is still installed but unused, and
+> `BLOB_READ_WRITE_TOKEN` is deprecated.
 
 ### Resume Blob Naming & Deduplication
 
-- **Blob path:** `resumes/{candidateEmail}` (e.g. `resumes/john.doe@example.com`)
-- **No file extension** in the blob key — Vercel Blob serves the correct `Content-Type` header regardless; parsers identify format via the original `file.name` and `file.type`, not the blob path
-- **Existence check:** Before uploading, `list({ prefix: fileName })` is called to check if a blob already exists at that path. If found, the existing URL is returned immediately — no re-upload occurs
+- **Blob path:** `resumes/{candidateEmail}{ext}` (e.g. `resumes/john.doe@example.com.pdf`) in the `interview-resumes` container
+- **Extension preserved** on the blob path so the resume viewer (Office Online / PDF.js) detects the file type from the URL
+- **Existence check:** Before uploading, `blockBlob.exists()` is called for that path. If found, the existing Azure URL is returned immediately — no re-upload
 - **Fallback key:** If no email can be extracted from the resume text, the sanitized original filename is used as the key
-- **Format-agnostic deduplication:** Since the key is email-only (no extension), the same candidate re-uploading as a different format (e.g. PDF → DOCX) will correctly reuse the existing blob
 
 ### Supported Resume Formats
 
@@ -1228,6 +1251,18 @@ Combined — POST /api/company-finder/scans/[id]/process
 | PDF | pdf-parse, pdfjs-dist |
 | DOCX | mammoth |
 | DOC | word-extractor |
+
+### Interview Recording Storage (incremental)
+
+Voice Live audio is **uploaded incrementally during the call**, not only at the
+end. The `MediaRecorder` emits a chunk every 15 s; each chunk is appended to a
+single **Azure append-blob** at `{interviewId}/{callId}.webm` (`seq=0` creates,
+`seq>0` appends). This means most of the recording is already persisted if the
+tab closes mid-interview — at most ~15 s of trailing audio is lost. The
+end-of-call full-blob upload remains a fallback when no chunk uploaded. The
+response row carries a `details.recording_status`
+(`uploaded` / `pending` / `empty` / `failed_to_start` / `upload_failed`) so a
+recruiter can tell why audio is missing. Upload window: 6 h from row creation.
 
 ---
 
@@ -1314,7 +1349,7 @@ cost_usd = tokenCost + searchCost
 | gpt-5 | $0.00125 | $0.010 |
 | Web search call | $0.0275 / call (medium) | — |
 | Retell voice | $0.07 / min (fallback) | — |
-| Vercel Blob | $0.023 / GB / month | — |
+| Azure Blob Storage | ~$0.018–0.021 / GB / month (hot tier) | — |
 
 ### GPT Cost Card Split
 
@@ -1372,7 +1407,7 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 ### `next.config.js`
 
 - Redirects `/` → `/dashboard`
-- Image optimization for Vercel Blob (`*.public.blob.vercel-storage.com`)
+- Image optimization allow-list: Clerk (`img.clerk.com`), Azure Blob (`*.blob.core.windows.net`), and the legacy Vercel Blob host
 - Webpack: module replacement for `node:` imports, ignores face-api.js & TensorFlow warnings
 - ESLint warnings ignored during build
 - ESM externals: `loose` mode for Supabase compatibility
@@ -1413,7 +1448,7 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 | `AZURE_OPENAI_DEPLOYMENT_GPT5_MINI` | Azure deployment name for gpt-5-mini |
 | `OPENAI_API_KEY` | OpenAI Direct API key (for Responses API + web_search) |
 | `RETELL_API_KEY` | Retell SDK API key |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob storage token |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob storage token — **deprecated**, no longer used (all storage moved to Azure) |
 | `POWER_AUTOMATE_FLOW_URL` | Microsoft Power Automate webhook URL |
 | `FIXED_RECRUITER_EMAIL` | Default recruiter notification email |
 | `USE_VOICE_LIVE` | Master switch (`true`/`false`) — when `true`, `/api/register-call` returns a Voice Live session instead of registering a Retell call |
@@ -1422,10 +1457,13 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 | `AZURE_VOICELIVE_MODEL` | Realtime model deployment (e.g. `gpt-4o-mini-realtime-preview`, `gpt-realtime-mini`, `gpt-5-mini`) |
 | `AZURE_VOICELIVE_VOICE` | Azure Neural voice name (e.g. `en-IN-Diya:DragonHDLatestNeural`) |
 | `AZURE_VOICELIVE_API_VERSION` | API version string (e.g. `2025-10-01`) |
-| `AZURE_STORAGE_ACCOUNT_NAME` | Azure Blob Storage account name (3–24 lowercase alphanumeric chars) for call recordings |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Azure Blob Storage account name (3–24 lowercase alphanumeric chars) — shared by recordings, resumes, and images |
 | `AZURE_STORAGE_ACCOUNT_KEY` | Azure Blob Storage account key |
 | `AZURE_STORAGE_CONTAINER` | Container name for recordings (default `interview-recordings`) |
+| `AZURE_STORAGE_RESUME_CONTAINER` | Container name for resumes (default `interview-resumes`) |
+| `AZURE_STORAGE_IMAGE_CONTAINER` | Container name for user/candidate images (default `interview-images`) |
 | `AZURE_STORAGE_ENDPOINT` | Optional override — defaults to `https://<account>.blob.core.windows.net` |
+| `CRON_SECRET` | Secret gating the `sweep-stale` cron endpoint. Vercel Cron auto-injects it as `Authorization: Bearer`. If unset, the sweeper refuses to run (fail closed). |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Clerk sign-up redirect URL (legacy — not actively used, auth is custom JWT) |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Clerk post-sign-in redirect (legacy) |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Clerk post-sign-up redirect (legacy) |
@@ -1443,7 +1481,7 @@ All batch-processing OpenAI calls are wrapped in a custom retry function present
 | Node Version | >= 20.0.0 |
 | Package Manager | Yarn 4.12.0 |
 | Max Function Duration | 300s (Vercel Pro) |
-| File Storage | Vercel Blob |
+| File Storage | Azure Blob Storage (recordings, resumes, images) |
 | Database | Supabase (hosted PostgreSQL) |
 
 ---

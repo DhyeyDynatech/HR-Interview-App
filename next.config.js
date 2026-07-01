@@ -19,6 +19,13 @@ const nextConfig = {
         protocol: "https",
         hostname: "rfn6tjersyav5kj8.public.blob.vercel-storage.com",
       },
+      {
+        // Azure Blob Storage — recordings, resumes, and user images now live
+        // here. Allows next/image to optimize avatars served from any Azure
+        // storage account (*.blob.core.windows.net).
+        protocol: "https",
+        hostname: "*.blob.core.windows.net",
+      },
     ],
   },
   allowedDevOrigins: [
