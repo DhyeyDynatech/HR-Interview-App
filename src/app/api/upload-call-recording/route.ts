@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BlobServiceClient, StorageSharedKeyCredential } from "@azure/storage-blob";
+import {
+  BlobServiceClient,
+  StorageSharedKeyCredential,
+} from "@azure/storage-blob";
 import { logger } from "@/lib/logger";
 import { ResponseService } from "@/services/responses.service";
 
@@ -11,9 +14,12 @@ export const dynamic = "force-dynamic";
 const MAX_BYTES = 200 * 1024 * 1024; // 200 MB
 
 // Window in which a recording upload is accepted after the response row was
-// created. Long enough for normal interviews; short enough that a leaked
-// call_id can't be exploited days later.
-const UPLOAD_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+// created. Measured from row creation (call start). A long interview plus a
+// slow end-of-call save can legitimately push the upload well past the old
+// 2-hour cap and get rejected with a 410, silently losing the audio. 6 hours
+// keeps the leaked-call_id abuse window bounded while comfortably covering any
+// realistic interview length + retry/backoff tail.
+const UPLOAD_WINDOW_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 function getAzureClient() {
   // Trim env values — leading/trailing whitespace from .env files is the
@@ -83,10 +89,7 @@ export async function POST(req: NextRequest) {
   // be recent. Anyone uploading without a valid call_id is rejected.
   const existing = await ResponseService.getResponseByCallId(callId);
   if (!existing) {
-    return NextResponse.json(
-      { error: "Unknown call_id" },
-      { status: 404 },
-    );
+    return NextResponse.json({ error: "Unknown call_id" }, { status: 404 });
   }
   const createdAt = existing.created_at
     ? new Date(existing.created_at).getTime()
@@ -143,9 +146,7 @@ export async function POST(req: NextRequest) {
     const detail = err instanceof Error ? err.message : String(err);
     // Include account name + endpoint in the log so we can tell whether the
     // problem is env-config or network/auth. Never log the account key.
-    const accountForLog = (
-      process.env.AZURE_STORAGE_ACCOUNT_NAME || ""
-    ).trim();
+    const accountForLog = (process.env.AZURE_STORAGE_ACCOUNT_NAME || "").trim();
     const endpointForLog =
       (process.env.AZURE_STORAGE_ENDPOINT || "").trim() ||
       `https://${accountForLog}.blob.core.windows.net`;

@@ -559,6 +559,17 @@ export class VoiceLiveClient {
   }
 
   /**
+   * True if audio recording was successfully set up and is active. False when
+   * the browser lacked MediaRecorder/a codec, or initRecording() threw (it
+   * nulls mediaRecorder on failure). Lets the caller distinguish "recording
+   * failed to start" from "recording captured but upload failed" so the
+   * recruiter-facing recording_status can be accurate.
+   */
+  recordingActive(): boolean {
+    return this.mediaRecorder !== null;
+  }
+
+  /**
    * True if there is assistant audio still queued or playing.
    * Used by the caller to wait for the closing thank-you message to finish
    * before closing the WebSocket on an agent-driven end.

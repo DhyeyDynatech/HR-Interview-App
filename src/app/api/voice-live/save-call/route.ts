@@ -52,20 +52,25 @@ export async function POST(req: NextRequest) {
     camera_off_total,
     multiple_person_total,
     recording_url,
+    recording_status,
     attach_recording_only,
   } = body;
 
-  // Lightweight fast-path: attach a recording URL to an already-saved row.
-  // The client now saves the transcript FIRST (so a slow/hanging recording
-  // upload can never block or lose the transcript), then uploads the audio and
-  // calls back here with { call_id, recording_url, attach_recording_only:true }
-  // to patch just details.recording_url. This deliberately skips analytics,
-  // the assignee update, and the recruiter email — those already ran on the
-  // primary save — so it's cheap and can't double-fire side effects.
+  // Lightweight fast-path: attach the recording result (url and/or status) to
+  // an already-saved row. The client saves the transcript FIRST (so a slow or
+  // hanging recording upload can never block or lose the transcript), then
+  // uploads the audio and calls back here with
+  // { call_id, recording_url?, recording_status?, attach_recording_only:true }
+  // to patch just details.recording_url / details.recording_status. This
+  // deliberately skips analytics, the assignee update, and the recruiter email
+  // — those already ran on the primary save — so it's cheap and can't
+  // double-fire side effects.
   if (attach_recording_only) {
-    if (!call_id || !recording_url) {
+    // Either a URL or a status must be present — otherwise there's nothing to
+    // patch. (A status-only update happens for empty/upload_failed cases.)
+    if (!call_id || (!recording_url && !recording_status)) {
       return NextResponse.json(
-        { error: "call_id and recording_url are required" },
+        { error: "call_id and one of recording_url/recording_status required" },
         { status: 400 },
       );
     }
@@ -78,23 +83,27 @@ export async function POST(req: NextRequest) {
     }
     const mergedDetails = {
       ...(row.details || {}),
-      recording_url,
+      ...(recording_url ? { recording_url } : {}),
+      ...(recording_status ? { recording_status } : {}),
     };
     try {
       await ResponseService.saveResponse({ details: mergedDetails }, call_id);
     } catch (err) {
       logger.error(
-        "voice-live/save-call: recording-url attach failed",
+        "voice-live/save-call: recording attach failed",
         err instanceof Error ? err.message : String(err),
       );
 
       return NextResponse.json(
-        { error: "Failed to attach recording url" },
+        { error: "Failed to attach recording result" },
         { status: 500 },
       );
     }
 
-    return NextResponse.json({ success: true, recording_url }, { status: 200 });
+    return NextResponse.json(
+      { success: true, recording_url, recording_status },
+      { status: 200 },
+    );
   }
 
   if (!call_id || !Array.isArray(transcript)) {
@@ -201,6 +210,13 @@ export async function POST(req: NextRequest) {
     source: "azure-voicelive",
     usage,
     model,
+    // Initial recording lifecycle status from the client (pending /
+    // failed_to_start). Upgraded to uploaded/empty/upload_failed by the
+    // attach_recording_only fast-path once the upload resolves. If the tab
+    // closes via the beacon before that fast-path runs, this "pending" is
+    // what the recruiter sees — meaning audio was captured but couldn't be
+    // uploaded during teardown.
+    ...(recording_status ? { recording_status } : {}),
     call_analysis: {
       call_summary: "",
       user_sentiment: "Unknown",

@@ -661,6 +661,17 @@ function Call({ interview }: InterviewProps) {
       face_mismatch_total: faceVerificationTotal || 0,
       camera_off_total: cameraStatus.totalChecks || 0,
       multiple_person_total: multiplePersonStatus.totalChecks || 0,
+      // Recording lifecycle status, so a recruiter can tell WHY audio is
+      // missing instead of guessing. Initial value set here at transcript-save
+      // time; STEP 2 patches it to uploaded/empty/upload_failed once the
+      // upload resolves. "failed_to_start" means the recorder never ran (no
+      // MediaRecorder / initRecording threw); "pending" means it ran and the
+      // upload is still to come (this is also the value left behind if the tab
+      // closes via the beacon before STEP 2 — i.e. audio exists client-side but
+      // couldn't be uploaded during unload).
+      recording_status: voiceLiveClientRef.current?.recordingActive()
+        ? "pending"
+        : "failed_to_start",
       // Fallback fields — used only if save-call has to create the response
       // row defensively (when createResponse failed silently at call start).
       interview_id: interview?.id,
@@ -752,6 +763,12 @@ function Call({ interview }: InterviewProps) {
     // Everything below is best-effort and runs only after the transcript is
     // safely persisted. If any of it fails or hangs, the interview is still
     // saved — the recruiter just doesn't get audio playback.
+    // Final recording status to stamp on the row. Starts as upload_failed and
+    // is upgraded to uploaded/empty as we learn the outcome, so an exception
+    // anywhere below leaves an accurate "upload_failed" behind.
+    let recordingStatus: "uploaded" | "empty" | "upload_failed" | null = null;
+    let recordingUrl: string | undefined;
+
     try {
       // Guard getRecordingBlob() with a timeout. onstop is normally reliable,
       // but a browser teardown race could leave the promise unresolved; if
@@ -765,7 +782,17 @@ function Call({ interview }: InterviewProps) {
         ),
       ]);
 
-      if (blob && blob.size > 0) {
+      if (!voiceLiveClientRef.current?.recordingActive()) {
+        // Recorder never started — keep the failed_to_start already saved in
+        // STEP 1; don't overwrite it here.
+        recordingStatus = null;
+      } else if (!blob || blob.size === 0) {
+        // Recorder ran but produced no audio (candidate never spoke, or a
+        // sub-timeslice call). Legitimate — mark it empty so the recruiter
+        // knows the audio wasn't lost, it simply doesn't exist.
+        recordingStatus = "empty";
+      } else {
+        recordingStatus = "upload_failed"; // pessimistic until upload confirms
         const form = new FormData();
         form.append("call_id", callIdForSave);
         form.append(
@@ -778,22 +805,38 @@ function Call({ interview }: InterviewProps) {
           // Big uploads can take a few seconds — don't let axios cut it off.
           timeout: 60_000,
         });
-        const recordingUrl = uploadRes.data?.recording_url;
-
-        // Attach the URL to the already-saved row via the lightweight
-        // fast-path (skips analytics/email — those ran on STEP 1).
+        recordingUrl = uploadRes.data?.recording_url;
         if (recordingUrl) {
-          await axios.post("/api/voice-live/save-call", {
-            call_id: callIdForSave,
-            recording_url: recordingUrl,
-            attach_recording_only: true,
-          });
+          recordingStatus = "uploaded";
+        } else {
+          // 200 but no URL in the body (case #6). Log it — the file may exist
+          // in blob storage but we have no URL to attach.
+          console.warn(
+            "Recording upload returned 200 but no recording_url in body",
+          );
         }
       }
     } catch (err) {
       // Non-fatal — the transcript + analytics are already saved. The
       // recruiter just won't have audio playback for this interview.
       console.error("Recording upload/attach failed:", err);
+      recordingStatus = "upload_failed";
+    }
+
+    // Attach the recording result (url + final status) to the already-saved
+    // row via the lightweight fast-path (skips analytics/email — those ran on
+    // STEP 1). Only fire when we actually have something to update.
+    if (recordingUrl || recordingStatus) {
+      try {
+        await axios.post("/api/voice-live/save-call", {
+          call_id: callIdForSave,
+          recording_url: recordingUrl,
+          recording_status: recordingStatus ?? undefined,
+          attach_recording_only: true,
+        });
+      } catch (err) {
+        console.error("Failed to attach recording result:", err);
+      }
     }
   };
 
