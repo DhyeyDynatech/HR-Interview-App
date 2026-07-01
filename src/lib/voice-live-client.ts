@@ -51,6 +51,14 @@ export type VoiceLiveUsage = {
 export type SessionResponse = {
   wsUrl: string;
   sessionConfig: Record<string, unknown>;
+  /** Hard wall-clock cap for the whole interview, in milliseconds. When set,
+   * the client arms a one-shot timer at start() that force-ends the interview
+   * when it elapses — independent of the browser tab's foreground state. This
+   * is the backstop for the time limit: the React countdown in the call page
+   * relies on a repeating setInterval that browsers throttle/freeze in
+   * background tabs, so it can miss the cap entirely. A single far-future
+   * setTimeout is far more reliable across tab states. */
+  maxDurationMs?: number;
 };
 
 const INPUT_SAMPLE_RATE = 24000;
@@ -159,6 +167,16 @@ export class VoiceLiveClient {
   private silenceCheckInsRemaining = VoiceLiveClient.SILENCE_MAX_CHECKINS;
   private static readonly SILENCE_TIMEOUT_MS = 12_000;
   private static readonly SILENCE_MAX_CHECKINS = 2;
+
+  // Hard wall-clock cap. Armed in start() from session.maxDurationMs and
+  // cleared in stop(). A one-shot setTimeout is used deliberately: unlike the
+  // React page's repeating 10ms setInterval (which browsers throttle to a
+  // crawl or freeze entirely in a backgrounded tab), a single far-future
+  // timeout fires reliably enough to guarantee the interview can't run
+  // unbounded. On fire it calls forceEnd("time_expired"), which delivers a
+  // spoken goodbye and then ends — the same graceful path as the agent's own
+  // end_interview tool.
+  private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private callbacks: VoiceLiveCallbacks = {}) {}
 
@@ -288,6 +306,17 @@ export class VoiceLiveClient {
         audio: base64,
       });
     };
+
+    // 5. Arm the hard wall-clock cap (if the caller passed one). This is the
+    // tab-throttle-proof backstop for the interview time limit.
+    if (session.maxDurationMs && session.maxDurationMs > 0) {
+      this.maxDurationTimer = setTimeout(() => {
+        this.maxDurationTimer = null;
+        // forceEnd is a no-op if we're already ending; otherwise it speaks a
+        // short goodbye and fires onEndCall so the page tears down + saves.
+        this.forceEnd("time_expired");
+      }, session.maxDurationMs);
+    }
   }
 
   private setMicEnabled(enabled: boolean): void {
@@ -447,6 +476,10 @@ export class VoiceLiveClient {
     this.micEnabled = true;
     this.clearSilenceTimer();
     this.silenceCheckInsRemaining = VoiceLiveClient.SILENCE_MAX_CHECKINS;
+    if (this.maxDurationTimer) {
+      clearTimeout(this.maxDurationTimer);
+      this.maxDurationTimer = null;
+    }
 
     // Stop streaming audio
     this.playbackNodes.forEach((node) => {

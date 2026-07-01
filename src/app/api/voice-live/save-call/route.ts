@@ -81,24 +81,32 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    const createdId = await ResponseService.createResponse({
-      call_id,
-      interview_id: fallbackInterviewId,
-      email: body.email || null,
-      name: body.name || null,
-    });
-    if (!createdId) {
-      logger.error(`Failed to create fallback response row for ${call_id}`);
-
-      return NextResponse.json(
-        { error: "Failed to create response row" },
-        { status: 500 },
+    // createResponse now throws on DB error. It can also fail on a duplicate
+    // call_id if two save paths (e.g. the async POST and the unload beacon)
+    // race to create the row. In either case, re-read: if the row exists now,
+    // another path won the race and we proceed normally; otherwise surface a
+    // 500 so the client retries.
+    try {
+      const createdId = await ResponseService.createResponse({
+        call_id,
+        interview_id: fallbackInterviewId,
+        email: body.email || null,
+        name: body.name || null,
+      });
+      if (!createdId) {
+        logger.error(`Failed to create fallback response row for ${call_id}`);
+      }
+    } catch (err) {
+      logger.warn(
+        `createResponse in save-call failed (possibly a concurrent create) for ${call_id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
     existing = await ResponseService.getResponseByCallId(call_id);
     if (!existing) {
       return NextResponse.json(
-        { error: "Created response row but could not read it back" },
+        { error: "Failed to create or read back response row" },
         { status: 500 },
       );
     }
@@ -180,23 +188,39 @@ export async function POST(req: NextRequest) {
   // "in progress" loader during the analytics window — same UX as Retell,
   // where the violation useEffect writes is_ended=true ahead of the webhook.
   // is_analysed stays false until analytics actually succeeds in step 5.
-  await ResponseService.saveResponse(
-    {
-      details: callDetails,
-      duration: duration_seconds || 0,
-      is_ended: true,
-      tab_switch_count: tab_switch_count ?? 0,
-      face_mismatch_count: face_mismatch_count ?? 0,
-      camera_off_count: camera_off_count ?? 0,
-      multiple_person_count: multiple_person_count ?? 0,
-      face_mismatch_total: face_mismatch_total ?? 0,
-      camera_off_total: camera_off_total ?? 0,
-      multiple_person_total: multiple_person_total ?? 0,
-      violations_summary: violationsArray,
-      candidate_status: "NO_STATUS",
-    },
-    call_id,
-  );
+  // This first write is the critical one — it flips is_ended=true (making the
+  // row visible to recruiters) and persists the transcript + violations. If it
+  // fails we MUST tell the client so it retries, instead of silently returning
+  // success while the interview stays lost. saveResponse now throws on error.
+  try {
+    await ResponseService.saveResponse(
+      {
+        details: callDetails,
+        duration: duration_seconds || 0,
+        is_ended: true,
+        tab_switch_count: tab_switch_count ?? 0,
+        face_mismatch_count: face_mismatch_count ?? 0,
+        camera_off_count: camera_off_count ?? 0,
+        multiple_person_count: multiple_person_count ?? 0,
+        face_mismatch_total: face_mismatch_total ?? 0,
+        camera_off_total: camera_off_total ?? 0,
+        multiple_person_total: multiple_person_total ?? 0,
+        violations_summary: violationsArray,
+        candidate_status: "NO_STATUS",
+      },
+      call_id,
+    );
+  } catch (err) {
+    logger.error(
+      "voice-live/save-call: primary transcript write failed",
+      err instanceof Error ? err.message : String(err),
+    );
+
+    return NextResponse.json(
+      { error: "Failed to persist interview transcript" },
+      { status: 500 },
+    );
+  }
 
   // 4. Run analytics. Pass the STRING form — generateInterviewAnalytics
   // requires `transcript: string` (line 18 of analytics.service.ts).
@@ -251,7 +275,18 @@ export async function POST(req: NextRequest) {
     };
     finalPayload.details = enrichedDetails;
   }
-  await ResponseService.saveResponse(finalPayload, call_id);
+  // Secondary write — flips is_analysed + enriches details. The transcript is
+  // already safely persisted by the first write above, so a failure here is
+  // non-fatal: the row stays visible (is_ended=true) and the dashboard's
+  // analytics-retry poll can finish the job later. Log, don't 500.
+  try {
+    await ResponseService.saveResponse(finalPayload, call_id);
+  } catch (err) {
+    logger.error(
+      "voice-live/save-call: analytics/flags write failed (transcript already saved)",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
   // 5. Track voice cost in api_usage
   if (usage && duration_seconds > 0) {

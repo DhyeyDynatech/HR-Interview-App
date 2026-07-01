@@ -2,7 +2,7 @@ import { createBrowserClient } from "@supabase/ssr";
 
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
 const createResponse = async (payload: any) => {
@@ -12,12 +12,13 @@ const createResponse = async (payload: any) => {
     .select("id");
 
   if (error) {
-    console.log(error);
+    // Surface the failure to the caller instead of returning [] silently.
+    // A swallowed insert error here is how interviews used to vanish: the
+    // browser thought the row existed, the row didn't, and nothing retried.
+    console.error("createResponse failed:", error);
 
-
-    return [];
+    throw new Error(`createResponse failed: ${error.message}`);
   }
-
 
   return data[0]?.id;
 };
@@ -28,12 +29,13 @@ const saveResponse = async (payload: any, call_id: string) => {
     .update({ ...payload })
     .eq("call_id", call_id);
   if (error) {
-    console.log(error);
+    // Throw rather than return [] — callers (esp. the Voice Live save-call
+    // route) need to know the write failed so they can report it and retry,
+    // instead of reporting success while nothing was persisted.
+    console.error("saveResponse failed:", error);
 
-
-    return [];
+    throw new Error(`saveResponse failed: ${error.message}`);
   }
-
 
   return data;
 };
@@ -48,11 +50,9 @@ const getAllResponses = async (interviewId: string) => {
       .eq("is_ended", true)
       .order("created_at", { ascending: false });
 
-
     return data || [];
   } catch (error) {
     console.log(error);
-
 
     return [];
   }
@@ -72,7 +72,6 @@ const getAllEmails = async (interviewId: string) => {
       return [];
     }
 
-
     return data || [];
   } catch (error) {
     console.error("Unexpected error fetching emails:", error);
@@ -81,9 +80,7 @@ const getAllEmails = async (interviewId: string) => {
   }
 };
 
-const getResponseCountByUserId = async (
-  userId: string,
-): Promise<number> => {
+const getResponseCountByUserId = async (userId: string): Promise<number> => {
   try {
     // Get all interviews for this user, then count their responses
     const { data: interviews, error: interviewsError } = await supabase
@@ -92,12 +89,11 @@ const getResponseCountByUserId = async (
       .eq("user_id", userId);
 
     if (interviewsError || !interviews) {
-
       return 0;
     }
 
     const interviewIds = interviews.map((i) => i.id);
-    
+
     const { count, error } = await supabase
       .from("response")
       .select("*", { count: "exact", head: true })
@@ -108,7 +104,6 @@ const getResponseCountByUserId = async (
 
       return 0;
     }
-
 
     return count || 0;
   } catch (error) {
@@ -132,7 +127,6 @@ const getResponseByCallId = async (callId: string) => {
       return null;
     }
 
-
     return data;
   } catch (error) {
     console.error("Unexpected error fetching response by call_id:", error);
@@ -146,13 +140,12 @@ const updateResponse = async (payload: any, call_id: string) => {
     .from("response")
     .update({ ...payload })
     .eq("call_id", call_id);
-  
+
   if (error) {
     console.error("Error updating response:", error);
 
     return null;
   }
-
 
   return data;
 };
@@ -162,13 +155,12 @@ const deleteResponse = async (call_id: string) => {
     .from("response")
     .delete()
     .eq("call_id", call_id);
-  
+
   if (error) {
     console.error("Error deleting response:", error);
 
     return null;
   }
-
 
   return data;
 };
@@ -202,7 +194,7 @@ export const ResponseService = {
   getResponseByCallId,
   updateResponse,
   deleteResponse,
-   updateCandidateStatusForUser,
+  updateCandidateStatusForUser,
   // Keep old method name for backward compatibility
   getResponseCountByOrganizationId: getResponseCountByUserId,
 };

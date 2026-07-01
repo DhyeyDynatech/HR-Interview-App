@@ -56,10 +56,19 @@ export async function POST(req: Request, res: Response) {
       });
 
       if (result.analytics) {
-        await ResponseService.saveResponse(
-          { analytics: result.analytics },
-          body.id,
-        );
+        // saveResponse throws on DB error now; this is a best-effort cache
+        // write of regenerated analytics, so log and still return the result.
+        try {
+          await ResponseService.saveResponse(
+            { analytics: result.analytics },
+            body.id,
+          );
+        } catch (err) {
+          logger.error(
+            "get-call: failed to cache regenerated analytics",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
         return NextResponse.json(
           {
             callResponse: existingDetails,
@@ -120,14 +129,21 @@ export async function POST(req: Request, res: Response) {
             call_successful: true,
           },
         };
-        await ResponseService.saveResponse(
-          {
-            is_analysed: true,
-            analytics: result.analytics,
-            details: enrichedDetails,
-          },
-          body.id,
-        );
+        try {
+          await ResponseService.saveResponse(
+            {
+              is_analysed: true,
+              analytics: result.analytics,
+              details: enrichedDetails,
+            },
+            body.id,
+          );
+        } catch (err) {
+          logger.error(
+            "get-call: failed to save Voice Live analytics retry",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
         return NextResponse.json(
           {
             callResponse: enrichedDetails,
@@ -272,15 +288,30 @@ export async function POST(req: Request, res: Response) {
 
   const analytics = result.analytics;
 
-  await ResponseService.saveResponse(
-    {
-      details: callResponse,
-      is_analysed: true,
-      duration: duration,
-      analytics: analytics,
-    },
-    body.id,
-  );
+  // Primary Retell persistence. saveResponse throws on DB error; return an
+  // explicit 500 so the webhook / dashboard poll retries get-call rather than
+  // us reporting success while nothing was written.
+  try {
+    await ResponseService.saveResponse(
+      {
+        details: callResponse,
+        is_analysed: true,
+        duration: duration,
+        analytics: analytics,
+      },
+      body.id,
+    );
+  } catch (err) {
+    logger.error(
+      "get-call: primary Retell response save failed",
+      err instanceof Error ? err.message : String(err),
+    );
+
+    return NextResponse.json(
+      { error: "Failed to persist call response" },
+      { status: 500 },
+    );
+  }
 
   // Track voice call cost with real duration
   if (duration > 0 && interviewId) {

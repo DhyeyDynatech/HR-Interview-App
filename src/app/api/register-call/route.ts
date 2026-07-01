@@ -109,8 +109,18 @@ export async function POST(req: NextRequest, _res: Response) {
       .map((q: string) => q.trim())
       .filter(Boolean);
 
+    // Normalize the time limit into a human phrase with an explicit unit.
+    // `data.mins` arrives as a bare value like "15" (interview.time_duration),
+    // which made the prompt read "keep the interview for 15 or short" — no
+    // unit, so the model can't reliably reason about pacing. Turn a bare
+    // number into "15 minutes"; leave already-formatted strings untouched.
+    const rawMins = data.mins ?? "10";
+    const minsPhrase = /^\s*\d+\s*$/.test(String(rawMins))
+      ? `${String(rawMins).trim()} minutes`
+      : String(rawMins);
+
     const instructions = buildVoiceLiveInterviewPrompt({
-      mins: data.mins ?? "10 minutes",
+      mins: minsPhrase,
       name: data.name || "the candidate",
       objective: data.objective || "general screening",
       questionsList,

@@ -540,7 +540,20 @@ function Call({ interview }: InterviewProps) {
     if (isCalling) {
       intervalId = setInterval(() => setTime((prev) => prev + 1), 10);
     }
-    const elapsedSeconds = Math.floor(time / 100);
+    // The `time` counter is driven by a 10ms setInterval, which browsers
+    // throttle/freeze in a backgrounded tab — so it under-counts real elapsed
+    // time. For Voice Live we also have a true call start timestamp, so take
+    // the MAX of the counter-derived seconds and the real wall-clock seconds.
+    // That way, when the tab comes back to the foreground (or any tick fires),
+    // an overrun is detected immediately instead of the counter having to
+    // "catch up". The VoiceLiveClient's own setTimeout is the final backstop
+    // for the fully-suspended-tab case.
+    const counterSeconds = Math.floor(time / 100);
+    const wallClockSeconds =
+      isVoiceLiveActiveRef.current && voiceLiveStartTimeRef.current > 0
+        ? Math.floor((Date.now() - voiceLiveStartTimeRef.current) / 1000)
+        : 0;
+    const elapsedSeconds = Math.max(counterSeconds, wallClockSeconds);
     setCurrentTimeDuration(String(elapsedSeconds));
 
     const limitSeconds = Number(interviewTimeDuration) * 60;
@@ -596,9 +609,93 @@ function Call({ interview }: InterviewProps) {
   // (response write, analytics, assignee status, recruiter email) so we do
   // NOT also run the violation/assignee useEffect on the client for these
   // calls — see the gate at the top of the second isEnded effect.
+  // Builds the save-call payload WITHOUT the recording_url. Shared by the
+  // normal async save path and the sendBeacon unload path — both need the
+  // same transcript + violation snapshot. Kept pure (no awaits) so it can run
+  // synchronously inside a pagehide/visibilitychange handler where the browser
+  // gives us no time for async work.
+  const buildSaveCallPayload = (callIdForSave: string) => {
+    const startTime = voiceLiveStartTimeRef.current;
+    const duration =
+      startTime > 0 ? Math.round((Date.now() - startTime) / 1000) : 0;
+
+    const endedDueToCameraOff =
+      cameraOffStartTime !== null && cameraOffCountdown === 0;
+    const violations: ViolationEvent[] = [...violationEventsRef.current];
+    if (endedDueToCameraOff) {
+      const lastCameraOff = [...violations]
+        .reverse()
+        .find((v) => v.type === "camera_off");
+      if (lastCameraOff) {
+        lastCameraOff.details =
+          "Interview ended automatically: Camera was turned off for more than 2 minutes";
+      } else {
+        violations.push({
+          type: "camera_off",
+          timestamp: new Date().toISOString(),
+          details:
+            "Interview ended automatically: Camera was turned off for more than 2 minutes",
+        });
+      }
+    }
+
+    return {
+      call_id: callIdForSave,
+      transcript: voiceLiveTranscriptRef.current.map((t) => ({
+        role: t.role,
+        content: t.content,
+      })),
+      duration_seconds: duration,
+      usage: voiceLiveUsageRef.current,
+      model: undefined as string | undefined, // server uses its env default
+      violations_summary: violations,
+      tab_switch_count: violations.filter((v) => v.type === "tab_switch")
+        .length,
+      face_mismatch_count: violations.filter((v) => v.type === "face_mismatch")
+        .length,
+      camera_off_count: violations.filter((v) => v.type === "camera_off")
+        .length,
+      multiple_person_count: violations.filter(
+        (v) => v.type === "multiple_person",
+      ).length,
+      face_mismatch_total: faceVerificationTotal || 0,
+      camera_off_total: cameraStatus.totalChecks || 0,
+      multiple_person_total: multiplePersonStatus.totalChecks || 0,
+      // Fallback fields — used only if save-call has to create the response
+      // row defensively (when createResponse failed silently at call start).
+      interview_id: interview?.id,
+      email,
+      name,
+    };
+  };
+
+  // Last-resort save when the tab is being torn down (close, navigate away,
+  // laptop sleep). The normal submitVoiceLiveSave path can't run to completion
+  // during unload — the browser kills pending fetch/axios calls. sendBeacon is
+  // built for exactly this: it hands the request to the browser to deliver
+  // even after the page is gone. We can't upload the recording or await a
+  // response here, but persisting the transcript + duration + violations means
+  // the interview is no longer lost and the row becomes visible to recruiters.
+  // Guarded by the same ref so it never double-saves alongside the async path.
+  const beaconVoiceLiveSave = (callIdForSave: string) => {
+    if (voiceLiveSaveSubmittedRef.current) return;
+    if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
+    try {
+      const payload = buildSaveCallPayload(callIdForSave);
+      const blob = new Blob([JSON.stringify(payload)], {
+        type: "application/json",
+      });
+      const queued = navigator.sendBeacon("/api/voice-live/save-call", blob);
+      // Only mark submitted if the browser accepted the beacon for delivery.
+      // If it didn't, leave the ref false so a later path can still retry.
+      if (queued) voiceLiveSaveSubmittedRef.current = true;
+    } catch {
+      // Best effort — nothing else we can do during unload.
+    }
+  };
+
   const submitVoiceLiveSave = async (callIdForSave: string) => {
     if (voiceLiveSaveSubmittedRef.current) return;
-    voiceLiveSaveSubmittedRef.current = true;
 
     const startTime = voiceLiveStartTimeRef.current;
     const duration =
@@ -636,67 +733,50 @@ function Call({ interview }: InterviewProps) {
       console.error("Recording upload failed:", err);
     }
 
-    // Aggregate violations the same way the Retell-side useEffect does.
-    const endedDueToCameraOff =
-      cameraOffStartTime !== null && cameraOffCountdown === 0;
-    const violations: ViolationEvent[] = [...violationEventsRef.current];
-    if (endedDueToCameraOff) {
-      const lastCameraOff = [...violations]
-        .reverse()
-        .find((v) => v.type === "camera_off");
-      if (lastCameraOff) {
-        lastCameraOff.details =
-          "Interview ended automatically: Camera was turned off for more than 2 minutes";
-      } else {
-        violations.push({
-          type: "camera_off",
-          timestamp: new Date().toISOString(),
-          details:
-            "Interview ended automatically: Camera was turned off for more than 2 minutes",
+    // Build the payload (transcript + violations) and attach the recording URL
+    // captured above. buildSaveCallPayload is shared with the beacon path.
+    const payload = {
+      ...buildSaveCallPayload(callIdForSave),
+      // Azure Blob URL for the stereo audio recording. Omitted if upload
+      // failed; save-call will simply not write a recording_url in that case.
+      recording_url: recordingUrl,
+    };
+
+    // Retry with backoff. A single transient failure (network blip, serverless
+    // cold-start, brief 5xx) used to lose the entire interview permanently,
+    // because the submitted-guard was set BEFORE the request. Now we only mark
+    // the save as submitted after the server confirms success — so any failed
+    // attempt is retried here, and the isEnded effect / beacon can still fire
+    // if this whole function is interrupted.
+    const MAX_ATTEMPTS = 3;
+    const BACKOFF_MS = [0, 1500, 4000];
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (voiceLiveSaveSubmittedRef.current) return; // saved elsewhere already
+      if (BACKOFF_MS[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+      }
+      try {
+        await axios.post("/api/voice-live/save-call", payload, {
+          timeout: 30_000,
         });
+        // Success — now it's safe to lock the guard so no other path re-saves.
+        voiceLiveSaveSubmittedRef.current = true;
+
+        return;
+      } catch (err: any) {
+        console.error(
+          `Failed to save Voice Live call (attempt ${attempt + 1}/${MAX_ATTEMPTS}):`,
+          err,
+        );
       }
     }
 
-    try {
-      await axios.post("/api/voice-live/save-call", {
-        call_id: callIdForSave,
-        transcript: voiceLiveTranscriptRef.current.map((t) => ({
-          role: t.role,
-          content: t.content,
-        })),
-        duration_seconds: duration,
-        usage: voiceLiveUsageRef.current,
-        model: undefined, // server uses its env default
-        // Violation data — server merges into the same response write.
-        violations_summary: violations,
-        tab_switch_count: violations.filter((v) => v.type === "tab_switch")
-          .length,
-        face_mismatch_count: violations.filter(
-          (v) => v.type === "face_mismatch",
-        ).length,
-        camera_off_count: violations.filter((v) => v.type === "camera_off")
-          .length,
-        multiple_person_count: violations.filter(
-          (v) => v.type === "multiple_person",
-        ).length,
-        face_mismatch_total: faceVerificationTotal || 0,
-        camera_off_total: cameraStatus.totalChecks || 0,
-        multiple_person_total: multiplePersonStatus.totalChecks || 0,
-        // Fallback fields — used only if save-call has to create the response
-        // row defensively (when createResponse failed silently at call start).
-        interview_id: interview?.id,
-        email,
-        name,
-        // Azure Blob URL for the stereo audio recording. Omitted if upload
-        // failed; save-call will simply not write a recording_url in that case.
-        recording_url: recordingUrl,
-      });
-    } catch (err: any) {
-      console.error("Failed to save Voice Live call:", err);
-      toast.error(
-        "Could not save the interview transcript. Your recruiter will need to retry analytics.",
-      );
-    }
+    // All attempts failed. Leave voiceLiveSaveSubmittedRef false so a later
+    // trigger (e.g. the pagehide beacon, or a manual page action) can still
+    // attempt the save rather than being permanently blocked.
+    toast.error(
+      "We couldn't save your interview after several attempts. Please keep this tab open and check your connection — we'll keep trying.",
+    );
   };
 
   useEffect(() => {
@@ -1017,19 +1097,45 @@ function Call({ interview }: InterviewProps) {
         // 30s+ later so the row has time to materialize regardless. Voice
         // Live's save-call fires immediately on end, so we need the row
         // already in place.
-        // If this returns empty, save-call will create the row defensively
-        // from the fallback fields we send in submitVoiceLiveSave.
-        await createResponse({
-          interview_id: interview.id,
-          call_id: newCallId,
-          email: email,
-          name: name,
-        });
+        // createResponse now throws on DB failure (it used to swallow the
+        // error). Catch it here so a failed insert doesn't abort the whole
+        // interview start — save-call will re-create the row defensively from
+        // the fallback fields (interview_id/email/name) we send in
+        // submitVoiceLiveSave / the beacon payload.
+        try {
+          await createResponse({
+            interview_id: interview.id,
+            call_id: newCallId,
+            email: email,
+            name: name,
+          });
+        } catch (err) {
+          console.error(
+            "createResponse failed at Voice Live call start (will rely on save-call re-create):",
+            err,
+          );
+        }
+
+        // Hard wall-clock cap for the whole interview. The React countdown
+        // below relies on a repeating setInterval that browsers throttle or
+        // freeze in a backgrounded tab, so it can miss the limit entirely (a
+        // candidate who tabs away has effectively no cap). We pass the limit
+        // to the VoiceLiveClient, which arms a single tab-throttle-proof
+        // setTimeout that force-ends the interview. A small grace buffer lets
+        // the agent's own end_interview tool and the visible countdown end
+        // things cleanly first; this only bites if both of those fail.
+        const limitMinutes = Number(interview?.time_duration) || 0;
+        const HARD_CAP_GRACE_MS = 30_000; // 30s past the nominal limit
+        const maxDurationMs =
+          limitMinutes > 0
+            ? limitMinutes * 60_000 + HARD_CAP_GRACE_MS
+            : undefined;
 
         try {
           await client.start({
             wsUrl: cfg.wsUrl,
             sessionConfig: cfg.sessionConfig,
+            maxDurationMs,
           });
         } catch (err) {
           console.error("Voice Live start failed:", err);
@@ -1092,12 +1198,19 @@ function Call({ interview }: InterviewProps) {
           // Non-critical — retake lock will still be set when interview ends
         }
 
-        await createResponse({
-          interview_id: interview.id,
-          call_id: newCallId,
-          email: email,
-          name: name,
-        });
+        // createResponse now throws on DB failure. Keep the Retell start
+        // non-fatal on insert failure (prior behavior) — the webhook/get-call
+        // flow tolerates a late/missing row.
+        try {
+          await createResponse({
+            interview_id: interview.id,
+            call_id: newCallId,
+            email: email,
+            name: name,
+          });
+        } catch (err) {
+          console.error("createResponse failed at Retell call start:", err);
+        }
       } else {
         toast.error(
           "We couldn't start your interview. Please try again in a moment.",
@@ -1145,6 +1258,39 @@ function Call({ interview }: InterviewProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEnded, callId]);
+
+  // Tab-close / unload safety net for Voice Live. If the candidate closes the
+  // tab, navigates away, or the device sleeps mid-interview, the normal
+  // end-of-call save never runs (it's driven by the isEnded React effect,
+  // which can't complete during teardown). Without this, the whole interview
+  // is lost and the response row stays is_ended=false — invisible to
+  // recruiters. `pagehide` fires reliably on real unloads (incl. bfcache and
+  // mobile), and `visibilitychange`→hidden is the recommended companion since
+  // some browsers only guarantee that one. Both route to sendBeacon, which the
+  // browser delivers even after the page is gone. The submitted-guard keeps
+  // this from double-saving alongside the normal path.
+  useEffect(() => {
+    if (!isVoiceLiveActiveRef.current || !callId) return;
+
+    const flush = () => {
+      if (isEnded) return; // normal path already handled (or is handling) it
+      if (voiceLiveSaveSubmittedRef.current) return;
+      beaconVoiceLiveSave(callId);
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callId, isEnded]);
 
   useEffect(() => {
     // Voice Live runs the entire end-of-call sequence (response write,
