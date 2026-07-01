@@ -52,7 +52,50 @@ export async function POST(req: NextRequest) {
     camera_off_total,
     multiple_person_total,
     recording_url,
+    attach_recording_only,
   } = body;
+
+  // Lightweight fast-path: attach a recording URL to an already-saved row.
+  // The client now saves the transcript FIRST (so a slow/hanging recording
+  // upload can never block or lose the transcript), then uploads the audio and
+  // calls back here with { call_id, recording_url, attach_recording_only:true }
+  // to patch just details.recording_url. This deliberately skips analytics,
+  // the assignee update, and the recruiter email — those already ran on the
+  // primary save — so it's cheap and can't double-fire side effects.
+  if (attach_recording_only) {
+    if (!call_id || !recording_url) {
+      return NextResponse.json(
+        { error: "call_id and recording_url are required" },
+        { status: 400 },
+      );
+    }
+    const row = await ResponseService.getResponseByCallId(call_id);
+    if (!row) {
+      return NextResponse.json(
+        { error: "Response row not found for recording attach" },
+        { status: 404 },
+      );
+    }
+    const mergedDetails = {
+      ...(row.details || {}),
+      recording_url,
+    };
+    try {
+      await ResponseService.saveResponse({ details: mergedDetails }, call_id);
+    } catch (err) {
+      logger.error(
+        "voice-live/save-call: recording-url attach failed",
+        err instanceof Error ? err.message : String(err),
+      );
+
+      return NextResponse.json(
+        { error: "Failed to attach recording url" },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ success: true, recording_url }, { status: 200 });
+  }
 
   if (!call_id || !Array.isArray(transcript)) {
     return NextResponse.json(

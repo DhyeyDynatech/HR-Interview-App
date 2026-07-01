@@ -697,21 +697,74 @@ function Call({ interview }: InterviewProps) {
   const submitVoiceLiveSave = async (callIdForSave: string) => {
     if (voiceLiveSaveSubmittedRef.current) return;
 
-    const startTime = voiceLiveStartTimeRef.current;
-    const duration =
-      startTime > 0 ? Math.round((Date.now() - startTime) / 1000) : 0;
+    // ── STEP 1: Save the transcript FIRST ────────────────────────────────
+    // The transcript is the thing we least want to lose. It used to be saved
+    // AFTER an up-to-60s recording upload, so a slow or hanging recording step
+    // could delay or (if getRecordingBlob hung) permanently block the
+    // transcript save. Now the transcript goes first, on its own, and the
+    // recording is attached in a separate STEP 2 that can fail or hang without
+    // ever touching the already-persisted transcript.
+    const payload = buildSaveCallPayload(callIdForSave);
 
-    // 1. Pull the stereo recording from the Voice Live client and upload it
-    // to Azure Blob. Must happen BEFORE we call voiceLiveClientRef.current
-    // .stop() — stop() closes the AudioContext and tears down the graph.
-    // The drainAndEnd path does call stop() right before isEnded triggers
-    // this effect; getRecordingBlob() handles the already-stopped case by
-    // flushing whatever is in chunks and returning. Worst case it returns
-    // null and we proceed without a recording — analytics + transcript
-    // still save normally.
-    let recordingUrl: string | undefined;
+    // Retry with backoff. A single transient failure (network blip, serverless
+    // cold-start, brief 5xx) used to lose the entire interview permanently,
+    // because the submitted-guard was set BEFORE the request. Now we only mark
+    // the save as submitted after the server confirms success — so any failed
+    // attempt is retried here, and the isEnded effect / beacon can still fire
+    // if this whole function is interrupted.
+    const MAX_ATTEMPTS = 3;
+    const BACKOFF_MS = [0, 1500, 4000];
+    let transcriptSaved = false;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (voiceLiveSaveSubmittedRef.current) return; // saved elsewhere already
+      if (BACKOFF_MS[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+      }
+      try {
+        await axios.post("/api/voice-live/save-call", payload, {
+          timeout: 30_000,
+        });
+        // Success — now it's safe to lock the guard so no other path re-saves.
+        voiceLiveSaveSubmittedRef.current = true;
+        transcriptSaved = true;
+        break;
+      } catch (err: any) {
+        console.error(
+          `Failed to save Voice Live call (attempt ${attempt + 1}/${MAX_ATTEMPTS}):`,
+          err,
+        );
+      }
+    }
+
+    if (!transcriptSaved) {
+      // All attempts failed. Leave voiceLiveSaveSubmittedRef false so a later
+      // trigger (e.g. the pagehide beacon) can still attempt the save rather
+      // than being permanently blocked. Do NOT proceed to the recording —
+      // there's no saved row to attach it to.
+      toast.error(
+        "We couldn't save your interview after several attempts. Please keep this tab open and check your connection — we'll keep trying.",
+      );
+
+      return;
+    }
+
+    // ── STEP 2: Upload the recording and attach it to the saved row ──────
+    // Everything below is best-effort and runs only after the transcript is
+    // safely persisted. If any of it fails or hangs, the interview is still
+    // saved — the recruiter just doesn't get audio playback.
     try {
-      const blob = await voiceLiveClientRef.current?.getRecordingBlob();
+      // Guard getRecordingBlob() with a timeout. onstop is normally reliable,
+      // but a browser teardown race could leave the promise unresolved; if
+      // that happens we must NOT hang here forever (the transcript is already
+      // saved, so we simply give up on the recording).
+      const RECORDING_BLOB_TIMEOUT_MS = 15_000;
+      const blob = await Promise.race([
+        voiceLiveClientRef.current?.getRecordingBlob() ?? Promise.resolve(null),
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), RECORDING_BLOB_TIMEOUT_MS),
+        ),
+      ]);
+
       if (blob && blob.size > 0) {
         const form = new FormData();
         form.append("call_id", callIdForSave);
@@ -725,58 +778,23 @@ function Call({ interview }: InterviewProps) {
           // Big uploads can take a few seconds — don't let axios cut it off.
           timeout: 60_000,
         });
-        recordingUrl = uploadRes.data?.recording_url;
+        const recordingUrl = uploadRes.data?.recording_url;
+
+        // Attach the URL to the already-saved row via the lightweight
+        // fast-path (skips analytics/email — those ran on STEP 1).
+        if (recordingUrl) {
+          await axios.post("/api/voice-live/save-call", {
+            call_id: callIdForSave,
+            recording_url: recordingUrl,
+            attach_recording_only: true,
+          });
+        }
       }
     } catch (err) {
-      // Non-fatal — log and continue. The recruiter gets transcript +
-      // analytics but no audio playback.
-      console.error("Recording upload failed:", err);
+      // Non-fatal — the transcript + analytics are already saved. The
+      // recruiter just won't have audio playback for this interview.
+      console.error("Recording upload/attach failed:", err);
     }
-
-    // Build the payload (transcript + violations) and attach the recording URL
-    // captured above. buildSaveCallPayload is shared with the beacon path.
-    const payload = {
-      ...buildSaveCallPayload(callIdForSave),
-      // Azure Blob URL for the stereo audio recording. Omitted if upload
-      // failed; save-call will simply not write a recording_url in that case.
-      recording_url: recordingUrl,
-    };
-
-    // Retry with backoff. A single transient failure (network blip, serverless
-    // cold-start, brief 5xx) used to lose the entire interview permanently,
-    // because the submitted-guard was set BEFORE the request. Now we only mark
-    // the save as submitted after the server confirms success — so any failed
-    // attempt is retried here, and the isEnded effect / beacon can still fire
-    // if this whole function is interrupted.
-    const MAX_ATTEMPTS = 3;
-    const BACKOFF_MS = [0, 1500, 4000];
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      if (voiceLiveSaveSubmittedRef.current) return; // saved elsewhere already
-      if (BACKOFF_MS[attempt] > 0) {
-        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
-      }
-      try {
-        await axios.post("/api/voice-live/save-call", payload, {
-          timeout: 30_000,
-        });
-        // Success — now it's safe to lock the guard so no other path re-saves.
-        voiceLiveSaveSubmittedRef.current = true;
-
-        return;
-      } catch (err: any) {
-        console.error(
-          `Failed to save Voice Live call (attempt ${attempt + 1}/${MAX_ATTEMPTS}):`,
-          err,
-        );
-      }
-    }
-
-    // All attempts failed. Leave voiceLiveSaveSubmittedRef false so a later
-    // trigger (e.g. the pagehide beacon, or a manual page action) can still
-    // attempt the save rather than being permanently blocked.
-    toast.error(
-      "We couldn't save your interview after several attempts. Please keep this tab open and check your connection — we'll keep trying.",
-    );
   };
 
   useEffect(() => {
