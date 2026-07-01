@@ -137,6 +137,17 @@ function Call({ interview }: InterviewProps) {
   const voiceLiveUsageRef = useRef<VoiceLiveUsage | null>(null);
   const voiceLiveStartTimeRef = useRef<number>(0);
   const voiceLiveSaveSubmittedRef = useRef<boolean>(false);
+  // Incremental recording upload state. As the call runs, each recorded chunk
+  // is appended to an Azure append-blob so most of the audio is already
+  // persisted if the tab dies. `chunksUploaded` counts successful appends;
+  // `chunkUploadUrl` holds the deterministic blob URL returned by the first
+  // successful append. If any chunk uploaded, STEP 2 skips the full-blob
+  // upload (the append blob is already complete) and just attaches this URL.
+  const recordingChunksUploadedRef = useRef<number>(0);
+  const recordingChunkUrlRef = useRef<string | undefined>(undefined);
+  // Serializes chunk uploads so appends reach Azure in order even if two
+  // chunks fire close together. Each chunk chains onto this promise.
+  const recordingUploadChainRef = useRef<Promise<void>>(Promise.resolve());
   // Refusal counter — the realtime model classifies each refusal via the
   // `report_refusal` tool (context-aware: distinguishes "I refuse to answer"
   // from "I don't know"). We just count those tool calls and force-end the
@@ -770,51 +781,52 @@ function Call({ interview }: InterviewProps) {
     let recordingUrl: string | undefined;
 
     try {
-      // Guard getRecordingBlob() with a timeout. onstop is normally reliable,
-      // but a browser teardown race could leave the promise unresolved; if
-      // that happens we must NOT hang here forever (the transcript is already
-      // saved, so we simply give up on the recording).
-      const RECORDING_BLOB_TIMEOUT_MS = 15_000;
-      const blob = await Promise.race([
-        voiceLiveClientRef.current?.getRecordingBlob() ?? Promise.resolve(null),
-        new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), RECORDING_BLOB_TIMEOUT_MS),
+      // Fast path: if we streamed chunks incrementally during the call, the
+      // append-blob in Azure already holds the full recording. Wait for the
+      // in-flight append chain to drain (bounded), then just attach the URL —
+      // no need to re-upload the whole thing as a block blob (which would also
+      // collide with the append blob at the same path).
+      const CHAIN_DRAIN_TIMEOUT_MS = 20_000;
+      await Promise.race([
+        recordingUploadChainRef.current,
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, CHAIN_DRAIN_TIMEOUT_MS),
         ),
       ]);
-
-      if (!voiceLiveClientRef.current?.recordingActive()) {
+      if (
+        recordingChunksUploadedRef.current > 0 &&
+        recordingChunkUrlRef.current
+      ) {
+        recordingUrl = recordingChunkUrlRef.current;
+        recordingStatus = "uploaded";
+      } else if (!voiceLiveClientRef.current?.recordingActive()) {
         // Recorder never started — keep the failed_to_start already saved in
         // STEP 1; don't overwrite it here.
         recordingStatus = null;
-      } else if (!blob || blob.size === 0) {
-        // Recorder ran but produced no audio (candidate never spoke, or a
-        // sub-timeslice call). Legitimate — mark it empty so the recruiter
-        // knows the audio wasn't lost, it simply doesn't exist.
-        recordingStatus = "empty";
       } else {
-        recordingStatus = "upload_failed"; // pessimistic until upload confirms
-        const form = new FormData();
-        form.append("call_id", callIdForSave);
-        form.append(
-          "file",
+        // No chunks made it up (all appends failed, or recorder produced
+        // nothing). Fall back to the end-of-call full-blob upload.
+        //
+        // Guard getRecordingBlob() with a timeout. onstop is normally reliable,
+        // but a browser teardown race could leave the promise unresolved; if
+        // that happens we must NOT hang here forever (the transcript is already
+        // saved, so we simply give up on the recording).
+        const RECORDING_BLOB_TIMEOUT_MS = 15_000;
+        const blob = await Promise.race([
+          voiceLiveClientRef.current?.getRecordingBlob() ??
+            Promise.resolve(null),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), RECORDING_BLOB_TIMEOUT_MS),
+          ),
+        ]);
+
+        recordingStatus = await uploadFullRecordingBlob(
+          callIdForSave,
           blob,
-          `${callIdForSave}.${blob.type.includes("mp4") ? "mp4" : "webm"}`,
+          (url) => {
+            recordingUrl = url;
+          },
         );
-        const uploadRes = await axios.post("/api/upload-call-recording", form, {
-          headers: { "Content-Type": "multipart/form-data" },
-          // Big uploads can take a few seconds — don't let axios cut it off.
-          timeout: 60_000,
-        });
-        recordingUrl = uploadRes.data?.recording_url;
-        if (recordingUrl) {
-          recordingStatus = "uploaded";
-        } else {
-          // 200 but no URL in the body (case #6). Log it — the file may exist
-          // in blob storage but we have no URL to attach.
-          console.warn(
-            "Recording upload returned 200 but no recording_url in body",
-          );
-        }
       }
     } catch (err) {
       // Non-fatal — the transcript + analytics are already saved. The
@@ -837,6 +849,56 @@ function Call({ interview }: InterviewProps) {
       } catch (err) {
         console.error("Failed to attach recording result:", err);
       }
+    }
+  };
+
+  // Fallback full-blob upload, used only when incremental chunk upload didn't
+  // produce anything. Returns the status to stamp; calls setUrl with the blob
+  // URL on success. Kept as a helper so STEP 2's control flow stays readable.
+  const uploadFullRecordingBlob = async (
+    callIdForSave: string,
+    blob: Blob | null,
+    setUrl: (url: string) => void,
+  ): Promise<"uploaded" | "empty" | "upload_failed" | null> => {
+    if (!voiceLiveClientRef.current?.recordingActive()) {
+      return null; // keep failed_to_start from STEP 1
+    }
+    if (!blob || blob.size === 0) {
+      // Recorder ran but produced no audio (candidate never spoke, or a
+      // sub-timeslice call). Legitimate — mark it empty so the recruiter knows
+      // the audio wasn't lost, it simply doesn't exist.
+      return "empty";
+    }
+    try {
+      const form = new FormData();
+      form.append("call_id", callIdForSave);
+      form.append(
+        "file",
+        blob,
+        `${callIdForSave}.${blob.type.includes("mp4") ? "mp4" : "webm"}`,
+      );
+      const uploadRes = await axios.post("/api/upload-call-recording", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+        // Big uploads can take a few seconds — don't let axios cut it off.
+        timeout: 60_000,
+      });
+      const url = uploadRes.data?.recording_url;
+      if (url) {
+        setUrl(url);
+
+        return "uploaded";
+      }
+      // 200 but no URL in the body (case #6). Log it — the file may exist in
+      // blob storage but we have no URL to attach.
+      console.warn(
+        "Recording upload returned 200 but no recording_url in body",
+      );
+
+      return "upload_failed";
+    } catch (err) {
+      console.error("Full recording upload failed:", err);
+
+      return "upload_failed";
     }
   };
 
@@ -1030,6 +1092,10 @@ function Call({ interview }: InterviewProps) {
         isVoiceLiveActiveRef.current = true;
         voiceLiveRefusalCountRef.current = 0;
         voiceLiveClosingArmedRef.current = false;
+        // Reset incremental-recording trackers for this attempt.
+        recordingChunksUploadedRef.current = 0;
+        recordingChunkUrlRef.current = undefined;
+        recordingUploadChainRef.current = Promise.resolve();
 
         // Closing-phrase regex — only the most unambiguous farewells. Phrases
         // like "take care", "all the best", "wish you well" were dropped
@@ -1131,6 +1197,43 @@ function Call({ interview }: InterviewProps) {
           },
           onUsage: (usage) => {
             voiceLiveUsageRef.current = usage;
+          },
+          onRecordingChunk: (chunk, seq) => {
+            // Incrementally append each recorded chunk to Azure while the call
+            // runs. Best-effort: a failed chunk is skipped (leaves a small gap)
+            // and never interrupts the interview. Serialized via the chain ref
+            // so appends reach Azure in seq order. On the first success we
+            // capture the deterministic blob URL so STEP 2 can attach it
+            // without re-uploading the whole recording.
+            const callIdForChunk = newCallId;
+            recordingUploadChainRef.current =
+              recordingUploadChainRef.current.then(async () => {
+                try {
+                  const form = new FormData();
+                  form.append("call_id", callIdForChunk);
+                  form.append("seq", String(seq));
+                  form.append(
+                    "file",
+                    chunk,
+                    `${callIdForChunk}.${chunk.type.includes("mp4") ? "mp4" : "webm"}`,
+                  );
+                  const res = await axios.post(
+                    "/api/upload-call-recording",
+                    form,
+                    {
+                      headers: { "Content-Type": "multipart/form-data" },
+                      timeout: 30_000,
+                    },
+                  );
+                  if (res.data?.recording_url) {
+                    recordingChunkUrlRef.current = res.data.recording_url;
+                  }
+                  recordingChunksUploadedRef.current += 1;
+                } catch (err) {
+                  // Skip-and-continue: drop this chunk, keep the call going.
+                  console.error(`Recording chunk ${seq} upload failed:`, err);
+                }
+              });
           },
           onEndCall: () => {
             // Agent invoked the `end_interview` tool. Don't end the session

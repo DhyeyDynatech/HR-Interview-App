@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   BlobServiceClient,
   StorageSharedKeyCredential,
+  AppendBlobClient,
 } from "@azure/storage-blob";
 import { logger } from "@/lib/logger";
 import { ResponseService } from "@/services/responses.service";
@@ -52,7 +53,7 @@ function getAzureClient() {
   const service = new BlobServiceClient(endpoint, credential);
   const containerClient = service.getContainerClient(container);
 
-  return { containerClient, account, container, endpoint };
+  return { containerClient, account, container, endpoint, credential };
 }
 
 export async function POST(req: NextRequest) {
@@ -65,6 +66,21 @@ export async function POST(req: NextRequest) {
 
   const callId = String(form.get("call_id") || "").trim();
   const file = form.get("file");
+  // Chunked/incremental mode: when a `seq` field is present, this is one piece
+  // of the recording being streamed during the call (append-blob). seq===0
+  // creates the blob fresh (overwriting any prior attempt for this call_id);
+  // seq>0 appends. When `seq` is absent we take the legacy path: a single
+  // full-recording block-blob upload at end-of-call.
+  const seqRaw = form.get("seq");
+  const isChunked = seqRaw !== null && seqRaw !== undefined && seqRaw !== "";
+  const seq = isChunked ? Number(seqRaw) : -1;
+
+  if (isChunked && (!Number.isInteger(seq) || seq < 0)) {
+    return NextResponse.json(
+      { error: "seq must be a non-negative integer" },
+      { status: 400 },
+    );
+  }
 
   if (!callId) {
     return NextResponse.json({ error: "call_id is required" }, { status: 400 });
@@ -113,7 +129,8 @@ export async function POST(req: NextRequest) {
   const blobPath = `${interviewId}/${callId}.${ext}`;
 
   try {
-    const { containerClient, account, container } = getAzureClient();
+    const { containerClient, account, container, credential } =
+      getAzureClient();
     // Create container on first use. Public read so the URL slots directly
     // into the existing <audio src> player without a signing round-trip.
     // Flip to "private" + SAS-signing later if leak risk becomes a concern.
@@ -121,12 +138,52 @@ export async function POST(req: NextRequest) {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    const url = `https://${account}.blob.core.windows.net/${container}/${blobPath}`;
+
+    if (isChunked) {
+      // ── Incremental append-blob path ──────────────────────────────────
+      // seq===0 creates (or recreates) the append blob, so a retried attempt
+      // for the same call_id starts clean. seq>0 appends to it. webm/opus
+      // chunks concatenate into a valid playable file because the first chunk
+      // carries the stream header. A dropped chunk (best-effort client) leaves
+      // a small gap but doesn't corrupt the file.
+      const appendClient = new AppendBlobClient(
+        `${containerClient.url}/${blobPath}`,
+        credential,
+      );
+      if (seq === 0) {
+        await appendClient.createIfNotExists({
+          blobHTTPHeaders: { blobContentType: contentType },
+        });
+        // Guard against a stale blob from a prior attempt: if it already had
+        // data, clear it by recreating.
+        const props = await appendClient.getProperties().catch(() => null);
+        if (props && (props.contentLength || 0) > 0) {
+          await appendClient.create({
+            blobHTTPHeaders: { blobContentType: contentType },
+          });
+        }
+      }
+      await appendClient.appendBlock(buffer, buffer.length);
+
+      logger.info("Recording chunk appended", {
+        call_id: callId,
+        seq,
+        size: file.size,
+        path: blobPath,
+      });
+
+      return NextResponse.json(
+        { success: true, recording_url: url, seq, bytes: file.size },
+        { status: 200 },
+      );
+    }
+
+    // ── Legacy full-blob path (end-of-call fallback) ────────────────────
     const blockBlob = containerClient.getBlockBlobClient(blobPath);
     await blockBlob.uploadData(buffer, {
       blobHTTPHeaders: { blobContentType: contentType },
     });
-
-    const url = `https://${account}.blob.core.windows.net/${container}/${blobPath}`;
 
     logger.info("Recording uploaded to Azure Blob", {
       call_id: callId,

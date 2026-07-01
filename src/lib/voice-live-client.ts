@@ -35,6 +35,14 @@ export type VoiceLiveCallbacks = {
   /** Fired when the agent invokes the `report_refusal` tool. The caller is
    * responsible for counting these and deciding when to end the interview. */
   onRefusalReported?: (reason: string) => void;
+  /** Fired for each recorded audio chunk as it becomes available during the
+   * call (roughly every RECORDING_TIMESLICE_MS). `seq` is a 0-based, strictly
+   * increasing index the caller uses to order chunks server-side. The caller
+   * uploads these incrementally (append-blob) so most of the recording is
+   * already persisted if the tab closes mid-interview — the end-of-call
+   * full-blob upload is only a fallback. Best-effort: the caller may drop a
+   * chunk on failure without affecting the call. */
+  onRecordingChunk?: (chunk: Blob, seq: number) => void;
   /** Optional path to a session-issuing API route. If omitted, callers must
    * pass a preloadedSession to start(). */
   sessionUrl?: string;
@@ -146,6 +154,13 @@ export class VoiceLiveClient {
   private mediaRecorder: MediaRecorder | null = null;
   private recordingMime = "audio/webm;codecs=opus";
   private recordingChunks: Blob[] = [];
+  // 0-based sequence number for chunks handed to onRecordingChunk. Lets the
+  // caller/server order appended chunks deterministically. Reset in start().
+  private recordingChunkSeq = 0;
+  // How often the MediaRecorder emits a chunk. Also the incremental-upload
+  // cadence: on a tab-close/crash the caller has uploaded everything up to the
+  // last emitted chunk, so at most this much trailing audio is lost.
+  private static readonly RECORDING_TIMESLICE_MS = 15_000;
   // Resolved when the MediaRecorder fully stops and the last ondataavailable
   // has fired. Promise is created in start() and consumed by getRecordingBlob.
   private recordingDonePromise: Promise<Blob | null> | null = null;
@@ -414,7 +429,20 @@ export class VoiceLiveClient {
         this.recordingDoneResolve = resolve;
       });
       this.mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) this.recordingChunks.push(e.data);
+        if (!e.data || e.data.size === 0) return;
+        // Buffer for the end-of-call full-blob fallback (getRecordingBlob).
+        this.recordingChunks.push(e.data);
+        // Also hand the chunk to the caller for incremental append-upload, so
+        // most of the recording is already persisted if the tab dies. This is
+        // additive: the same bytes also live in recordingChunks for the
+        // fallback path. webm/opus chunks concatenate into a valid playable
+        // file (first chunk carries the header), which is why appending works.
+        try {
+          this.callbacks.onRecordingChunk?.(e.data, this.recordingChunkSeq);
+        } catch {
+          /* caller-side upload error must never break recording */
+        }
+        this.recordingChunkSeq += 1;
       };
       this.mediaRecorder.onstop = () => {
         const blob = this.recordingChunks.length
@@ -424,11 +452,10 @@ export class VoiceLiveClient {
         this.recordingDoneResolve?.(blob);
         this.recordingDoneResolve = null;
       };
-      // Emit chunks every 5 s as a partial safety net — if the page crashes
-      // mid-call we still keep what's been flushed (though we can't upload
-      // it without the page running). MediaRecorder's onstop assembles the
-      // full blob from all received chunks.
-      this.mediaRecorder.start(5000);
+      // Emit a chunk every RECORDING_TIMESLICE_MS. This drives both the
+      // partial-safety buffer and the incremental append-upload cadence.
+      this.recordingChunkSeq = 0;
+      this.mediaRecorder.start(VoiceLiveClient.RECORDING_TIMESLICE_MS);
     } catch (err) {
       // Recording setup failed — null everything so the rest of the client
       // works as before. We don't fail the call for a missing recording.
