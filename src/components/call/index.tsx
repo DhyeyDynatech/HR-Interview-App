@@ -672,17 +672,21 @@ function Call({ interview }: InterviewProps) {
       face_mismatch_total: faceVerificationTotal || 0,
       camera_off_total: cameraStatus.totalChecks || 0,
       multiple_person_total: multiplePersonStatus.totalChecks || 0,
-      // Recording lifecycle status, so a recruiter can tell WHY audio is
-      // missing instead of guessing. Initial value set here at transcript-save
-      // time; STEP 2 patches it to uploaded/empty/upload_failed once the
-      // upload resolves. "failed_to_start" means the recorder never ran (no
-      // MediaRecorder / initRecording threw); "pending" means it ran and the
-      // upload is still to come (this is also the value left behind if the tab
-      // closes via the beacon before STEP 2 — i.e. audio exists client-side but
-      // couldn't be uploaded during unload).
-      recording_status: voiceLiveClientRef.current?.recordingActive()
-        ? "pending"
-        : "failed_to_start",
+      // Recording url + status. Because chunks are uploaded incrementally
+      // DURING the call, by the time we build this end-of-call payload the
+      // append-blob URL is usually already known — so we attach it right here
+      // on the PRIMARY save (and the beacon), instead of relying on a separate
+      // STEP 2 POST that can be skipped if the tab closes after the primary
+      // save locks the submitted-guard. That skip is exactly what left rows
+      // stuck at "pending" with a recording sitting in Azure but no url on the
+      // row. STEP 2 still runs to cover the rare case where no chunk had
+      // uploaded yet at this moment (it does a fallback full-blob upload).
+      recording_url: recordingChunkUrlRef.current,
+      recording_status: !voiceLiveClientRef.current?.recordingActive()
+        ? "failed_to_start"
+        : recordingChunkUrlRef.current
+          ? "uploaded"
+          : "pending",
       // Fallback fields — used only if save-call has to create the response
       // row defensively (when createResponse failed silently at call start).
       interview_id: interview?.id,
