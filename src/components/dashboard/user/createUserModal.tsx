@@ -1,34 +1,51 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Textarea } from '@/components/ui/textarea';
-import { InterviewAssignee, CreateAssigneeRequest, UpdateAssigneeRequest, ReviewStatus } from '@/types/user';
-import { useAssignees } from '@/contexts/users.context';
-import { useInterviews } from '@/contexts/interviews.context';
-import { useAuth } from '@/contexts/auth.context';
-import { useToast } from '@/components/ui/use-toast';
-import { Interview } from '@/types/interview';
-import { ResumeViewer } from './ResumeViewer';
-import { FileText, Eye, X, Search, Check, ChevronDown } from 'lucide-react';
-import * as PopoverPrimitive from '@radix-ui/react-popover';
+import React, { useState, useEffect, useRef } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  InterviewAssignee,
+  CreateAssigneeRequest,
+  UpdateAssigneeRequest,
+  ReviewStatus,
+} from "@/types/user";
+import { useAssignees } from "@/contexts/users.context";
+import { useInterviews } from "@/contexts/interviews.context";
+import { useAuth } from "@/contexts/auth.context";
+import { useToast } from "@/components/ui/use-toast";
+import { Interview } from "@/types/interview";
+import { ResumeViewer } from "./ResumeViewer";
+import { FileText, Eye, X, Search, Check, ChevronDown } from "lucide-react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 
 interface CreateAssigneeModalProps {
   isOpen: boolean;
   onClose: () => void;
   assignee?: InterviewAssignee | null;
-  mode: 'create' | 'edit';
+  mode: "create" | "edit";
 }
 
 export function CreateAssigneeModal({
   isOpen,
   onClose,
   assignee,
-  mode
+  mode,
 }: CreateAssigneeModalProps) {
   const [userImage, setUserImage] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
@@ -40,41 +57,40 @@ export function CreateAssigneeModal({
   const { user } = useAuth();
   const { toast } = useToast();
   const [formError, setFormError] = useState<string | null>(null);
-  
+
   const [formData, setFormData] = useState<CreateAssigneeRequest>({
-    first_name: '',
-    last_name: '',
-    email: '',
-    phone: '',
-    avatar_url: '',
-    resume_url: '',
-    interview_id: '',
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    avatar_url: "",
+    resume_url: "",
+    interview_id: "",
     organization_id: null,
-    status: 'active',
-    notes: '',
+    status: "active",
+    notes: "",
     tag: null,
     applicant_id: null,
-    review_status: null
+    review_status: null,
   });
-  
+
   useEffect(() => {
-    
-    if (assignee && mode === 'edit') {
-      const avatarUrl = assignee.avatar_url || '';
+    if (assignee && mode === "edit") {
+      const avatarUrl = assignee.avatar_url || "";
       setFormData({
-        first_name: assignee.first_name || '',
-        last_name: assignee.last_name || '',
-        email: assignee.email || '',
-        phone: assignee.phone || '',
+        first_name: assignee.first_name || "",
+        last_name: assignee.last_name || "",
+        email: assignee.email || "",
+        phone: assignee.phone || "",
         avatar_url: avatarUrl,
-        resume_url: assignee.resume_url || '',
-        interview_id: assignee.interview_id || '',
+        resume_url: assignee.resume_url || "",
+        interview_id: assignee.interview_id || "",
         organization_id: assignee.organization_id || null,
-        status: assignee.status || 'active',
-        notes: assignee.notes || '',
+        status: assignee.status || "active",
+        notes: assignee.notes || "",
         tag: assignee.tag || null,
         applicant_id: assignee.applicant_id || null,
-        review_status: assignee.review_status || null
+        review_status: assignee.review_status || null,
       });
       // Don't show existing images to prevent 404 errors
       setShowExistingImage(false);
@@ -84,21 +100,21 @@ export function CreateAssigneeModal({
         URL.revokeObjectURL(imagePreviewUrl);
         setImagePreviewUrl(null);
       }
-    } else if (mode === 'create') {
+    } else if (mode === "create") {
       setFormData({
-        first_name: '',
-        last_name: '',
-        email: '',
-        phone: '',
-        avatar_url: '',
-        resume_url: '',
-        interview_id: '',
+        first_name: "",
+        last_name: "",
+        email: "",
+        phone: "",
+        avatar_url: "",
+        resume_url: "",
+        interview_id: "",
         organization_id: null,
-        status: 'active',
-        notes: '',
+        status: "active",
+        notes: "",
         tag: null,
         applicant_id: null,
-        review_status: null
+        review_status: null,
       });
       setShowExistingImage(false);
       setUserImage(null);
@@ -110,250 +126,292 @@ export function CreateAssigneeModal({
     }
   }, [assignee, mode]);
 
-
   const [isLoading, setIsLoading] = useState(false);
   const [interviewOpen, setInterviewOpen] = useState(false);
-  const [interviewSearch, setInterviewSearch] = useState('');
+  const [interviewSearch, setInterviewSearch] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setFormError(null); // Clear any previous error
 
-    console.log('Form submitted, userImage:', userImage ? `${userImage.name} (${userImage.size} bytes)` : 'null');
+    console.log(
+      "Form submitted, userImage:",
+      userImage ? `${userImage.name} (${userImage.size} bytes)` : "null",
+    );
 
     try {
-    // Create a copy of the form data to modify
-    const updatedFormData = { ...formData };
+      // Create a copy of the form data to modify
+      const updatedFormData = { ...formData };
 
-    // If userImage is present, upload it first
-    if (userImage) {
-      console.log('Uploading image:', userImage.name, userImage.size, 'bytes');
-      const imageFormData = new FormData();
-      imageFormData.append("userImage", userImage);
-      // Include organization context for cost tracking
-      const imgOrgId = user?.organization_id;
-      if (imgOrgId) {
-        imageFormData.append("organizationId", imgOrgId);
-      }
-      if (user?.id) {
-        imageFormData.append("userId", user.id);
-      }
+      // If userImage is present, upload it first
+      if (userImage) {
+        console.log(
+          "Uploading image:",
+          userImage.name,
+          userImage.size,
+          "bytes",
+        );
+        const imageFormData = new FormData();
+        imageFormData.append("userImage", userImage);
+        // Include organization context for cost tracking
+        const imgOrgId = user?.organization_id;
+        if (imgOrgId) {
+          imageFormData.append("organizationId", imgOrgId);
+        }
+        if (user?.id) {
+          imageFormData.append("userId", user.id);
+        }
 
-      const uploadRes = await fetch("/api/upload-user-image", {
-        method: "POST",
-        body: imageFormData,
-      });
+        const imgToken = localStorage.getItem("auth_token");
+        const uploadRes = await fetch("/api/upload-user-image", {
+          method: "POST",
+          headers: imgToken
+            ? { Authorization: `Bearer ${imgToken}` }
+            : undefined,
+          body: imageFormData,
+        });
 
-      if (!uploadRes.ok) {
-        const errorData = await uploadRes.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('Image upload failed:', errorData);
-        throw new Error(`Image upload failed: ${errorData.error || 'Unknown error'}`);
-      }
-
-      const { imageUrl } = await uploadRes.json();
-      console.log('Image uploaded successfully:', imageUrl);
-      // Update the avatar_url in the form data
-      updatedFormData.avatar_url = imageUrl;
-    }
-
-    // If resumeFile is present, upload it
-    if (resumeFile) {
-      console.log('Uploading resume:', resumeFile.name, resumeFile.size, 'bytes');
-      const resumeFormData = new FormData();
-      resumeFormData.append("resume", resumeFile);
-      // Include organization context for cost tracking and dedup
-      const orgId = user?.organization_id;
-      if (orgId) {
-        resumeFormData.append("organizationId", orgId);
-      }
-      if (user?.id) {
-        resumeFormData.append("userId", user.id);
-      }
-
-      const uploadRes = await fetch("/api/upload-resume", {
-        method: "POST",
-        body: resumeFormData,
-      });
-
-      if (!uploadRes.ok) {
-        const errorData = await uploadRes.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('Resume upload failed:', errorData);
-
-        // Duplicate candidate detected via email match
-        if (uploadRes.status === 409 && errorData.isDuplicate) {
-          const existingName = errorData.existingCandidate?.name
-            ? ` (${errorData.existingCandidate.name})`
-            : '';
+        if (!uploadRes.ok) {
+          const errorData = await uploadRes
+            .json()
+            .catch(() => ({ error: "Unknown error" }));
+          console.error("Image upload failed:", errorData);
           throw new Error(
-            `duplicate_resume:A candidate with email "${errorData.duplicateEmail}" already exists${existingName}. Please check for duplicates.`
+            `Image upload failed: ${errorData.error || "Unknown error"}`,
           );
         }
 
-        throw new Error(`Resume upload failed: ${errorData.error || 'Unknown error'}`);
+        const { imageUrl } = await uploadRes.json();
+        console.log("Image uploaded successfully:", imageUrl);
+        // Update the avatar_url in the form data
+        updatedFormData.avatar_url = imageUrl;
       }
 
-      const { resumeUrl } = await uploadRes.json();
-      console.log('Resume uploaded successfully:', resumeUrl);
-      // Update the resume_url in the form data
-      updatedFormData.resume_url = resumeUrl;
-    }
+      // If resumeFile is present, upload it
+      if (resumeFile) {
+        console.log(
+          "Uploading resume:",
+          resumeFile.name,
+          resumeFile.size,
+          "bytes",
+        );
+        const resumeFormData = new FormData();
+        resumeFormData.append("resume", resumeFile);
+        // Include organization context for cost tracking and dedup
+        const orgId = user?.organization_id;
+        if (orgId) {
+          resumeFormData.append("organizationId", orgId);
+        }
+        if (user?.id) {
+          resumeFormData.append("userId", user.id);
+        }
 
-    if (mode === 'create') {
-      // Convert empty interview_id to null for database constraint
-      const createData = {
-        ...updatedFormData,
-        interview_id: updatedFormData.interview_id || null,
-        organization_id: updatedFormData.organization_id || null,
-      };
-      await addAssignee(createData);
-      // Refresh the list after creating
-      await refreshAssignees();
-    } else if (assignee) {
-      const updateData: UpdateAssigneeRequest = {
-        first_name: updatedFormData.first_name,
-        last_name: updatedFormData.last_name,
-        email: updatedFormData.email,
-        phone: updatedFormData.phone,
-        // Convert empty string to null for database constraint
-        interview_id: updatedFormData.interview_id || null,
-        avatar_url: updatedFormData.avatar_url,
-        resume_url: updatedFormData.resume_url,
-        status: updatedFormData.status,
-        notes: updatedFormData.notes,
-        tag: updatedFormData.tag || null,
-        applicant_id: updatedFormData.applicant_id || null,
-        review_status: updatedFormData.review_status || null
-      };
-      await updateAssignee(assignee.id, updateData);
-      // Refresh the list after updating
-      await refreshAssignees();
-    }
+        const resumeToken = localStorage.getItem("auth_token");
+        const uploadRes = await fetch("/api/upload-resume", {
+          method: "POST",
+          headers: resumeToken
+            ? { Authorization: `Bearer ${resumeToken}` }
+            : undefined,
+          body: resumeFormData,
+        });
 
-    // Blur any focused elements before closing
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-    
-    onClose();
-    setFormData({
-      first_name: '',
-      last_name: '',
-      email: '',
-      phone: '',
-      interview_id: '',
-      avatar_url: '',
-      resume_url: '',
-      organization_id: null,
-      status: 'active',
-      notes: '',
-      tag: null,
-      applicant_id: null,
-      review_status: null
-    });
-    setUserImage(null); // Reset the image state
-    setResumeFile(null); // Reset the resume state
-    // Cleanup preview URL
-    if (imagePreviewUrl) {
-      URL.revokeObjectURL(imagePreviewUrl);
-      setImagePreviewUrl(null);
-    }
-  } catch (error) {
-    console.error('Error saving assignee:', error);
+        if (!uploadRes.ok) {
+          const errorData = await uploadRes
+            .json()
+            .catch(() => ({ error: "Unknown error" }));
+          console.error("Resume upload failed:", errorData);
 
-    // Parse the error message and show user-friendly feedback
-    const errorMessage = error instanceof Error ? error.message : 'Failed to save assignee';
+          // Duplicate candidate detected via email match
+          if (uploadRes.status === 409 && errorData.isDuplicate) {
+            const existingName = errorData.existingCandidate?.name
+              ? ` (${errorData.existingCandidate.name})`
+              : "";
+            throw new Error(
+              `duplicate_resume:A candidate with email "${errorData.duplicateEmail}" already exists${existingName}. Please check for duplicates.`,
+            );
+          }
 
-    // Duplicate resume detected (same candidate email found in the uploaded resume)
-    if (errorMessage.startsWith('duplicate_resume:')) {
-      const message = errorMessage.replace('duplicate_resume:', '');
-      setFormError(message);
-      toast({
-        title: 'Duplicate Candidate',
-        description: message,
-        variant: 'destructive',
+          throw new Error(
+            `Resume upload failed: ${errorData.error || "Unknown error"}`,
+          );
+        }
+
+        const { resumeUrl } = await uploadRes.json();
+        console.log("Resume uploaded successfully:", resumeUrl);
+        // Update the resume_url in the form data
+        updatedFormData.resume_url = resumeUrl;
+      }
+
+      if (mode === "create") {
+        // Convert empty interview_id to null for database constraint
+        const createData = {
+          ...updatedFormData,
+          interview_id: updatedFormData.interview_id || null,
+          organization_id: updatedFormData.organization_id || null,
+        };
+        await addAssignee(createData);
+        // Refresh the list after creating
+        await refreshAssignees();
+      } else if (assignee) {
+        const updateData: UpdateAssigneeRequest = {
+          first_name: updatedFormData.first_name,
+          last_name: updatedFormData.last_name,
+          email: updatedFormData.email,
+          phone: updatedFormData.phone,
+          // Convert empty string to null for database constraint
+          interview_id: updatedFormData.interview_id || null,
+          avatar_url: updatedFormData.avatar_url,
+          resume_url: updatedFormData.resume_url,
+          status: updatedFormData.status,
+          notes: updatedFormData.notes,
+          tag: updatedFormData.tag || null,
+          applicant_id: updatedFormData.applicant_id || null,
+          review_status: updatedFormData.review_status || null,
+        };
+        await updateAssignee(assignee.id, updateData);
+        // Refresh the list after updating
+        await refreshAssignees();
+      }
+
+      // Blur any focused elements before closing
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+
+      onClose();
+      setFormData({
+        first_name: "",
+        last_name: "",
+        email: "",
+        phone: "",
+        interview_id: "",
+        avatar_url: "",
+        resume_url: "",
+        organization_id: null,
+        status: "active",
+        notes: "",
+        tag: null,
+        applicant_id: null,
+        review_status: null,
       });
-    // Duplicate email entered manually in the form
-    } else if (errorMessage.toLowerCase().includes('email already exists') ||
-        errorMessage.toLowerCase().includes('duplicate') ||
-        errorMessage.toLowerCase().includes('already exists')) {
-      setFormError('This email is already registered. Please use a different email address.');
-      toast({
-        title: 'Email Already Exists',
-        description: 'An assignee with this email already exists. Please try a different email.',
-        variant: 'destructive',
-      });
-    } else {
-      setFormError(errorMessage);
-      toast({
-        title: 'Error',
-        description: errorMessage,
-        variant: 'destructive',
-      });
-    }
-    // Don't close the modal - keep form values intact
-  } finally {
-    setIsLoading(false);
-  }
-};
+      setUserImage(null); // Reset the image state
+      setResumeFile(null); // Reset the resume state
+      // Cleanup preview URL
+      if (imagePreviewUrl) {
+        URL.revokeObjectURL(imagePreviewUrl);
+        setImagePreviewUrl(null);
+      }
+    } catch (error) {
+      console.error("Error saving assignee:", error);
 
-  function handleInputChange(field: keyof CreateAssigneeRequest, value: string | null) {
-    setFormData(prev => ({
+      // Parse the error message and show user-friendly feedback
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to save assignee";
+
+      // Duplicate resume detected (same candidate email found in the uploaded resume)
+      if (errorMessage.startsWith("duplicate_resume:")) {
+        const message = errorMessage.replace("duplicate_resume:", "");
+        setFormError(message);
+        toast({
+          title: "Duplicate Candidate",
+          description: message,
+          variant: "destructive",
+        });
+        // Duplicate email entered manually in the form
+      } else if (
+        errorMessage.toLowerCase().includes("email already exists") ||
+        errorMessage.toLowerCase().includes("duplicate") ||
+        errorMessage.toLowerCase().includes("already exists")
+      ) {
+        setFormError(
+          "This email is already registered. Please use a different email address.",
+        );
+        toast({
+          title: "Email Already Exists",
+          description:
+            "An assignee with this email already exists. Please try a different email.",
+          variant: "destructive",
+        });
+      } else {
+        setFormError(errorMessage);
+        toast({
+          title: "Error",
+          description: errorMessage,
+          variant: "destructive",
+        });
+      }
+      // Don't close the modal - keep form values intact
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  function handleInputChange(
+    field: keyof CreateAssigneeRequest,
+    value: string | null,
+  ) {
+    setFormData((prev) => ({
       ...prev,
-      [field]: value
+      [field]: value,
     }));
-  };
+  }
 
-  const handleInputChangeEvent = (field: keyof CreateAssigneeRequest) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    handleInputChange(field, e.target.value);
-  };
+  const handleInputChangeEvent =
+    (field: keyof CreateAssigneeRequest) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      handleInputChange(field, e.target.value);
+    };
 
   function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      console.log('File selected:', file.name, file.size, 'bytes');
+      console.log("File selected:", file.name, file.size, "bytes");
       setUserImage(file);
       // Create preview URL for the selected file
       const previewUrl = URL.createObjectURL(file);
       setImagePreviewUrl(previewUrl);
     }
-  };
+  }
 
   function handleResumeChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      
+
       // Validate file type - PDF or Word
-      const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'];
-      const allowedExts = ['.pdf', '.doc', '.docx'];
-      const ext = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+      const allowedTypes = [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+      ];
+      const allowedExts = [".pdf", ".doc", ".docx"];
+      const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
       if (!allowedTypes.includes(file.type) && !allowedExts.includes(ext)) {
-        alert('Please upload a PDF or Word file for the resume.');
-        e.target.value = ''; // Reset input
+        alert("Please upload a PDF or Word file for the resume.");
+        e.target.value = ""; // Reset input
         return;
       }
 
       // Validate file size (max 10MB)
       const maxSize = 10 * 1024 * 1024; // 10MB
       if (file.size > maxSize) {
-        alert('Resume file size must be less than 10MB.');
-        e.target.value = ''; // Reset input
+        alert("Resume file size must be less than 10MB.");
+        e.target.value = ""; // Reset input
         return;
       }
 
-      console.log('Resume file selected:', file.name, file.size, 'bytes');
+      console.log("Resume file selected:", file.name, file.size, "bytes");
       setResumeFile(file);
     }
-  };
+  }
 
   function handleRemoveResume() {
     setResumeFile(null);
-    setFormData(prev => ({ ...prev, resume_url: '' }));
-  };
+    setFormData((prev) => ({ ...prev, resume_url: "" }));
+  }
 
   // Cleanup object URL when component unmounts or file changes
   useEffect(() => {
-
     return () => {
       if (imagePreviewUrl) {
         URL.revokeObjectURL(imagePreviewUrl);
@@ -361,23 +419,26 @@ export function CreateAssigneeModal({
     };
   }, [imagePreviewUrl]);
 
-
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => {
-      if (!open) {
-        onClose();
-      }
-    }}>
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+        }
+      }}
+    >
       <DialogContent className="sm:max-w-[500px] max-h-[85vh] flex flex-col">
         <DialogHeader className="flex-shrink-0">
           <DialogTitle>
-            {mode === 'create' ? 'Create New Assignee' : 'Edit Assignee'}
+            {mode === "create" ? "Create New Assignee" : "Edit Assignee"}
           </DialogTitle>
           <DialogDescription>
-            Fill out the following details to {mode === 'create' ? 'create a new' : 'edit the'} assignee.
-        </DialogDescription>
+            Fill out the following details to{" "}
+            {mode === "create" ? "create a new" : "edit the"} assignee.
+          </DialogDescription>
         </DialogHeader>
-        
+
         <form
           onSubmit={(e) => {
             // prevent native submit bubbling/closing
@@ -392,24 +453,24 @@ export function CreateAssigneeModal({
               <Input
                 id="first_name"
                 value={formData.first_name}
-                onChange={handleInputChangeEvent('first_name')}
+                onChange={handleInputChangeEvent("first_name")}
                 placeholder="Enter first name"
                 required
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="last_name">Last Name *</Label>
               <Input
                 id="last_name"
                 value={formData.last_name}
-                onChange={handleInputChangeEvent('last_name')}
+                onChange={handleInputChangeEvent("last_name")}
                 placeholder="Enter last name"
                 required
               />
             </div>
           </div>
-            
+
           <div className="space-y-2">
             <Label htmlFor="email">Email *</Label>
             <Input
@@ -417,25 +478,25 @@ export function CreateAssigneeModal({
               type="email"
               value={formData.email}
               onChange={(e) => {
-                handleInputChangeEvent('email')(e);
+                handleInputChangeEvent("email")(e);
                 // Clear error when user starts typing
                 if (formError) setFormError(null);
               }}
               placeholder="Enter email address"
               required
-              className={formError ? 'border-red-500 focus:ring-red-500' : ''}
+              className={formError ? "border-red-500 focus:ring-red-500" : ""}
             />
             {formError && (
               <p className="text-sm text-red-500 mt-1">{formError}</p>
             )}
           </div>
-            
+
           <div className="space-y-2">
             <Label htmlFor="phone">Phone</Label>
             <Input
               id="phone"
               value={formData.phone}
-              onChange={handleInputChangeEvent('phone')}
+              onChange={handleInputChangeEvent("phone")}
               placeholder="Enter phone number"
             />
           </div>
@@ -444,8 +505,8 @@ export function CreateAssigneeModal({
             <Label htmlFor="applicant_id">Candidate ID</Label>
             <Input
               id="applicant_id"
-              value={formData.applicant_id || ''}
-              onChange={handleInputChangeEvent('applicant_id')}
+              value={formData.applicant_id || ""}
+              onChange={handleInputChangeEvent("applicant_id")}
               placeholder="Enter candidate ID (e.g., APP-20260120-00001)"
             />
             <p className="text-xs text-gray-500">
@@ -455,16 +516,25 @@ export function CreateAssigneeModal({
 
           <div className="space-y-2">
             <Label htmlFor="interview_id">Interview</Label>
-            <PopoverPrimitive.Root open={interviewOpen} onOpenChange={setInterviewOpen}>
+            <PopoverPrimitive.Root
+              open={interviewOpen}
+              onOpenChange={setInterviewOpen}
+            >
               <PopoverPrimitive.Trigger asChild>
                 <button
                   type="button"
                   className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                 >
-                  <span className={!formData.interview_id ? 'text-muted-foreground' : ''}>
+                  <span
+                    className={
+                      !formData.interview_id ? "text-muted-foreground" : ""
+                    }
+                  >
                     {formData.interview_id
-                      ? (interviews.find((i: Interview) => i.id === formData.interview_id)?.name ?? 'Select interview')
-                      : 'No Interview'}
+                      ? (interviews.find(
+                          (i: Interview) => i.id === formData.interview_id,
+                        )?.name ?? "Select interview")
+                      : "No Interview"}
                   </span>
                   <ChevronDown className="h-4 w-4 opacity-50" />
                 </button>
@@ -472,7 +542,7 @@ export function CreateAssigneeModal({
               <PopoverPrimitive.Content
                 align="start"
                 sideOffset={4}
-                style={{ width: 'var(--radix-popover-trigger-width)' }}
+                style={{ width: "var(--radix-popover-trigger-width)" }}
                 className="z-50 rounded-md border bg-popover text-popover-foreground shadow-md outline-none"
               >
                 <div className="flex items-center border-b px-3">
@@ -489,37 +559,51 @@ export function CreateAssigneeModal({
                     type="button"
                     className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground"
                     onClick={() => {
-                      handleInputChange('interview_id', '');
+                      handleInputChange("interview_id", "");
                       setInterviewOpen(false);
-                      setInterviewSearch('');
+                      setInterviewSearch("");
                     }}
                   >
-                    {!formData.interview_id
-                      ? <Check className="mr-2 h-4 w-4 shrink-0" />
-                      : <span className="mr-6" />}
+                    {!formData.interview_id ? (
+                      <Check className="mr-2 h-4 w-4 shrink-0" />
+                    ) : (
+                      <span className="mr-6" />
+                    )}
                     No Interview
                   </button>
                   {interviews
-                    .filter((i: Interview) => i.name.toLowerCase().includes(interviewSearch.toLowerCase()))
+                    .filter((i: Interview) =>
+                      i.name
+                        .toLowerCase()
+                        .includes(interviewSearch.toLowerCase()),
+                    )
                     .map((interview: Interview) => (
                       <button
                         key={interview.id}
                         type="button"
                         className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground"
                         onClick={() => {
-                          handleInputChange('interview_id', interview.id);
+                          handleInputChange("interview_id", interview.id);
                           setInterviewOpen(false);
-                          setInterviewSearch('');
+                          setInterviewSearch("");
                         }}
                       >
-                        {formData.interview_id === interview.id
-                          ? <Check className="mr-2 h-4 w-4 shrink-0" />
-                          : <span className="mr-6" />}
+                        {formData.interview_id === interview.id ? (
+                          <Check className="mr-2 h-4 w-4 shrink-0" />
+                        ) : (
+                          <span className="mr-6" />
+                        )}
                         {interview.name}
                       </button>
                     ))}
-                  {interviews.filter((i: Interview) => i.name.toLowerCase().includes(interviewSearch.toLowerCase())).length === 0 && (
-                    <p className="py-6 text-center text-sm text-muted-foreground">No interview found.</p>
+                  {interviews.filter((i: Interview) =>
+                    i.name
+                      .toLowerCase()
+                      .includes(interviewSearch.toLowerCase()),
+                  ).length === 0 && (
+                    <p className="py-6 text-center text-sm text-muted-foreground">
+                      No interview found.
+                    </p>
                   )}
                 </div>
               </PopoverPrimitive.Content>
@@ -532,9 +616,9 @@ export function CreateAssigneeModal({
               {/* Show preview for newly selected file */}
               {userImage && imagePreviewUrl && (
                 <div className="flex items-center gap-3">
-                  <img 
-                    src={imagePreviewUrl} 
-                    alt="Preview" 
+                  <img
+                    src={imagePreviewUrl}
+                    alt="Preview"
                     className="w-20 h-20 object-cover rounded-full border-2 border-gray-200"
                   />
                   <div className="flex-1">
@@ -549,9 +633,9 @@ export function CreateAssigneeModal({
               )}
               {/* Show existing image preview if in edit mode */}
               {!userImage && formData.avatar_url && showExistingImage && (
-                <img 
-                  src={formData.avatar_url} 
-                  alt="Current" 
+                <img
+                  src={formData.avatar_url}
+                  alt="Current"
                   className="w-20 h-20 object-cover rounded-full"
                 />
               )}
@@ -629,12 +713,12 @@ export function CreateAssigneeModal({
               </p>
             </div>
           </div>
-        
+
           <div className="space-y-2">
             <Label htmlFor="status">Status</Label>
             <Select
               value={formData.status}
-              onValueChange={(value) => handleInputChange('status', value)}
+              onValueChange={(value) => handleInputChange("status", value)}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select status" />
@@ -646,13 +730,13 @@ export function CreateAssigneeModal({
               </SelectContent>
             </Select>
           </div>
-          
+
           <div className="space-y-2">
             <Label htmlFor="tag">Department / Tag</Label>
             <Input
               id="tag"
-              value={formData.tag || ''}
-              onChange={handleInputChangeEvent('tag')}
+              value={formData.tag || ""}
+              onChange={handleInputChangeEvent("tag")}
               placeholder="Enter a tag (e.g., Frontend, Backend, Senior)"
             />
           </div>
@@ -694,25 +778,29 @@ export function CreateAssigneeModal({
               </SelectContent>
             </Select>
           </div> */}
-          
+
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>
             <Textarea
               id="notes"
               value={formData.notes}
-              onChange={handleInputChangeEvent('notes')}
+              onChange={handleInputChangeEvent("notes")}
               placeholder="Enter any additional notes"
               rows={3}
             />
           </div>
         </form>
-        
+
         <div className="flex justify-end space-x-2 pt-4 border-t flex-shrink-0 mt-4">
           <Button type="button" variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button type="submit" disabled={isLoading} onClick={handleSubmit}>
-            {isLoading ? 'Saving...' : mode === 'create' ? 'Create Assignee' : 'Update Assignee'}
+            {isLoading
+              ? "Saving..."
+              : mode === "create"
+                ? "Create Assignee"
+                : "Update Assignee"}
           </Button>
         </div>
       </DialogContent>
@@ -723,9 +811,13 @@ export function CreateAssigneeModal({
           isOpen={showResumeViewer}
           onClose={() => setShowResumeViewer(false)}
           resumeUrl={formData.resume_url}
-          assigneeName={assignee ? `${assignee.first_name} ${assignee.last_name}` : undefined}
+          assigneeName={
+            assignee
+              ? `${assignee.first_name} ${assignee.last_name}`
+              : undefined
+          }
         />
       )}
     </Dialog>
   );
-};
+}

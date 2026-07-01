@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import React, {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  useMemo,
+} from "react";
 import { flushSync } from "react-dom";
 import { useAuth } from "@/contexts/auth.context";
 import { useAssignees } from "@/contexts/users.context";
@@ -38,8 +44,15 @@ import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
 import { parsePdf } from "@/actions/parse-pdf";
 import { ATSScoreResult, ParsedResume } from "@/types/ats-scoring";
-import { ExtractedCompany, AggregatedCompany, CachedCompany, ExtractedCompanyName } from "@/types/company-finder";
-import ATSResultCard, { normalizeScore } from "@/components/dashboard/ats-scoring/atsResultCard";
+import {
+  ExtractedCompany,
+  AggregatedCompany,
+  CachedCompany,
+  ExtractedCompanyName,
+} from "@/types/company-finder";
+import ATSResultCard, {
+  normalizeScore,
+} from "@/components/dashboard/ats-scoring/atsResultCard";
 import { ATSJobService } from "@/services/ats-job.service";
 import { CompanyFinderService } from "@/services/company-finder.service";
 import { ResumeViewer } from "@/components/dashboard/user/ResumeViewer";
@@ -62,18 +75,27 @@ const MAX_RETRIES = 4;
 const INITIAL_BACKOFF_MS = 2_000;
 
 /** Fetch with exponential backoff on 429 (rate limit) and 5xx errors. */
-async function fetchWithRetry(url: string, init: RequestInit, retries = MAX_RETRIES): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  retries = MAX_RETRIES,
+): Promise<Response> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await fetch(url, init);
-      if (response.status === 429 || (response.status >= 500 && attempt < retries)) {
+      if (
+        response.status === 429 ||
+        (response.status >= 500 && attempt < retries)
+      ) {
         // Use Retry-After header if present, otherwise exponential backoff with jitter
         const retryAfter = response.headers.get("Retry-After");
         const delay = retryAfter
           ? parseInt(retryAfter, 10) * 1000
           : INITIAL_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
-        console.warn(`[fetchWithRetry] ${url} returned ${response.status}, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries})`);
+        console.warn(
+          `[fetchWithRetry] ${url} returned ${response.status}, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries})`,
+        );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
@@ -81,8 +103,12 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = MAX_RETR
     } catch (err) {
       lastError = err as Error;
       if (attempt < retries) {
-        const delay = INITIAL_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
-        console.warn(`[fetchWithRetry] ${url} network error, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries}):`, err);
+        const delay =
+          INITIAL_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
+        console.warn(
+          `[fetchWithRetry] ${url} network error, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries}):`,
+          err,
+        );
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -108,23 +134,28 @@ function aggregateCFCompanies(raw: ExtractedCompany[]): AggregatedCompany[] {
     const key = c.companyName.toLowerCase().trim();
     const existing = map.get(key);
     if (existing) {
-      if (!existing.companyInfo && c.companyInfo) existing.companyInfo = c.companyInfo;
-      if (!existing.headquarters && c.headquarters) existing.headquarters = c.headquarters;
-      if (!existing.foundedYear && c.foundedYear) existing.foundedYear = c.foundedYear;
+      if (!existing.companyInfo && c.companyInfo)
+        existing.companyInfo = c.companyInfo;
+      if (!existing.headquarters && c.headquarters)
+        existing.headquarters = c.headquarters;
+      if (!existing.foundedYear && c.foundedYear)
+        existing.foundedYear = c.foundedYear;
       if (!existing.countriesWorkedIn?.length && c.countriesWorkedIn?.length)
         existing.countriesWorkedIn = c.countriesWorkedIn;
       existing.contexts.push(c.context);
-      for (const t of (c.technologies || [])) {
+      for (const t of c.technologies || []) {
         if (!existing.technologies.includes(t)) existing.technologies.push(t);
       }
-      for (const d of (c.relevantDomains || [])) {
-        if (!existing.relevantDomains.includes(d)) existing.relevantDomains.push(d);
+      for (const d of c.relevantDomains || []) {
+        if (!existing.relevantDomains.includes(d))
+          existing.relevantDomains.push(d);
       }
       const rns = (c as any).resumeName
         ? [(c as any).resumeName as string]
         : extractResumeNamesFromContext([c.context]);
       for (const rn of rns) {
-        if (!existing.sourceResumes.includes(rn)) existing.sourceResumes.push(rn);
+        if (!existing.sourceResumes.includes(rn))
+          existing.sourceResumes.push(rn);
       }
       existing.frequency = existing.sourceResumes.length;
     } else {
@@ -168,7 +199,9 @@ export default function ScoringView({
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   // Restore in-progress state if user navigated away during ATS/CF analysis.
@@ -188,38 +221,63 @@ export default function ScoringView({
       // Reload partial results AND check if batch job is still active on the server.
       // If the job completed while we were away, clear the stale in-memory state
       // so the UI doesn't flash a progress bar then immediately hide it.
-      ATSJobService.getJobDetail(interviewId).then((detail) => {
-        if (detail.results?.length > 0) setResults(detail.results);
+      ATSJobService.getJobDetail(interviewId)
+        .then((detail) => {
+          if (detail.results?.length > 0) setResults(detail.results);
 
-        if (!detail.activeBatchJob && storedAts.batchJobActive) {
-          // Job finished while we were away — clear stale processing state
-          setAnalyzing(false);
-          setBatchJobActive(false);
-          isAnalyzingRef.current = false;
-          setAnalyzeProgress({ current: 0, total: 0 });
-          clearProcessingState(atsKey);
-          // Auto-trigger company finder if resumes are available
-          try {
-            const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
-            if (stored && !isRunningCFRef.current) {
-              const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
-              const restoredUrls: Record<string, string> = {};
-              for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
-              if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
-              if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+          if (!detail.activeBatchJob && storedAts.batchJobActive) {
+            // Job finished while we were away — clear stale processing state
+            setAnalyzing(false);
+            setBatchJobActive(false);
+            isAnalyzingRef.current = false;
+            setAnalyzeProgress({ current: 0, total: 0 });
+            clearProcessingState(atsKey);
+            // Auto-trigger company finder if resumes are available
+            try {
+              const stored = sessionStorage.getItem(
+                `cf_resumes_${interviewId}`,
+              );
+              if (stored && !isRunningCFRef.current) {
+                const storedResumes = JSON.parse(stored) as {
+                  name: string;
+                  text: string;
+                  url?: string;
+                }[];
+                const restoredUrls: Record<string, string> = {};
+                for (const r of storedResumes) {
+                  if (r.url) restoredUrls[r.name] = r.url;
+                }
+                if (Object.keys(restoredUrls).length > 0)
+                  previewUrlsRef.current = {
+                    ...previewUrlsRef.current,
+                    ...restoredUrls,
+                  };
+                if (storedResumes.length > 0)
+                  runCompanyFinder(storedResumes as ParsedResume[]);
+              }
+            } catch {
+              /* ignore */
             }
-          } catch { /* ignore */ }
-        } else if (detail.activeBatchJob) {
-          // Job still running — update progress from server truth
-          const done = detail.activeBatchJob.processedItems + detail.activeBatchJob.failedItems;
-          setAnalyzeProgress({ current: done, total: detail.activeBatchJob.totalItems });
-          setBatchTotal(detail.activeBatchJob.totalItems);
-          setProcessingState(atsKey, {
-            ...storedAts,
-            progress: { current: done, total: detail.activeBatchJob.totalItems },
-          });
-        }
-      }).catch(() => {});
+          } else if (detail.activeBatchJob) {
+            // Job still running — update progress from server truth
+            const done =
+              detail.activeBatchJob.processedItems +
+              detail.activeBatchJob.failedItems;
+            setAnalyzeProgress({
+              current: done,
+              total: detail.activeBatchJob.totalItems,
+            });
+            setBatchTotal(detail.activeBatchJob.totalItems);
+            setProcessingState(atsKey, {
+              ...storedAts,
+              progress: {
+                current: done,
+                total: detail.activeBatchJob.totalItems,
+              },
+            });
+          }
+        })
+        .catch(() => {});
     }
 
     const storedCf = getProcessingState(cfKey);
@@ -250,9 +308,11 @@ export default function ScoringView({
       // Delay slightly to let the DB write from the old closure complete.
       if (atsRemounted) {
         setTimeout(() => {
-          ATSJobService.getJobDetail(interviewId).then((detail) => {
-            if (detail.results?.length > 0) setResults(detail.results);
-          }).catch(() => {});
+          ATSJobService.getJobDetail(interviewId)
+            .then((detail) => {
+              if (detail.results?.length > 0) setResults(detail.results);
+            })
+            .catch(() => {});
         }, 1500);
       }
     });
@@ -289,7 +349,11 @@ export default function ScoringView({
   // Resume state
   const [resumes, setResumes] = useState<ParsedResume[]>([]);
   const [results, setResults] = useState<ATSScoreResult[]>([]);
-  const [pagination, setPagination] = useState<{ total: number; offset: number; limit: number } | null>(null);
+  const [pagination, setPagination] = useState<{
+    total: number;
+    offset: number;
+    limit: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [parsingResumes, setParsingResumes] = useState(false);
   const [parseProgress, setParseProgress] = useState({ current: 0, total: 0 });
@@ -313,7 +377,10 @@ export default function ScoringView({
     return stored?.progress ?? { current: 0, total: 0 };
   });
   const [creatingAssignees, setCreatingAssignees] = useState(false);
-  const [viewingResume, setViewingResume] = useState<{ url: string; name: string } | null>(null);
+  const [viewingResume, setViewingResume] = useState<{
+    url: string;
+    name: string;
+  } | null>(null);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   // Ref always holds latest previewUrls — used inside async functions to avoid stale closure
   const previewUrlsRef = useRef<Record<string, string>>({});
@@ -326,11 +393,21 @@ export default function ScoringView({
   // Tracks in-flight / completed blob upload promises keyed by resume name.
   // Shared between uploadFilesForPreview (file-drop) and handleAnalyze so we
   // never upload the same file twice and handleAnalyze can await them all.
-  const uploadPromisesRef = useRef<Map<string, Promise<string | null>>>(new Map());
-  const [skippedInfo, setSkippedInfo] = useState<{ count: number; names: string[] } | null>(null);
-  const [failedToParse, setFailedToParse] = useState<{ count: number; names: string[] } | null>(null);
+  const uploadPromisesRef = useRef<Map<string, Promise<string | null>>>(
+    new Map(),
+  );
+  const [skippedInfo, setSkippedInfo] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
+  const [failedToParse, setFailedToParse] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
   // Company Finder state
-  const [extractedCompanies, setExtractedCompanies] = useState<ExtractedCompany[]>([]);
+  const [extractedCompanies, setExtractedCompanies] = useState<
+    ExtractedCompany[]
+  >([]);
   // Initialize companyAnalyzing to true immediately if sessionStorage has resume data for this interview
   // AND the processing store confirms CF is still running. This prevents the flash of "No companies
   // found" while the auto-restart effect is pending, but avoids stuck spinners when CF already finished.
@@ -353,20 +430,31 @@ export default function ScoringView({
       return false;
     }
   });
-  const [cfProgress, setCfProgress] = useState<{ current: number; total: number } | null>(null);
+  const [cfProgress, setCfProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [cfItemCount, setCfItemCount] = useState(0);
   const [activeTab, setActiveTab] = useState<"ats" | "companies">("ats");
   // Persisted CF results (loaded from DB on mount; updated after analysis / resume delete)
-  const [persistedCompanyResults, setPersistedCompanyResults] = useState<AggregatedCompany[] | null>(null);
-  const [cfScannedResumeNames, setCfScannedResumeNames] = useState<string[]>([]);
+  const [persistedCompanyResults, setPersistedCompanyResults] = useState<
+    AggregatedCompany[] | null
+  >(null);
+  const [cfScannedResumeNames, setCfScannedResumeNames] = useState<string[]>(
+    [],
+  );
   const [cfScanId, setCfScanId] = useState<string | null>(null);
 
   // CF filter / selection state
   const [cfSearchQuery, setCfSearchQuery] = useState("");
-  const [cfTypeFilter, setCfTypeFilter] = useState<"all" | "service_provider" | "service_consumer">("all");
+  const [cfTypeFilter, setCfTypeFilter] = useState<
+    "all" | "service_provider" | "service_consumer"
+  >("all");
   const [cfSortBy, setCfSortBy] = useState<"frequency" | "name">("frequency");
   const [cfRelevantOnly, setCfRelevantOnly] = useState(true);
-  const [selectedCFCompanies, setSelectedCFCompanies] = useState<Set<string>>(new Set());
+  const [selectedCFCompanies, setSelectedCFCompanies] = useState<Set<string>>(
+    new Set(),
+  );
 
   // Lightweight polling: when analysis is active, poll getJobDetail every 10s
   // to keep progress updated. This is critical when ATSBatchProcessor's workers
@@ -381,7 +469,9 @@ export default function ScoringView({
         if (detail.results?.length > 0) setResults(detail.results);
 
         if (detail.activeBatchJob) {
-          const done = detail.activeBatchJob.processedItems + detail.activeBatchJob.failedItems;
+          const done =
+            detail.activeBatchJob.processedItems +
+            detail.activeBatchJob.failedItems;
           const total = detail.activeBatchJob.totalItems;
           setAnalyzeProgress({ current: done, total });
           setBatchTotal(total);
@@ -403,19 +493,37 @@ export default function ScoringView({
             setBatchJobActive(false);
             setAnalyzing(false);
             isAnalyzingRef.current = false;
-            setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
+            setProcessingState(`ats_${interviewId}`, {
+              analyzing: false,
+              batchJobActive: false,
+            });
             clearProcessingState(`ats_${interviewId}`);
             // Auto-trigger company finder
             try {
-              const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+              const stored = sessionStorage.getItem(
+                `cf_resumes_${interviewId}`,
+              );
               if (stored && !isRunningCFRef.current) {
-                const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+                const storedResumes = JSON.parse(stored) as {
+                  name: string;
+                  text: string;
+                  url?: string;
+                }[];
                 const restoredUrls: Record<string, string> = {};
-                for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
-                if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
-                if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+                for (const r of storedResumes) {
+                  if (r.url) restoredUrls[r.name] = r.url;
+                }
+                if (Object.keys(restoredUrls).length > 0)
+                  previewUrlsRef.current = {
+                    ...previewUrlsRef.current,
+                    ...restoredUrls,
+                  };
+                if (storedResumes.length > 0)
+                  runCompanyFinder(storedResumes as ParsedResume[]);
               }
-            } catch { /* ignore */ }
+            } catch {
+              /* ignore */
+            }
             return;
           }
         } else {
@@ -426,21 +534,39 @@ export default function ScoringView({
           setBatchJobActive(false);
           setAnalyzing(false);
           isAnalyzingRef.current = false;
-          setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
+          setProcessingState(`ats_${interviewId}`, {
+            analyzing: false,
+            batchJobActive: false,
+          });
           clearProcessingState(`ats_${interviewId}`);
           // Auto-trigger company finder
           try {
             const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
             if (stored && !isRunningCFRef.current) {
-              const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+              const storedResumes = JSON.parse(stored) as {
+                name: string;
+                text: string;
+                url?: string;
+              }[];
               const restoredUrls: Record<string, string> = {};
-              for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
-              if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
-              if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
+              for (const r of storedResumes) {
+                if (r.url) restoredUrls[r.name] = r.url;
+              }
+              if (Object.keys(restoredUrls).length > 0)
+                previewUrlsRef.current = {
+                  ...previewUrlsRef.current,
+                  ...restoredUrls,
+                };
+              if (storedResumes.length > 0)
+                runCompanyFinder(storedResumes as ParsedResume[]);
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
-      } catch { /* ignore poll errors */ }
+      } catch {
+        /* ignore poll errors */
+      }
     }, 10000);
 
     return () => clearInterval(pollInterval);
@@ -459,17 +585,21 @@ export default function ScoringView({
   }, [results]);
 
   // Keep previewUrlsRef in sync with previewUrls state so async functions always have fresh URLs
-  useEffect(() => { previewUrlsRef.current = previewUrls; }, [previewUrls]);
+  useEffect(() => {
+    previewUrlsRef.current = previewUrls;
+  }, [previewUrls]);
 
   // Whenever resumeUrlMap gains new URLs, merge them into previewUrls so CF badges are clickable
   useEffect(() => {
-    const newEntries = Object.entries(resumeUrlMap).filter(([k]) => !previewUrls[k]);
+    const newEntries = Object.entries(resumeUrlMap).filter(
+      ([k]) => !previewUrls[k],
+    );
     if (newEntries.length > 0) {
       const newUrls = Object.fromEntries(newEntries);
       previewUrlsRef.current = { ...previewUrlsRef.current, ...newUrls };
       setPreviewUrls((prev) => ({ ...prev, ...newUrls }));
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeUrlMap]);
 
   // Load JD and results from Supabase on mount
@@ -496,7 +626,10 @@ export default function ScoringView({
 
         // Restore active batch job from DB if processingStore has no record of it.
         // This covers: hard refresh, or navigating away before setProcessingState was called.
-        if (detail.activeBatchJob && !getProcessingState(`ats_${interviewId}`)?.analyzing) {
+        if (
+          detail.activeBatchJob &&
+          !getProcessingState(`ats_${interviewId}`)?.analyzing
+        ) {
           const bj = detail.activeBatchJob;
           const done = bj.processedItems + bj.failedItems;
           setAnalyzing(true);
@@ -520,7 +653,7 @@ export default function ScoringView({
             const cfDetail = await CompanyFinderService.getScanDetail(scanId);
             if (cfDetail.results?.length > 0) {
               const activeResumeNames = new Set(
-                (detail.results || []).map((r: ATSScoreResult) => r.resumeName)
+                (detail.results || []).map((r: ATSScoreResult) => r.resumeName),
               );
 
               let reconciled: AggregatedCompany[];
@@ -533,28 +666,44 @@ export default function ScoringView({
                   .map((c) => {
                     // Legacy data with empty sourceResumes — cannot reconcile, keep as-is
                     if (!c.sourceResumes?.length) return c;
-                    const validSources = c.sourceResumes.filter((r) => activeResumeNames.has(r));
+                    const validSources = c.sourceResumes.filter((r) =>
+                      activeResumeNames.has(r),
+                    );
                     if (validSources.length === 0) return null;
-                    return { ...c, sourceResumes: validSources, frequency: validSources.length };
+                    return {
+                      ...c,
+                      sourceResumes: validSources,
+                      frequency: validSources.length,
+                    };
                   })
                   .filter(Boolean) as AggregatedCompany[];
               }
 
               setPersistedCompanyResults(reconciled);
               setCfScanId(scanId);
-              if (cfDetail.resumeNames?.length) setCfScannedResumeNames(cfDetail.resumeNames);
+              if (cfDetail.resumeNames?.length)
+                setCfScannedResumeNames(cfDetail.resumeNames);
 
               // Load CF scan resume URLs so Eye buttons work on page reload
               if (cfDetail.resumeUrls) {
-                previewUrlsRef.current = { ...previewUrlsRef.current, ...cfDetail.resumeUrls };
+                previewUrlsRef.current = {
+                  ...previewUrlsRef.current,
+                  ...cfDetail.resumeUrls,
+                };
                 setPreviewUrls((prev) => ({ ...prev, ...cfDetail.resumeUrls }));
               }
 
               // If stale companies were removed, persist the cleaned-up version back to DB
               if (reconciled.length < cfDetail.results.length) {
-                const names = Array.from(new Set(reconciled.flatMap((c) => c.sourceResumes)));
-                CompanyFinderService.updateResults(scanId, { results: reconciled, resumeNames: names })
-                  .catch((err) => console.error("Failed to reconcile company results:", err));
+                const names = Array.from(
+                  new Set(reconciled.flatMap((c) => c.sourceResumes)),
+                );
+                CompanyFinderService.updateResults(scanId, {
+                  results: reconciled,
+                  resumeNames: names,
+                }).catch((err) =>
+                  console.error("Failed to reconcile company results:", err),
+                );
               }
             }
           }
@@ -581,7 +730,7 @@ export default function ScoringView({
   const cfAutoRestartAttempted = useRef(false);
   useEffect(() => {
     if (dataLoading || !interviewId || cfAutoRestartAttempted.current) return;
-    if (user?.role !== 'admin') return;
+    if (user?.role !== "admin") return;
 
     const cfKey = `cf_${interviewId}`;
     const currentState = getProcessingState(cfKey);
@@ -598,7 +747,9 @@ export default function ScoringView({
           cfAutoRestartAttempted.current = true;
           return;
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       cfAutoRestartAttempted.current = true;
       return;
     }
@@ -608,20 +759,28 @@ export default function ScoringView({
     // Don't mark as attempted — the effect will re-run when analyzing/batchJobActive become false.
     if (analyzing || batchJobActive) return;
 
-
     try {
       const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
       if (!stored) return;
-      const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
+      const storedResumes = JSON.parse(stored) as {
+        name: string;
+        text: string;
+        url?: string;
+      }[];
       if (storedResumes.length === 0) return;
       const restoredUrls: Record<string, string> = {};
-      for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
-      if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
+      for (const r of storedResumes) {
+        if (r.url) restoredUrls[r.name] = r.url;
+      }
+      if (Object.keys(restoredUrls).length > 0)
+        previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
       cfAutoRestartAttempted.current = true;
       setCompanyAnalyzing(true);
       runCompanyFinder(storedResumes as ParsedResume[]);
-    } catch { /* ignore */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    } catch {
+      /* ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataLoading, interviewId, user?.role, analyzing, batchJobActive]);
 
   // Auto-save JD to Supabase (debounced, 1500ms for network calls)
@@ -661,7 +820,8 @@ export default function ScoringView({
 
     const timer = setTimeout(async () => {
       try {
-        const scanId = cfScanId || await CompanyFinderService.findAtsScanId(interviewId);
+        const scanId =
+          cfScanId || (await CompanyFinderService.findAtsScanId(interviewId));
         if (!scanId) return;
         const cfDetail = await CompanyFinderService.getScanDetail(scanId);
         if (cfDetail.results?.length > 0) {
@@ -676,11 +836,16 @@ export default function ScoringView({
         }
         if (cfDetail.resumeNames?.length) {
           setCfScannedResumeNames((prev) =>
-            cfDetail.resumeNames.length > prev.length ? cfDetail.resumeNames : prev
+            cfDetail.resumeNames.length > prev.length
+              ? cfDetail.resumeNames
+              : prev,
           );
         }
       } catch (err) {
-        console.error("Failed to reload company results after completion:", err);
+        console.error(
+          "Failed to reload company results after completion:",
+          err,
+        );
       }
     }, 2000); // Wait for saveCFResultsToDB async write to complete before reading back
 
@@ -724,7 +889,8 @@ export default function ScoringView({
         setJdParsing(true);
         const formData = new FormData();
         formData.append("file", file);
-        if (user?.organization_id) formData.append("organizationId", user.organization_id);
+        if (user?.organization_id)
+          formData.append("organizationId", user.organization_id);
         if (user?.id) formData.append("userId", user.id);
         const result = await parsePdf(formData);
 
@@ -754,21 +920,20 @@ export default function ScoringView({
         setJdParsing(false);
       }
     },
-    [interviewId]
+    [interviewId],
   );
 
-  const {
-    getRootProps: getJdRootProps,
-    getInputProps: getJdInputProps,
-  } = useDropzone({
-    accept: {
-      "application/pdf": [".pdf"],
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
-      "application/msword": [".doc"],
-    },
-    maxFiles: 1,
-    onDrop: onJdDrop,
-  });
+  const { getRootProps: getJdRootProps, getInputProps: getJdInputProps } =
+    useDropzone({
+      accept: {
+        "application/pdf": [".pdf"],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+          [".docx"],
+        "application/msword": [".doc"],
+      },
+      maxFiles: 1,
+      onDrop: onJdDrop,
+    });
 
   // Shared resume processing function with parallel parsing
   const processResumeFiles = async (files: File[]) => {
@@ -781,7 +946,7 @@ export default function ScoringView({
     const pdfFiles = files.filter(
       (f) =>
         supportedTypes.includes(f.type) ||
-        supportedExts.some((ext) => f.name.toLowerCase().endsWith(ext))
+        supportedExts.some((ext) => f.name.toLowerCase().endsWith(ext)),
     );
 
     if (pdfFiles.length === 0) {
@@ -814,7 +979,8 @@ export default function ScoringView({
         try {
           const formData = new FormData();
           formData.append("file", file);
-          if (user?.organization_id) formData.append("organizationId", user.organization_id);
+          if (user?.organization_id)
+            formData.append("organizationId", user.organization_id);
           if (user?.id) formData.append("userId", user.id);
           const result = await parsePdf(formData);
 
@@ -825,7 +991,10 @@ export default function ScoringView({
               file,
             });
           } else {
-            console.warn(`Parse returned empty for ${file.name}:`, result.error || 'empty text');
+            console.warn(
+              `Parse returned empty for ${file.name}:`,
+              result.error || "empty text",
+            );
             skippedCount++;
             skippedNames.push(file.name);
           }
@@ -842,7 +1011,7 @@ export default function ScoringView({
 
     const workers = Array.from(
       { length: Math.min(PARSE_CONCURRENCY, pdfFiles.length) },
-      () => worker()
+      () => worker(),
     );
     await Promise.all(workers);
 
@@ -855,7 +1024,7 @@ export default function ScoringView({
     if (skippedCount > 0) {
       setFailedToParse({ count: skippedCount, names: skippedNames });
       toast.warning(
-        `${skippedCount} file(s) could not be parsed. See details below.`
+        `${skippedCount} file(s) could not be parsed. See details below.`,
       );
     }
 
@@ -868,7 +1037,7 @@ export default function ScoringView({
       await processResumeFiles(acceptedFiles);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [resumes.length]
+    [resumes.length],
   );
 
   const {
@@ -877,7 +1046,8 @@ export default function ScoringView({
   } = useDropzone({
     accept: {
       "application/pdf": [".pdf"],
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        [".docx"],
       "application/msword": [".doc"],
     },
     onDrop: onResumeDrop,
@@ -906,7 +1076,10 @@ export default function ScoringView({
     const orgId = user?.organization_id;
     // Skip resumes already tracked (in-flight/done) OR already stored in DB (resumeUrlMap)
     const toUpload = newResumes.filter(
-      (r) => !uploadPromisesRef.current.has(r.name) && !resumeUrlMap[r.name] && !previewUrlsRef.current[r.name]
+      (r) =>
+        !uploadPromisesRef.current.has(r.name) &&
+        !resumeUrlMap[r.name] &&
+        !previewUrlsRef.current[r.name],
     );
     if (toUpload.length === 0) return;
 
@@ -925,12 +1098,23 @@ export default function ScoringView({
             if (orgId) formData.append("organizationId", orgId);
             if (user?.id) formData.append("userId", user.id);
 
-            const res = await fetch("/api/upload-resume", { method: "POST", body: formData });
+            const token = localStorage.getItem("auth_token");
+            const res = await fetch("/api/upload-resume", {
+              method: "POST",
+              headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+              body: formData,
+            });
             if (res.ok) {
               const { resumeUrl } = await res.json();
               if (resumeUrl) {
-                previewUrlsRef.current = { ...previewUrlsRef.current, [resume.name]: resumeUrl };
-                setPreviewUrls((prev) => ({ ...prev, [resume.name]: resumeUrl }));
+                previewUrlsRef.current = {
+                  ...previewUrlsRef.current,
+                  [resume.name]: resumeUrl,
+                };
+                setPreviewUrls((prev) => ({
+                  ...prev,
+                  [resume.name]: resumeUrl,
+                }));
                 return resumeUrl;
               }
             }
@@ -947,7 +1131,7 @@ export default function ScoringView({
         })();
         uploadPromisesRef.current.set(resume.name, p);
         return p;
-      })
+      }),
     );
   };
 
@@ -966,7 +1150,9 @@ export default function ScoringView({
 
     // Skip resumes already scored for this job
     const existingResultsAtStart: ATSScoreResult[] = results || [];
-    const existingNames = new Set(existingResultsAtStart.map((r) => r.resumeName));
+    const existingNames = new Set(
+      existingResultsAtStart.map((r) => r.resumeName),
+    );
     const newResumes = resumes.filter((r) => !existingNames.has(r.name));
 
     if (newResumes.length === 0) {
@@ -1004,7 +1190,11 @@ export default function ScoringView({
 
         const response = await ATSJobService.startBatchAnalysis(
           interviewId,
-          chunk.map(r => ({ name: r.name, text: r.text, url: previewUrlsRef.current[r.name] || undefined }))
+          chunk.map((r) => ({
+            name: r.name,
+            text: r.text,
+            url: previewUrlsRef.current[r.name] || undefined,
+          })),
         );
 
         if (!activeJobId) activeJobId = response.jobId;
@@ -1013,8 +1203,8 @@ export default function ScoringView({
         setAnalyzeProgress({ current: totalQueued, total: newResumes.length });
 
         // Remove successfully queued resumes from memory to prevent browser lag
-        const chunkNames = new Set(chunk.map(c => c.name));
-        setResumes(prev => prev.filter(r => !chunkNames.has(r.name)));
+        const chunkNames = new Set(chunk.map((c) => c.name));
+        setResumes((prev) => prev.filter((r) => !chunkNames.has(r.name)));
       }
 
       // 2. All chunks queued — job is now confirmed in DB. Activate the batch processor.
@@ -1033,16 +1223,26 @@ export default function ScoringView({
       try {
         sessionStorage.setItem(
           `cf_resumes_${interviewId}`,
-          JSON.stringify(newResumes.map((r) => ({ name: r.name, text: r.text, url: previewUrlsRef.current[r.name] || undefined })))
+          JSON.stringify(
+            newResumes.map((r) => ({
+              name: r.name,
+              text: r.text,
+              url: previewUrlsRef.current[r.name] || undefined,
+            })),
+          ),
         );
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       setAnalyzeProgress({ current: 0, total: newResumes.length });
-      toast.success(`Queued ${newResumes.length} resumes — AI analysis starting...`);
-      
+      toast.success(
+        `Queued ${newResumes.length} resumes — AI analysis starting...`,
+      );
     } catch (error: any) {
       console.error("Failed to start analysis:", error);
       toast.error("Failed to start analysis", {
-        description: error.message || "An unexpected error occurred while queueing."
+        description:
+          error.message || "An unexpected error occurred while queueing.",
       });
       // Queue failed — reset all processing state
       setAnalyzing(false);
@@ -1086,61 +1286,81 @@ export default function ScoringView({
     // Check server truth before clearing state. ATSBatchProcessor might have timed out
     // (MAX_WAITING) while the server-side OpenAI calls are still running. In that case,
     // keep batchJobActive=true so the polling effect continues tracking progress.
-    ATSJobService.getJobDetail(interviewId).then(data => {
-       if (data.results?.length > 0) setResults(data.results);
-       if (data.pagination) setPagination(data.pagination);
+    ATSJobService.getJobDetail(interviewId).then((data) => {
+      if (data.results?.length > 0) setResults(data.results);
+      if (data.pagination) setPagination(data.pagination);
 
-       if (data.activeBatchJob) {
-         // Job is STILL running on server — ATSBatchProcessor timed out (MAX_WAITING)
-         // but server-side OpenAI calls are still processing.
-         // Unmount ATSBatchProcessor (its workers keep failing with 202s) but keep
-         // analyzing=true so the simple progress bar shows instead.
-         // The polling effect will continue tracking progress via getJobDetail.
-         const done = data.activeBatchJob.processedItems + data.activeBatchJob.failedItems;
-         setBatchJobActive(false); // unmount ATSBatchProcessor
-         setAnalyzing(true);       // keep progress bar visible
-         isAnalyzingRef.current = true;
-         setBatchTotal(data.activeBatchJob.totalItems);
-         analyzingCountRef.current = data.activeBatchJob.totalItems;
-         setAnalyzeProgress({ current: done, total: data.activeBatchJob.totalItems });
-         setProcessingState(`ats_${interviewId}`, {
-           analyzing: true,
-           batchJobActive: false,
-           batchTotal: data.activeBatchJob.totalItems,
-           itemCount: data.activeBatchJob.totalItems,
-           progress: { current: done, total: data.activeBatchJob.totalItems },
-         });
-         return;
-       }
+      if (data.activeBatchJob) {
+        // Job is STILL running on server — ATSBatchProcessor timed out (MAX_WAITING)
+        // but server-side OpenAI calls are still processing.
+        // Unmount ATSBatchProcessor (its workers keep failing with 202s) but keep
+        // analyzing=true so the simple progress bar shows instead.
+        // The polling effect will continue tracking progress via getJobDetail.
+        const done =
+          data.activeBatchJob.processedItems + data.activeBatchJob.failedItems;
+        setBatchJobActive(false); // unmount ATSBatchProcessor
+        setAnalyzing(true); // keep progress bar visible
+        isAnalyzingRef.current = true;
+        setBatchTotal(data.activeBatchJob.totalItems);
+        analyzingCountRef.current = data.activeBatchJob.totalItems;
+        setAnalyzeProgress({
+          current: done,
+          total: data.activeBatchJob.totalItems,
+        });
+        setProcessingState(`ats_${interviewId}`, {
+          analyzing: true,
+          batchJobActive: false,
+          batchTotal: data.activeBatchJob.totalItems,
+          itemCount: data.activeBatchJob.totalItems,
+          progress: { current: done, total: data.activeBatchJob.totalItems },
+        });
+        return;
+      }
 
-       // Backfill any missing resume URLs before clearing state
-       if (data.results?.length > 0) backfillResumeUrls(data.results);
+      // Backfill any missing resume URLs before clearing state
+      if (data.results?.length > 0) backfillResumeUrls(data.results);
 
-       // Job truly completed — safe to clear state
-       setBatchJobActive(false);
-       setAnalyzing(false);
-       isAnalyzingRef.current = false;
-       setProcessingState(`ats_${interviewId}`, { analyzing: false, batchJobActive: false });
-       clearProcessingState(`ats_${interviewId}`);
+      // Job truly completed — safe to clear state
+      setBatchJobActive(false);
+      setAnalyzing(false);
+      isAnalyzingRef.current = false;
+      setProcessingState(`ats_${interviewId}`, {
+        analyzing: false,
+        batchJobActive: false,
+      });
+      clearProcessingState(`ats_${interviewId}`);
 
-       // Auto-trigger company finder with the resumes we saved before clearing state
-       const resumesForCF = cfPendingResumesRef.current;
-       if (resumesForCF.length > 0 && !isRunningCFRef.current) {
-         cfPendingResumesRef.current = [];
-         runCompanyFinder(resumesForCF);
-       } else if (!isRunningCFRef.current) {
-         // Fallback: ref was cleared (post-navigation remount) — try sessionStorage
-         try {
-           const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
-           if (stored) {
-             const storedResumes = JSON.parse(stored) as { name: string; text: string; url?: string }[];
-             const restoredUrls: Record<string, string> = {};
-             for (const r of storedResumes) { if (r.url) restoredUrls[r.name] = r.url; }
-             if (Object.keys(restoredUrls).length > 0) previewUrlsRef.current = { ...previewUrlsRef.current, ...restoredUrls };
-             if (storedResumes.length > 0) runCompanyFinder(storedResumes as ParsedResume[]);
-           }
-         } catch { /* ignore */ }
-       }
+      // Auto-trigger company finder with the resumes we saved before clearing state
+      const resumesForCF = cfPendingResumesRef.current;
+      if (resumesForCF.length > 0 && !isRunningCFRef.current) {
+        cfPendingResumesRef.current = [];
+        runCompanyFinder(resumesForCF);
+      } else if (!isRunningCFRef.current) {
+        // Fallback: ref was cleared (post-navigation remount) — try sessionStorage
+        try {
+          const stored = sessionStorage.getItem(`cf_resumes_${interviewId}`);
+          if (stored) {
+            const storedResumes = JSON.parse(stored) as {
+              name: string;
+              text: string;
+              url?: string;
+            }[];
+            const restoredUrls: Record<string, string> = {};
+            for (const r of storedResumes) {
+              if (r.url) restoredUrls[r.name] = r.url;
+            }
+            if (Object.keys(restoredUrls).length > 0)
+              previewUrlsRef.current = {
+                ...previewUrlsRef.current,
+                ...restoredUrls,
+              };
+            if (storedResumes.length > 0)
+              runCompanyFinder(storedResumes as ParsedResume[]);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
     });
   };
 
@@ -1162,13 +1382,24 @@ export default function ScoringView({
     ];
 
     const isDynaTechRelevant = (c: AggregatedCompany) => {
-      const fields = [c.companyName, c.companyInfo || "", ...(c.technologies || []), ...(c.contexts || [])].join(" ").toLowerCase();
+      const fields = [
+        c.companyName,
+        c.companyInfo || "",
+        ...(c.technologies || []),
+        ...(c.contexts || []),
+      ]
+        .join(" ")
+        .toLowerCase();
       return /\bdynamics\b/.test(fields) || /\bsap\b/.test(fields);
     };
 
     const rows = filteredCFResults.map((c: AggregatedCompany) => [
       `"${c.companyName.replace(/"/g, '""')}"`,
-      c.companyType === "service_provider" ? "Service Provider" : c.companyType === "service_consumer" ? "Service Consumer" : "Unknown",
+      c.companyType === "service_provider"
+        ? "Service Provider"
+        : c.companyType === "service_consumer"
+          ? "Service Consumer"
+          : "Unknown",
       `"${(c.companyInfo || "").replace(/"/g, '""')}"`,
       `"${(c.headquarters || "").replace(/"/g, '""')}"`,
       c.foundedYear || "",
@@ -1179,8 +1410,12 @@ export default function ScoringView({
       isDynaTechRelevant(c) ? "True" : "False",
     ]);
 
-    const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const csvContent = [headers, ...rows]
+      .map((row) => row.join(","))
+      .join("\n");
+    const blob = new Blob(["\uFEFF" + csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1239,15 +1474,23 @@ export default function ScoringView({
       return [
         i + 1,
         r.resumeName,
-        esc(`${r.candidateDetails?.firstName || ""} ${r.candidateDetails?.lastName || ""}`.trim()),
+        esc(
+          `${r.candidateDetails?.firstName || ""} ${r.candidateDetails?.lastName || ""}`.trim(),
+        ),
         r.candidateDetails?.email || "",
         r.candidateDetails?.phone || "",
         r.suggestedTag || "",
         normalizeScore(r.overallScore),
         normalizeScore(r.categoryScores.skills),
-        r.experienceMatch === undefined ? normalizeScore(r.categoryScores.experience) : (r.experienceMatch ? "Yes" : "No"),
+        r.experienceMatch === undefined
+          ? normalizeScore(r.categoryScores.experience)
+          : r.experienceMatch
+            ? "Yes"
+            : "No",
         normalizeScore(r.categoryScores.education),
-        r.categoryScores.keywords !== undefined ? normalizeScore(r.categoryScores.keywords) : "",
+        r.categoryScores.keywords !== undefined
+          ? normalizeScore(r.categoryScores.keywords)
+          : "",
         esc(r.matchedSkills.join(", ")),
         esc(r.missingSkills.join(", ")),
         esc((r.strengths || []).join(", ")),
@@ -1262,7 +1505,11 @@ export default function ScoringView({
         esc(cp?.certifications || ""),
         esc(cp?.location || ""),
         // Experience Depth
-        esc((ed?.parameters || []).map((p) => `${p.parameter}: ${p.rating} - ${p.observation}`).join(" | ")),
+        esc(
+          (ed?.parameters || [])
+            .map((p) => `${p.parameter}: ${p.rating} - ${p.observation}`)
+            .join(" | "),
+        ),
         esc((ed?.keyObservations || []).join(" | ")),
         // SWOT
         esc((sw?.strengths || []).join(", ")),
@@ -1276,7 +1523,9 @@ export default function ScoringView({
     const csvContent = [headers, ...rows]
       .map((row) => row.join(","))
       .join("\n");
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob(["\uFEFF" + csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1286,7 +1535,9 @@ export default function ScoringView({
   };
 
   // Automatically create assignees from ATS results
-  const createAssigneesFromResults = async (scoredResults: ATSScoreResult[]) => {
+  const createAssigneesFromResults = async (
+    scoredResults: ATSScoreResult[],
+  ) => {
     const MIN_SCORE = 5;
     if (mountedRef.current) setCreatingAssignees(true);
     let created = 0;
@@ -1312,8 +1563,11 @@ export default function ScoringView({
       const details = result.candidateDetails;
 
       try {
-        let resumeUrl = result.resumeUrl || resumeUrlMap[result.resumeName] || "";
-        const matchingResume = resumes.find((r) => r.name === result.resumeName);
+        let resumeUrl =
+          result.resumeUrl || resumeUrlMap[result.resumeName] || "";
+        const matchingResume = resumes.find(
+          (r) => r.name === result.resumeName,
+        );
         if (!resumeUrl && matchingResume?.file) {
           try {
             const resumeFormData = new FormData();
@@ -1325,8 +1579,10 @@ export default function ScoringView({
             if (user?.id) {
               resumeFormData.append("userId", user.id);
             }
+            const token = localStorage.getItem("auth_token");
             const uploadRes = await fetch("/api/upload-resume", {
               method: "POST",
+              headers: token ? { Authorization: `Bearer ${token}` } : undefined,
               body: resumeFormData,
             });
             if (uploadRes.ok) {
@@ -1345,26 +1601,32 @@ export default function ScoringView({
             setResults((prev) => {
               if (!prev) return prev;
               return prev.map((r) =>
-                r.resumeName === result.resumeName ? { ...r, resumeUrl } : r
+                r.resumeName === result.resumeName ? { ...r, resumeUrl } : r,
               );
             });
           }
         }
 
-        await addAssignee({
-          first_name: details?.firstName || "",
-          last_name: details?.lastName || "",
-          email: details?.email || "",
-          phone: details?.phone || "",
-          resume_url: resumeUrl,
-          organization_id: user?.organization_id || null,
-          interview_id: interviewId,
-          tag: result.suggestedTag || null,
-          status: "active",
-        }, { silent: true });
+        await addAssignee(
+          {
+            first_name: details?.firstName || "",
+            last_name: details?.lastName || "",
+            email: details?.email || "",
+            phone: details?.phone || "",
+            resume_url: resumeUrl,
+            organization_id: user?.organization_id || null,
+            interview_id: interviewId,
+            tag: result.suggestedTag || null,
+            status: "active",
+          },
+          { silent: true },
+        );
         created++;
       } catch (error: any) {
-        if (error?.message?.includes("already exists") || error?.status === 409) {
+        if (
+          error?.message?.includes("already exists") ||
+          error?.status === 409
+        ) {
           skipped++;
         } else {
           failed++;
@@ -1391,8 +1653,10 @@ export default function ScoringView({
     if (mountedRef.current) {
       const extra: string[] = [];
       if (skipped > 0) extra.push(`${skipped} skipped (already exist)`);
-      if (expNotMatched > 0) extra.push(`${expNotMatched} skipped (experience doesn't match)`);
-      if (belowThreshold > 0) extra.push(`${belowThreshold} below score ${MIN_SCORE}`);
+      if (expNotMatched > 0)
+        extra.push(`${expNotMatched} skipped (experience doesn't match)`);
+      if (belowThreshold > 0)
+        extra.push(`${belowThreshold} below score ${MIN_SCORE}`);
       if (failed > 0) extra.push(`${failed} failed`);
 
       if (created > 0) {
@@ -1417,25 +1681,38 @@ export default function ScoringView({
 
     try {
       let resumesToScan = [...initialResumesToScan];
-      const existingCFResultsAtStart: AggregatedCompany[] = persistedCompanyResults || [];
+      const existingCFResultsAtStart: AggregatedCompany[] =
+        persistedCompanyResults || [];
       const existingCFResumeNamesAtStart: string[] = cfScannedResumeNames || [];
       cfAutoRestartAttempted.current = true;
       const CF_CONCURRENCY = 3;
 
       // Persist resume texts so we can auto-restart if the page is refreshed mid-run
       try {
-        sessionStorage.setItem(cfStorageKey, JSON.stringify(
-          resumesToScan.map((r) => ({ name: r.name, text: r.text, url: previewUrlsRef.current[r.name] || undefined }))
-        ));
-      } catch { /* ignore storage errors */ }
+        sessionStorage.setItem(
+          cfStorageKey,
+          JSON.stringify(
+            resumesToScan.map((r) => ({
+              name: r.name,
+              text: r.text,
+              url: previewUrlsRef.current[r.name] || undefined,
+            })),
+          ),
+        );
+      } catch {
+        /* ignore storage errors */
+      }
 
-      flushSync(() => { setCompanyAnalyzing(true); });
+      flushSync(() => {
+        setCompanyAnalyzing(true);
+      });
 
       // Resolve/create the DB scan ID once before the loop
       let resolvedScanId: string | null = cfScanId;
       if (!resolvedScanId) {
         try {
-          resolvedScanId = await CompanyFinderService.ensureAtsScan(interviewId);
+          resolvedScanId =
+            await CompanyFinderService.ensureAtsScan(interviewId);
           setCfScanId(resolvedScanId);
         } catch (err) {
           console.error("Failed to create CF scan before batching:", err);
@@ -1446,52 +1723,82 @@ export default function ScoringView({
       let reusedCompanies: AggregatedCompany[] = [];
       let reusedResumeNames: string[] = [];
       try {
-        const crossScan = await CompanyFinderService.findExistingResultsForResumes(
-          resolvedScanId || "",
-          resumesToScan.map((r) => r.name)
-        );
+        const crossScan =
+          await CompanyFinderService.findExistingResultsForResumes(
+            resolvedScanId || "",
+            resumesToScan.map((r) => r.name),
+          );
         if (crossScan.processedNames.length > 0) {
           reusedCompanies = crossScan.companies;
           reusedResumeNames = crossScan.processedNames;
           if (Object.keys(crossScan.resumeUrls).length > 0) {
-            previewUrlsRef.current = { ...previewUrlsRef.current, ...crossScan.resumeUrls };
+            previewUrlsRef.current = {
+              ...previewUrlsRef.current,
+              ...crossScan.resumeUrls,
+            };
             setPreviewUrls((prev) => ({ ...prev, ...crossScan.resumeUrls }));
           }
-          const reusedSet = new Set(reusedResumeNames.map((n) => n.toLowerCase().trim()));
-          resumesToScan = resumesToScan.filter((r) => !reusedSet.has(r.name.toLowerCase().trim()));
+          const reusedSet = new Set(
+            reusedResumeNames.map((n) => n.toLowerCase().trim()),
+          );
+          resumesToScan = resumesToScan.filter(
+            (r) => !reusedSet.has(r.name.toLowerCase().trim()),
+          );
         }
       } catch (err) {
-        console.error("Cross-scan lookup failed, proceeding with full analysis:", err);
+        console.error(
+          "Cross-scan lookup failed, proceeding with full analysis:",
+          err,
+        );
       }
 
       // If reused companies found, merge them immediately into current results
       if (reusedCompanies.length > 0) {
-        const reusedKeys = new Set(reusedCompanies.map((c) => c.companyName.trim().toLowerCase()));
+        const reusedKeys = new Set(
+          reusedCompanies.map((c) => c.companyName.trim().toLowerCase()),
+        );
         const merged = [
-          ...existingCFResultsAtStart.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
+          ...existingCFResultsAtStart.filter(
+            (c) => !reusedKeys.has(c.companyName.trim().toLowerCase()),
+          ),
           ...reusedCompanies,
         ];
-        flushSync(() => { setPersistedCompanyResults(merged); });
-        const names = Array.from(new Set([
-          ...existingCFResumeNamesAtStart,
-          ...reusedResumeNames,
-          ...merged.flatMap((c) => c.sourceResumes),
-        ]));
-        setCfScannedResumeNames((prev) => names.length > prev.length ? names : prev);
+        flushSync(() => {
+          setPersistedCompanyResults(merged);
+        });
+        const names = Array.from(
+          new Set([
+            ...existingCFResumeNamesAtStart,
+            ...reusedResumeNames,
+            ...merged.flatMap((c) => c.sourceResumes),
+          ]),
+        );
+        setCfScannedResumeNames((prev) =>
+          names.length > prev.length ? names : prev,
+        );
         await saveCFResultsToDB(merged, names, resolvedScanId);
       }
 
       // If all resumes were already processed in other scans, finish early
       if (resumesToScan.length === 0) {
         // Still update the resume count so the card shows the correct number
-        const allNames = Array.from(new Set([...existingCFResumeNamesAtStart, ...reusedResumeNames]));
+        const allNames = Array.from(
+          new Set([...existingCFResumeNamesAtStart, ...reusedResumeNames]),
+        );
         setCfScannedResumeNames(allNames);
-        try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
+        try {
+          sessionStorage.removeItem(cfStorageKey);
+        } catch {
+          /* ignore */
+        }
         return;
       }
 
       const scannedAt = new Date().toISOString();
-      const processedNamesSet = new Set<string>([...existingCFResumeNamesAtStart, ...reusedResumeNames]);
+      const processedNamesSet = new Set<string>([
+        ...existingCFResumeNamesAtStart,
+        ...reusedResumeNames,
+      ]);
 
       // ═══════════════════════════════════════════════════════════════════
       // STAGE A — Extract company names from resumes (gpt-5-mini, fast)
@@ -1502,16 +1809,25 @@ export default function ScoringView({
       }
 
       const totalResumes = resumesToScan.length;
-      setProcessingState(cfKey, { analyzing: true, itemCount: totalResumes, progress: { current: 0, total: totalResumes } });
+      setProcessingState(cfKey, {
+        analyzing: true,
+        itemCount: totalResumes,
+        progress: { current: 0, total: totalResumes },
+      });
 
       const allExtractedNames: ExtractedCompanyName[] = [];
       let resumesExtracted = 0;
 
       // Helper: build AggregatedCompany[] from extracted names + available enrichment data
-      const buildPartialResults = (enrichedCached: CachedCompany[]): AggregatedCompany[] => {
+      const buildPartialResults = (
+        enrichedCached: CachedCompany[],
+      ): AggregatedCompany[] => {
         const enrichedMap = new Map<string, CachedCompany>();
         for (const c of enrichedCached) {
-          enrichedMap.set(c.companyName.toLowerCase().trim().replace(/\s+/g, " "), c);
+          enrichedMap.set(
+            c.companyName.toLowerCase().trim().replace(/\s+/g, " "),
+            c,
+          );
         }
         const companyMap = new Map<string, AggregatedCompany>();
         for (const ext of allExtractedNames) {
@@ -1520,7 +1836,10 @@ export default function ScoringView({
           const existing = companyMap.get(key);
           if (existing) {
             existing.contexts.push(ext.context);
-            if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
+            if (
+              ext.resumeName &&
+              !existing.sourceResumes.includes(ext.resumeName)
+            ) {
               existing.sourceResumes.push(ext.resumeName);
             }
             existing.frequency = existing.sourceResumes.length;
@@ -1541,11 +1860,19 @@ export default function ScoringView({
             });
           }
         }
-        const aggregated = Array.from(companyMap.values()).sort((a, b) => b.frequency - a.frequency);
-        const newKeys = new Set(aggregated.map((c) => c.companyName.trim().toLowerCase()));
+        const aggregated = Array.from(companyMap.values()).sort(
+          (a, b) => b.frequency - a.frequency,
+        );
+        const newKeys = new Set(
+          aggregated.map((c) => c.companyName.trim().toLowerCase()),
+        );
         return [
-          ...existingCFResultsAtStart.filter((c) => !newKeys.has(c.companyName.trim().toLowerCase())),
-          ...reusedCompanies.filter((c) => !newKeys.has(c.companyName.trim().toLowerCase())),
+          ...existingCFResultsAtStart.filter(
+            (c) => !newKeys.has(c.companyName.trim().toLowerCase()),
+          ),
+          ...reusedCompanies.filter(
+            (c) => !newKeys.has(c.companyName.trim().toLowerCase()),
+          ),
           ...aggregated,
         ];
       };
@@ -1559,7 +1886,7 @@ export default function ScoringView({
             const names = await CompanyFinderService.extractCompanyNames(
               item.batch.map((r) => ({ name: r.name, text: r.text })),
               user?.id,
-              user?.organization_id
+              user?.organization_id,
             );
             allExtractedNames.push(...names);
           } catch (err) {
@@ -1569,11 +1896,16 @@ export default function ScoringView({
           for (const r of item.batch) processedNamesSet.add(r.name);
           const processedNames = Array.from(processedNamesSet);
           setCfScannedResumeNames((prev) =>
-            processedNames.length > prev.length ? processedNames : prev
+            processedNames.length > prev.length ? processedNames : prev,
           );
           // Resume-based progress (not step-based)
-          resumesExtracted = Math.min(resumesExtracted + item.batch.length, totalResumes);
-          setProcessingState(cfKey, { progress: { current: resumesExtracted, total: totalResumes } });
+          resumesExtracted = Math.min(
+            resumesExtracted + item.batch.length,
+            totalResumes,
+          );
+          setProcessingState(cfKey, {
+            progress: { current: resumesExtracted, total: totalResumes },
+          });
           // Save resume names to DB so they survive tab/page navigation during active run.
           // Use updateResumeNames (not saveCFResultsToDB) to avoid overwriting company results.
           if (resolvedScanId) {
@@ -1582,26 +1914,38 @@ export default function ScoringView({
               const u = previewUrlsRef.current[n] || resumeUrlMap[n];
               if (u) urlsForSave[n] = u;
             }
-            CompanyFinderService.updateResumeNames(resolvedScanId, processedNames, urlsForSave).catch(() => {});
+            CompanyFinderService.updateResumeNames(
+              resolvedScanId,
+              processedNames,
+              urlsForSave,
+            ).catch(() => {});
           }
         }
       };
       const extractWorkers = Array.from(
         { length: Math.min(CF_CONCURRENCY, extractBatches.length) },
-        () => extractWorker()
+        () => extractWorker(),
       );
       await Promise.all(extractWorkers);
 
       // Deduplicate company names
       const uniqueCompanyNames = Array.from(
-        new Set(allExtractedNames.map((c) => c.companyName.trim()))
+        new Set(allExtractedNames.map((c) => c.companyName.trim())),
       ).filter(Boolean);
 
       if (uniqueCompanyNames.length === 0 && reusedCompanies.length === 0) {
         // No companies found — still save resume names
         const processedNames = Array.from(processedNamesSet);
-        await saveCFResultsToDB(existingCFResultsAtStart, processedNames, resolvedScanId);
-        try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
+        await saveCFResultsToDB(
+          existingCFResultsAtStart,
+          processedNames,
+          resolvedScanId,
+        );
+        try {
+          sessionStorage.removeItem(cfStorageKey);
+        } catch {
+          /* ignore */
+        }
         return;
       }
 
@@ -1616,7 +1960,8 @@ export default function ScoringView({
       let cachedCompanies: CachedCompany[] = [];
       let cacheMisses: string[] = uniqueCompanyNames;
       try {
-        const cacheResult = await CompanyFinderService.lookupCache(uniqueCompanyNames);
+        const cacheResult =
+          await CompanyFinderService.lookupCache(uniqueCompanyNames);
         cachedCompanies = cacheResult.cached;
         cacheMisses = cacheResult.misses;
       } catch (err) {
@@ -1647,19 +1992,21 @@ export default function ScoringView({
                 item.batch,
                 user?.id,
                 user?.organization_id,
-                "ats_scoring"
+                "ats_scoring",
               );
               freshlyEnriched.push(...enriched);
             } catch (err) {
               console.error(`CF enrichment batch ${item.idx + 1} failed:`, err);
             }
             // Update companies progressively after each enrichment batch
-            setPersistedCompanyResults(buildPartialResults([...cachedCompanies, ...freshlyEnriched]));
+            setPersistedCompanyResults(
+              buildPartialResults([...cachedCompanies, ...freshlyEnriched]),
+            );
           }
         };
         const enrichWorkers = Array.from(
           { length: Math.min(CF_CONCURRENCY, enrichBatches.length) },
-          () => enrichWorker()
+          () => enrichWorker(),
         );
         await Promise.all(enrichWorkers);
       }
@@ -1682,7 +2029,10 @@ export default function ScoringView({
 
         if (existing) {
           existing.contexts.push(ext.context);
-          if (ext.resumeName && !existing.sourceResumes.includes(ext.resumeName)) {
+          if (
+            ext.resumeName &&
+            !existing.sourceResumes.includes(ext.resumeName)
+          ) {
             existing.sourceResumes.push(ext.resumeName);
           }
           existing.frequency = existing.sourceResumes.length;
@@ -1708,27 +2058,42 @@ export default function ScoringView({
       newAggregated.sort((a, b) => b.frequency - a.frequency);
 
       // Merge: reused + new + existing
-      const newCompanyKeys = new Set(newAggregated.map((c) => c.companyName.trim().toLowerCase()));
+      const newCompanyKeys = new Set(
+        newAggregated.map((c) => c.companyName.trim().toLowerCase()),
+      );
       const combined = [
-        ...existingCFResultsAtStart.filter((c) => !newCompanyKeys.has(c.companyName.trim().toLowerCase())),
-        ...reusedCompanies.filter((c) => !newCompanyKeys.has(c.companyName.trim().toLowerCase())),
+        ...existingCFResultsAtStart.filter(
+          (c) => !newCompanyKeys.has(c.companyName.trim().toLowerCase()),
+        ),
+        ...reusedCompanies.filter(
+          (c) => !newCompanyKeys.has(c.companyName.trim().toLowerCase()),
+        ),
         ...newAggregated,
       ];
 
-      flushSync(() => { setPersistedCompanyResults(combined); });
+      flushSync(() => {
+        setPersistedCompanyResults(combined);
+      });
       setExtractedCompanies([]); // no longer accumulating raw companies in 3-stage mode
       const processedNames = Array.from(processedNamesSet);
       setCfScannedResumeNames((prev) =>
-        processedNames.length > prev.length ? processedNames : prev
+        processedNames.length > prev.length ? processedNames : prev,
       );
       await saveCFResultsToDB(combined, processedNames, resolvedScanId);
 
       // All done — clear the restart token
-      try { sessionStorage.removeItem(cfStorageKey); } catch { /* ignore */ }
-
+      try {
+        sessionStorage.removeItem(cfStorageKey);
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       console.error("Company Finder run failed:", err);
-      try { sessionStorage.removeItem(`cf_resumes_${interviewId}`); } catch { /* ignore */ }
+      try {
+        sessionStorage.removeItem(`cf_resumes_${interviewId}`);
+      } catch {
+        /* ignore */
+      }
     } finally {
       isRunningCFRef.current = false;
       setProcessingState(`cf_${interviewId}`, { analyzing: false });
@@ -1764,10 +2129,16 @@ export default function ScoringView({
           const activeNames = new Set(updated.map((r) => r.resumeName));
           const updatedCF = persistedCompanyResults
             .map((c) => {
-              const validSources = c.sourceResumes.filter((r) => activeNames.has(r));
+              const validSources = c.sourceResumes.filter((r) =>
+                activeNames.has(r),
+              );
               if (validSources.length === 0) return null;
               return validSources.length < c.sourceResumes.length
-                ? { ...c, sourceResumes: validSources, frequency: Math.max(1, validSources.length) }
+                ? {
+                    ...c,
+                    sourceResumes: validSources,
+                    frequency: Math.max(1, validSources.length),
+                  }
                 : c;
             })
             .filter(Boolean) as AggregatedCompany[];
@@ -1781,11 +2152,13 @@ export default function ScoringView({
         setResults(previousResults);
       }
     },
-    [results, interviewId, persistedCompanyResults] // eslint-disable-next-line react-hooks/exhaustive-deps
+    [results, interviewId, persistedCompanyResults], // eslint-disable-next-line react-hooks/exhaustive-deps
   );
 
   // Selection state
-  const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
+  const [selectedResults, setSelectedResults] = useState<Set<string>>(
+    new Set(),
+  );
 
   const toggleSelect = (resumeName: string) => {
     setSelectedResults((prev) => {
@@ -1823,10 +2196,16 @@ export default function ScoringView({
         const activeNames = new Set(updated.map((r) => r.resumeName));
         const updatedCF = persistedCompanyResults
           .map((c) => {
-            const validSources = c.sourceResumes.filter((r) => activeNames.has(r));
+            const validSources = c.sourceResumes.filter((r) =>
+              activeNames.has(r),
+            );
             if (validSources.length === 0) return null;
             return validSources.length < c.sourceResumes.length
-              ? { ...c, sourceResumes: validSources, frequency: Math.max(1, validSources.length) }
+              ? {
+                  ...c,
+                  sourceResumes: validSources,
+                  frequency: Math.max(1, validSources.length),
+                }
               : c;
           })
           .filter(Boolean) as AggregatedCompany[];
@@ -1844,7 +2223,9 @@ export default function ScoringView({
 
   // Filter state
   const [searchQuery, setSearchQuery] = useState("");
-  const [scoreFilter, setScoreFilter] = useState<"all" | "excellent" | "strong" | "good">("all");
+  const [scoreFilter, setScoreFilter] = useState<
+    "all" | "excellent" | "strong" | "good"
+  >("all");
   const [sortBy, setSortBy] = useState<"score" | "name" | "date">("score");
 
   const canAnalyze =
@@ -1853,7 +2234,9 @@ export default function ScoringView({
   const avgScore =
     results && results.length > 0
       ? Math.round(
-          results.reduce((sum, r) => sum + normalizeScore(r.overallScore), 0) / results.length * 10
+          (results.reduce((sum, r) => sum + normalizeScore(r.overallScore), 0) /
+            results.length) *
+            10,
         ) / 10
       : 0;
 
@@ -1867,7 +2250,7 @@ export default function ScoringView({
   const saveCFResultsToDB = async (
     aggregated: AggregatedCompany[],
     resumeNames?: string[],
-    scanId?: string | null
+    scanId?: string | null,
   ) => {
     try {
       let id = scanId !== undefined ? scanId : cfScanId;
@@ -1881,7 +2264,8 @@ export default function ScoringView({
       // Build resume URLs — use ref for freshest data (avoids stale closure in long async runs)
       const urls: Record<string, string> = {};
       for (const n of names) {
-        const url = previewUrlsRef.current[n] || resumeUrlMap[n] || previewUrls[n];
+        const url =
+          previewUrlsRef.current[n] || resumeUrlMap[n] || previewUrls[n];
         if (url) urls[n] = url;
       }
       await CompanyFinderService.updateResults(id, {
@@ -1894,29 +2278,44 @@ export default function ScoringView({
     }
   };
 
-  const filteredCFResults = useMemo(() => companyResults
-    .filter((c) => {
-      if (cfRelevantOnly) {
-        const fields = [c.companyName, c.companyInfo || "", ...(c.technologies || []), ...(c.contexts || [])].join(" ").toLowerCase();
-        if (!/\bdynamics\b/.test(fields) && !/\bsap\b/.test(fields)) return false;
-      }
-      if (cfTypeFilter !== "all" && c.companyType !== cfTypeFilter) return false;
-      if (cfSearchQuery.trim()) {
-        const q = cfSearchQuery.toLowerCase();
-        return (
-          c.companyName.toLowerCase().includes(q) ||
-          (c.technologies || []).some((t) => t.toLowerCase().includes(q)) ||
-          (c.relevantDomains || []).some((d) => d.toLowerCase().includes(q)) ||
-          (c.companyInfo || "").toLowerCase().includes(q)
-        );
-      }
-      return true;
-    })
-    .sort((a, b) =>
-      cfSortBy === "frequency"
-        ? b.frequency - a.frequency
-        : a.companyName.localeCompare(b.companyName)
-    ), [companyResults, cfTypeFilter, cfSearchQuery, cfSortBy, cfRelevantOnly]);
+  const filteredCFResults = useMemo(
+    () =>
+      companyResults
+        .filter((c) => {
+          if (cfRelevantOnly) {
+            const fields = [
+              c.companyName,
+              c.companyInfo || "",
+              ...(c.technologies || []),
+              ...(c.contexts || []),
+            ]
+              .join(" ")
+              .toLowerCase();
+            if (!/\bdynamics\b/.test(fields) && !/\bsap\b/.test(fields))
+              return false;
+          }
+          if (cfTypeFilter !== "all" && c.companyType !== cfTypeFilter)
+            return false;
+          if (cfSearchQuery.trim()) {
+            const q = cfSearchQuery.toLowerCase();
+            return (
+              c.companyName.toLowerCase().includes(q) ||
+              (c.technologies || []).some((t) => t.toLowerCase().includes(q)) ||
+              (c.relevantDomains || []).some((d) =>
+                d.toLowerCase().includes(q),
+              ) ||
+              (c.companyInfo || "").toLowerCase().includes(q)
+            );
+          }
+          return true;
+        })
+        .sort((a, b) =>
+          cfSortBy === "frequency"
+            ? b.frequency - a.frequency
+            : a.companyName.localeCompare(b.companyName),
+        ),
+    [companyResults, cfTypeFilter, cfSearchQuery, cfSortBy, cfRelevantOnly],
+  );
 
   const toggleCFSelect = (companyName: string) => {
     const key = companyName.trim().toLowerCase();
@@ -1932,15 +2331,21 @@ export default function ScoringView({
     if (selectedCFCompanies.size === filteredCFResults.length) {
       setSelectedCFCompanies(new Set());
     } else {
-      setSelectedCFCompanies(new Set(filteredCFResults.map((c) => c.companyName.trim().toLowerCase())));
+      setSelectedCFCompanies(
+        new Set(
+          filteredCFResults.map((c) => c.companyName.trim().toLowerCase()),
+        ),
+      );
     }
   };
 
   const handleDeleteCFCompany = (companyName: string) => {
     const key = companyName.trim().toLowerCase();
-    setExtractedCompanies((prev) => prev.filter((c) => c.companyName.trim().toLowerCase() !== key));
+    setExtractedCompanies((prev) =>
+      prev.filter((c) => c.companyName.trim().toLowerCase() !== key),
+    );
     const updated = (persistedCompanyResults || []).filter(
-      (c) => c.companyName.trim().toLowerCase() !== key
+      (c) => c.companyName.trim().toLowerCase() !== key,
     );
     setPersistedCompanyResults(updated);
     saveCFResultsToDB(updated);
@@ -1948,10 +2353,12 @@ export default function ScoringView({
 
   const handleDeleteCFSelected = () => {
     setExtractedCompanies((prev) =>
-      prev.filter((c) => !selectedCFCompanies.has(c.companyName.trim().toLowerCase()))
+      prev.filter(
+        (c) => !selectedCFCompanies.has(c.companyName.trim().toLowerCase()),
+      ),
     );
     const updated = (persistedCompanyResults || []).filter(
-      (c) => !selectedCFCompanies.has(c.companyName.trim().toLowerCase())
+      (c) => !selectedCFCompanies.has(c.companyName.trim().toLowerCase()),
     );
     setPersistedCompanyResults(updated);
     setSelectedCFCompanies(new Set());
@@ -1959,37 +2366,42 @@ export default function ScoringView({
   };
 
   // Filtered results
-  const filteredResults = useMemo(() => results
-    ? results
-        .filter((r) => {
-          // Score filter (normalized to 0-10 scale)
-          const ns = normalizeScore(r.overallScore);
-          if (scoreFilter === "excellent" && ns < 8) return false;
-          if (scoreFilter === "strong" && ns < 7) return false;
-          if (scoreFilter === "good" && ns < 5.5) return false;
-          // Search filter
-          if (searchQuery.trim()) {
-            const q = searchQuery.toLowerCase();
-            const candidateName = r.candidateDetails
-              ? `${r.candidateDetails.firstName || ""} ${r.candidateDetails.lastName || ""}`.toLowerCase()
-              : "";
-            return (
-              r.resumeName.toLowerCase().includes(q) ||
-              candidateName.includes(q) ||
-              r.matchedSkills.some((s) => s.toLowerCase().includes(q)) ||
-              r.missingSkills.some((s) => s.toLowerCase().includes(q)) ||
-              r.summary.toLowerCase().includes(q)
-            );
-          }
-          return true;
-        })
-        .sort((a, b) => {
-          if (sortBy === "score") return b.overallScore - a.overallScore;
-          if (sortBy === "name") return a.resumeName.localeCompare(b.resumeName);
-          // date
-          return (b.scoredAt || "").localeCompare(a.scoredAt || "");
-        })
-    : null, [results, scoreFilter, searchQuery, sortBy]);
+  const filteredResults = useMemo(
+    () =>
+      results
+        ? results
+            .filter((r) => {
+              // Score filter (normalized to 0-10 scale)
+              const ns = normalizeScore(r.overallScore);
+              if (scoreFilter === "excellent" && ns < 8) return false;
+              if (scoreFilter === "strong" && ns < 7) return false;
+              if (scoreFilter === "good" && ns < 5.5) return false;
+              // Search filter
+              if (searchQuery.trim()) {
+                const q = searchQuery.toLowerCase();
+                const candidateName = r.candidateDetails
+                  ? `${r.candidateDetails.firstName || ""} ${r.candidateDetails.lastName || ""}`.toLowerCase()
+                  : "";
+                return (
+                  r.resumeName.toLowerCase().includes(q) ||
+                  candidateName.includes(q) ||
+                  r.matchedSkills.some((s) => s.toLowerCase().includes(q)) ||
+                  r.missingSkills.some((s) => s.toLowerCase().includes(q)) ||
+                  r.summary.toLowerCase().includes(q)
+                );
+              }
+              return true;
+            })
+            .sort((a, b) => {
+              if (sortBy === "score") return b.overallScore - a.overallScore;
+              if (sortBy === "name")
+                return a.resumeName.localeCompare(b.resumeName);
+              // date
+              return (b.scoredAt || "").localeCompare(a.scoredAt || "");
+            })
+        : null,
+    [results, scoreFilter, searchQuery, sortBy],
+  );
 
   // Loading state
   if (dataLoading) {
@@ -2037,9 +2449,7 @@ export default function ScoringView({
             <h2 className="text-2xl font-semibold tracking-tight">
               {interviewName}
             </h2>
-            <p className="text-sm text-gray-600 mt-0.5">
-              ATS Resume Scoring
-            </p>
+            <p className="text-sm text-gray-600 mt-0.5">ATS Resume Scoring</p>
           </div>
         </div>
         {activeTab === "companies"
@@ -2054,8 +2464,7 @@ export default function ScoringView({
                 <Download className="h-4 w-4 mr-2" />
                 Export CSV
               </Button>
-            )
-        }
+            )}
       </div>
 
       {/* Job Description Input */}
@@ -2100,11 +2509,7 @@ export default function ScoringView({
                         Parsed
                       </Badge>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleClearJd}
-                    >
+                    <Button variant="ghost" size="sm" onClick={handleClearJd}>
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
@@ -2129,7 +2534,9 @@ export default function ScoringView({
                       <p className="mt-2 text-sm text-slate-500">
                         Drop job description file here
                       </p>
-                      <p className="text-xs text-slate-400">PDF or Word, max 10MB</p>
+                      <p className="text-xs text-slate-400">
+                        PDF or Word, max 10MB
+                      </p>
                     </>
                   )}
                 </div>
@@ -2248,7 +2655,12 @@ export default function ScoringView({
                       <Loader2 className="h-3.5 w-3.5 text-indigo-400 animate-spin" />
                     ) : previewUrls[resume.name] ? (
                       <button
-                        onClick={() => setViewingResume({ url: previewUrls[resume.name], name: resume.name })}
+                        onClick={() =>
+                          setViewingResume({
+                            url: previewUrls[resume.name],
+                            name: resume.name,
+                          })
+                        }
                         className="hover:bg-indigo-100 rounded-full p-0.5 transition-colors"
                         title="View resume"
                       >
@@ -2280,12 +2692,15 @@ export default function ScoringView({
           {analyzing ? (
             <>
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Analyzing {analyzingCountRef.current.toLocaleString()} resume(s)...
+              Analyzing {analyzingCountRef.current.toLocaleString()}{" "}
+              resume(s)...
             </>
           ) : (
             <>
               <ScanSearch className="h-4 w-4 mr-2" />
-              Analyze {resumes.length > 0 ? `${resumes.length.toLocaleString()} ` : ""}Resume{resumes.length !== 1 ? "s" : ""}
+              Analyze{" "}
+              {resumes.length > 0 ? `${resumes.length.toLocaleString()} ` : ""}
+              Resume{resumes.length !== 1 ? "s" : ""}
             </>
           )}
         </Button>
@@ -2301,7 +2716,8 @@ export default function ScoringView({
                     {skippedInfo.count} resume(s) already scored
                   </p>
                   <p className="text-xs text-amber-600 mt-1">
-                    These were already scored for this job. To re-score, delete the existing result first.
+                    These were already scored for this job. To re-score, delete
+                    the existing result first.
                   </p>
                   <div className="flex flex-wrap gap-1.5 mt-2 overflow-y-auto max-h-[100px]">
                     {skippedInfo.names.map((name) => (
@@ -2336,7 +2752,8 @@ export default function ScoringView({
                     {failedToParse.count} file(s) failed to parse
                   </p>
                   <p className="text-xs text-red-600 mt-1">
-                    These files might be empty, corrupted, scanned (images), or too large (&gt;10MB).
+                    These files might be empty, corrupted, scanned (images), or
+                    too large (&gt;10MB).
                   </p>
                   <div className="flex flex-wrap gap-1.5 mt-2 overflow-y-auto max-h-[100px]">
                     {failedToParse.names.map((name) => (
@@ -2368,7 +2785,8 @@ export default function ScoringView({
                 Processing resumes...
               </span>
               <span className="text-sm font-medium text-indigo-700">
-                {Math.min(analyzeProgress.current, analyzingCountRef.current)}/{analyzingCountRef.current} processed
+                {Math.min(analyzeProgress.current, analyzingCountRef.current)}/
+                {analyzingCountRef.current} processed
               </span>
             </div>
             <div className="w-full bg-indigo-100 rounded-full h-2">
@@ -2380,7 +2798,9 @@ export default function ScoringView({
               />
             </div>
             {results && results.length > 0 && (
-              <p className="text-xs text-indigo-600 mt-2 text-center">{results.length} resumes scored so far — scroll down to view</p>
+              <p className="text-xs text-indigo-600 mt-2 text-center">
+                {results.length} resumes scored so far — scroll down to view
+              </p>
             )}
           </div>
         )}
@@ -2395,11 +2815,15 @@ export default function ScoringView({
           onComplete={handleBatchComplete}
           onProgress={(curr) => {
             setAnalyzeProgress({ current: curr, total: batchTotal });
-            setProcessingState(`ats_${interviewId}`, { progress: { current: curr, total: batchTotal } });
+            setProcessingState(`ats_${interviewId}`, {
+              progress: { current: curr, total: batchTotal },
+            });
             // Fetch scored results from DB after each batch so they show progressively
             if (curr > 0) {
               ATSJobService.getJobDetail(interviewId)
-                .then((detail) => { if (detail.results?.length > 0) setResults(detail.results); })
+                .then((detail) => {
+                  if (detail.results?.length > 0) setResults(detail.results);
+                })
                 .catch(() => {});
             }
           }}
@@ -2410,22 +2834,30 @@ export default function ScoringView({
 
       {/* Results Section */}
       {((results && results.length > 0) || batchJobActive || analyzing) && (
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "ats" | "companies")}>
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as "ats" | "companies")}
+        >
           <TabsList>
             <TabsTrigger value="ats" className="gap-1.5">
               <ScanSearch className="h-4 w-4" />
               ATS Scoring
             </TabsTrigger>
-            {user?.role === 'admin' && (
+            {user?.role === "admin" && (
               <TabsTrigger value="companies" className="gap-1.5">
                 <Building2 className="h-4 w-4" />
                 Companies Founded
-                {companyAnalyzing && <Loader2 className="h-3 w-3 animate-spin" />}
-                {!companyAnalyzing && !analyzing && !batchJobActive && companyResults.length > 0 && (
-                  <span className="ml-0.5 text-[11px] bg-indigo-100 text-indigo-700 rounded-full px-1.5 py-0.5 font-medium">
-                    {companyResults.length}
-                  </span>
+                {companyAnalyzing && (
+                  <Loader2 className="h-3 w-3 animate-spin" />
                 )}
+                {!companyAnalyzing &&
+                  !analyzing &&
+                  !batchJobActive &&
+                  companyResults.length > 0 && (
+                    <span className="ml-0.5 text-[11px] bg-indigo-100 text-indigo-700 rounded-full px-1.5 py-0.5 font-medium">
+                      {companyResults.length}
+                    </span>
+                  )}
               </TabsTrigger>
             )}
           </TabsList>
@@ -2441,8 +2873,12 @@ export default function ScoringView({
                         <Users className="h-5 w-5 text-indigo-500" />
                       </div>
                       <div>
-                        <p className="text-2xl font-bold">{(results || []).length.toLocaleString()}</p>
-                        <p className="text-xs text-slate-500">Resumes Analyzed</p>
+                        <p className="text-2xl font-bold">
+                          {(results || []).length.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Resumes Analyzed
+                        </p>
                       </div>
                     </div>
                   </CardContent>
@@ -2468,7 +2904,9 @@ export default function ScoringView({
                       </div>
                       <div>
                         <p className="text-2xl font-bold">
-                          {results?.[0] ? normalizeScore(results[0].overallScore) : 0}
+                          {results?.[0]
+                            ? normalizeScore(results[0].overallScore)
+                            : 0}
                         </p>
                         <p className="text-xs text-slate-500">Highest Score</p>
                       </div>
@@ -2483,7 +2921,11 @@ export default function ScoringView({
                       </div>
                       <div>
                         <p className="text-2xl font-bold">
-                          {results?.[results.length - 1] ? normalizeScore(results[results.length - 1].overallScore) : 0}
+                          {results?.[results.length - 1]
+                            ? normalizeScore(
+                                results[results.length - 1].overallScore,
+                              )
+                            : 0}
                         </p>
                         <p className="text-xs text-slate-500">Lowest Score</p>
                       </div>
@@ -2544,13 +2986,20 @@ export default function ScoringView({
           </TabsContent>
 
           {user?.role === "admin" && (
-            <TabsContent value="companies" className="mt-4 focus-visible:outline-none">
+            <TabsContent
+              value="companies"
+              className="mt-4 focus-visible:outline-none"
+            >
               <div className="flex flex-col gap-6">
                 {/* ATS scoring in progress — company results may be stale */}
                 {(analyzing || batchJobActive) && companyResults.length > 0 && (
                   <div className="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
                     <Loader2 className="h-4 w-4 animate-spin shrink-0 text-amber-600" />
-                    <span>ATS scoring is in progress. Company data shown below is from a previous run and will update once scoring completes.</span>
+                    <span>
+                      ATS scoring is in progress. Company data shown below is
+                      from a previous run and will update once scoring
+                      completes.
+                    </span>
                   </div>
                 )}
                 {/* Inline extraction progress */}
@@ -2578,7 +3027,13 @@ export default function ScoringView({
                       </div>
                       {cfProgress && cfProgress.total > 0 && (
                         <span className="text-sm font-bold text-indigo-700">
-                          {Math.min(100, Math.round((cfProgress.current / cfProgress.total) * 100))}%
+                          {Math.min(
+                            100,
+                            Math.round(
+                              (cfProgress.current / cfProgress.total) * 100,
+                            ),
+                          )}
+                          %
                         </span>
                       )}
                     </div>
@@ -2586,7 +3041,9 @@ export default function ScoringView({
                       <div className="h-1.5 w-full bg-indigo-100 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-indigo-500 rounded-full transition-all duration-500 ease-out"
-                          style={{ width: `${Math.min(100, Math.round((cfProgress.current / cfProgress.total) * 100))}%` }}
+                          style={{
+                            width: `${Math.min(100, Math.round((cfProgress.current / cfProgress.total) * 100))}%`,
+                          }}
                         />
                       </div>
                     )}
@@ -2602,8 +3059,12 @@ export default function ScoringView({
                           <Building2 className="h-5 w-5 text-indigo-500" />
                         </div>
                         <div>
-                          <p className="text-2xl font-bold">{companyResults.length.toLocaleString()}</p>
-                          <p className="text-xs text-slate-500">Total Unique Companies</p>
+                          <p className="text-2xl font-bold">
+                            {companyResults.length.toLocaleString()}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Total Unique Companies
+                          </p>
                         </div>
                       </div>
                     </CardContent>
@@ -2615,8 +3076,12 @@ export default function ScoringView({
                           <Users className="h-5 w-5 text-amber-500" />
                         </div>
                         <div>
-                          <p className="text-2xl font-bold">{cfScannedResumeNames.length.toLocaleString()}</p>
-                          <p className="text-xs text-slate-500">Resumes Processed</p>
+                          <p className="text-2xl font-bold">
+                            {cfScannedResumeNames.length.toLocaleString()}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Resumes Processed
+                          </p>
                         </div>
                       </div>
                     </CardContent>
@@ -2633,7 +3098,9 @@ export default function ScoringView({
                         : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
                     }`}
                   >
-                    <span className={`w-2 h-2 rounded-full ${cfRelevantOnly ? "bg-white" : "bg-slate-400"}`} />
+                    <span
+                      className={`w-2 h-2 rounded-full ${cfRelevantOnly ? "bg-white" : "bg-slate-400"}`}
+                    />
                     Dynatech Relevant
                   </button>
                   <div className="relative flex-1 w-full sm:max-w-sm">
@@ -2648,7 +3115,12 @@ export default function ScoringView({
                   <div className="flex items-center gap-3">
                     <select
                       value={cfTypeFilter}
-                      onChange={(e) => setCfTypeFilter(e.target.value as "all" | "service_provider" | "service_consumer")}
+                      onChange={(e) =>
+                        setCfTypeFilter(
+                          e.target.value as
+                            "all" | "service_provider" | "service_consumer",
+                        )
+                      }
                       className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
                     >
                       <option value="all">All Types</option>
@@ -2657,7 +3129,9 @@ export default function ScoringView({
                     </select>
                     <select
                       value={cfSortBy}
-                      onChange={(e) => setCfSortBy(e.target.value as "frequency" | "name")}
+                      onChange={(e) =>
+                        setCfSortBy(e.target.value as "frequency" | "name")
+                      }
                       className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
                     >
                       <option value="frequency">Sort by Freq</option>
@@ -2669,7 +3143,8 @@ export default function ScoringView({
                 {/* Select All / Bulk Delete bar */}
                 <div className="flex items-center justify-between">
                   <p className="text-sm text-slate-500">
-                    Showing {filteredCFResults.length.toLocaleString()} companies
+                    Showing {filteredCFResults.length.toLocaleString()}{" "}
+                    companies
                     {selectedCFCompanies.size > 0 && (
                       <span className="text-indigo-600 font-medium ml-1">
                         ({selectedCFCompanies.size.toLocaleString()} selected)
@@ -2684,7 +3159,8 @@ export default function ScoringView({
                       className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700 gap-1.5"
                     >
                       <Trash2 className="h-4 w-4" />
-                      Delete Selected ({selectedCFCompanies.size.toLocaleString()})
+                      Delete Selected (
+                      {selectedCFCompanies.size.toLocaleString()})
                     </Button>
                   )}
                 </div>

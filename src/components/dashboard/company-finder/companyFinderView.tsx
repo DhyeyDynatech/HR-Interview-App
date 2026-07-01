@@ -57,18 +57,21 @@ function aggregateCompanies(raw: ExtractedCompany[]): AggregatedCompany[] {
 
     if (existing) {
       // Merge technologies
-      for (const t of (c.technologies || [])) {
+      for (const t of c.technologies || []) {
         if (!existing.technologies.includes(t)) existing.technologies.push(t);
       }
       // Merge domains
-      for (const d of (c.relevantDomains || [])) {
+      for (const d of c.relevantDomains || []) {
         if (!existing.relevantDomains.includes(d))
           existing.relevantDomains.push(d);
       }
       // Keep factual fields from first occurrence if current is missing
-      if (!existing.companyInfo && c.companyInfo) existing.companyInfo = c.companyInfo;
-      if (!existing.headquarters && c.headquarters) existing.headquarters = c.headquarters;
-      if (!existing.foundedYear && c.foundedYear) existing.foundedYear = c.foundedYear;
+      if (!existing.companyInfo && c.companyInfo)
+        existing.companyInfo = c.companyInfo;
+      if (!existing.headquarters && c.headquarters)
+        existing.headquarters = c.headquarters;
+      if (!existing.foundedYear && c.foundedYear)
+        existing.foundedYear = c.foundedYear;
       // Merge countries from all occurrences (different batches may return different lists)
       if (c.countriesWorkedIn?.length) {
         if (!existing.countriesWorkedIn?.length) {
@@ -83,7 +86,10 @@ function aggregateCompanies(raw: ExtractedCompany[]): AggregatedCompany[] {
       }
       // Add context and source resume
       existing.contexts.push(c.context);
-      if ((c as any).resumeName && !existing.sourceResumes.includes((c as any).resumeName)) {
+      if (
+        (c as any).resumeName &&
+        !existing.sourceResumes.includes((c as any).resumeName)
+      ) {
         existing.sourceResumes.push((c as any).resumeName);
       }
       existing.frequency++;
@@ -113,15 +119,15 @@ interface CompanyFinderViewProps {
   scanId: string;
 }
 
-export default function CompanyFinderView({
-  scanId,
-}: CompanyFinderViewProps) {
+export default function CompanyFinderView({ scanId }: CompanyFinderViewProps) {
   const { user } = useAuth();
   const folderInputRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   // Tracks whether this component instance remounted into an already-running analysis
@@ -142,9 +148,11 @@ export default function CompanyFinderView({
         setCfBatchTotal(stored.batchTotal || stored.itemCount);
       }
       // Reload partial results from DB so user sees progress after navigating back
-      CompanyFinderService.getScanDetail(scanId).then((detail) => {
-        if (detail?.results?.length > 0) setResults(detail.results);
-      }).catch(() => {});
+      CompanyFinderService.getScanDetail(scanId)
+        .then((detail) => {
+          if (detail?.results?.length > 0) setResults(detail.results);
+        })
+        .catch(() => {});
     }
 
     const unsub = subscribeProcessing(scanId, (s) => {
@@ -168,9 +176,11 @@ export default function CompanyFinderView({
       // Delay slightly to let the DB write from the old closure complete.
       if (remountedIntoAnalysisRef.current) {
         setTimeout(() => {
-          CompanyFinderService.getScanDetail(scanId).then((detail) => {
-            if (detail?.results?.length > 0) setResults(detail.results);
-          }).catch(() => {});
+          CompanyFinderService.getScanDetail(scanId)
+            .then((detail) => {
+              if (detail?.results?.length > 0) setResults(detail.results);
+            })
+            .catch(() => {});
         }, 1500);
       }
     });
@@ -185,7 +195,10 @@ export default function CompanyFinderView({
 
   // Analysis state
   const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeProgress, setAnalyzeProgress] = useState({ current: 0, total: 0 });
+  const [analyzeProgress, setAnalyzeProgress] = useState({
+    current: 0,
+    total: 0,
+  });
   const [results, setResults] = useState<AggregatedCompany[] | null>(null);
 
   // Loading saved data
@@ -194,9 +207,15 @@ export default function CompanyFinderView({
 
   // Resume URLs (name → url mapping)
   const [resumeUrls, setResumeUrls] = useState<Record<string, string>>({});
-  const [viewingResume, setViewingResume] = useState<{ url: string; name: string } | null>(null);
+  const [viewingResume, setViewingResume] = useState<{
+    url: string;
+    name: string;
+  } | null>(null);
   const analyzingCountRef = useRef(0);
-  const [skippedInfo, setSkippedInfo] = useState<{ count: number; names: string[] } | null>(null);
+  const [skippedInfo, setSkippedInfo] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
 
   // Track files currently being uploaded for preview
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
@@ -211,7 +230,9 @@ export default function CompanyFinderView({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  useEffect(() => { setCurrentPage(1); }, [searchQuery, typeFilter, relevantOnly, sortBy]);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, typeFilter, relevantOnly, sortBy]);
 
   // ---------- Load saved data on mount ----------
 
@@ -256,7 +277,8 @@ export default function CompanyFinderView({
         const detail = await CompanyFinderService.getScanDetail(scanId);
         if (detail.results?.length) {
           setResults(detail.results);
-          if (detail.resumeNames?.length) setSavedResumeNames(detail.resumeNames);
+          if (detail.resumeNames?.length)
+            setSavedResumeNames(detail.resumeNames);
           if (detail.resumeUrls) setResumeUrls(detail.resumeUrls);
         }
       } catch (err) {
@@ -278,7 +300,7 @@ export default function CompanyFinderView({
     const validFiles = files.filter(
       (f) =>
         supportedTypes.includes(f.type) ||
-        supportedExts.some((ext) => f.name.toLowerCase().endsWith(ext))
+        supportedExts.some((ext) => f.name.toLowerCase().endsWith(ext)),
     );
 
     if (validFiles.length === 0) {
@@ -311,14 +333,18 @@ export default function CompanyFinderView({
         try {
           const formData = new FormData();
           formData.append("file", file);
-          if (user?.organization_id) formData.append("organizationId", user.organization_id);
+          if (user?.organization_id)
+            formData.append("organizationId", user.organization_id);
           if (user?.id) formData.append("userId", user.id);
           const result = await parsePdf(formData);
 
           if (result.success && result.text && result.text.trim().length > 0) {
             newResumes.push({ name: file.name, text: result.text, file });
           } else {
-            console.warn(`Parse returned empty for ${file.name}:`, result.error || 'empty text');
+            console.warn(
+              `Parse returned empty for ${file.name}:`,
+              result.error || "empty text",
+            );
             skippedCount++;
             skippedNames.push(file.name);
           }
@@ -335,7 +361,7 @@ export default function CompanyFinderView({
 
     const workers = Array.from(
       { length: Math.min(PARSE_CONCURRENCY, validFiles.length) },
-      () => worker()
+      () => worker(),
     );
     await Promise.all(workers);
 
@@ -347,7 +373,7 @@ export default function CompanyFinderView({
     }
     if (skippedCount > 0) {
       toast.warning(
-        `${skippedCount} file(s) skipped (too large or failed to parse): ${skippedNames.join(', ')}`
+        `${skippedCount} file(s) skipped (too large or failed to parse): ${skippedNames.join(", ")}`,
       );
     }
 
@@ -360,7 +386,7 @@ export default function CompanyFinderView({
       await processResumeFiles(acceptedFiles);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [resumes.length]
+    [resumes.length],
   );
 
   const {
@@ -369,16 +395,15 @@ export default function CompanyFinderView({
   } = useDropzone({
     accept: {
       "application/pdf": [".pdf"],
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        [".docx"],
       "application/msword": [".doc"],
     },
     onDrop: onResumeDrop,
     disabled: parsingResumes,
   });
 
-  const handleFolderUpload = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     await processResumeFiles(Array.from(files));
@@ -416,7 +441,12 @@ export default function CompanyFinderView({
           if (orgId) formData.append("organizationId", orgId);
           if (user?.id) formData.append("userId", user.id);
 
-          const res = await fetch("/api/upload-resume", { method: "POST", body: formData });
+          const token = localStorage.getItem("auth_token");
+          const res = await fetch("/api/upload-resume", {
+            method: "POST",
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            body: formData,
+          });
           if (res.ok) {
             const { resumeUrl } = await res.json();
             if (resumeUrl) {
@@ -432,7 +462,7 @@ export default function CompanyFinderView({
             return next;
           });
         }
-      })
+      }),
     );
   };
 
@@ -454,7 +484,8 @@ export default function CompanyFinderView({
       CompanyFinderService.getScanDetail(scanId)
         .then((detail) => {
           if (detail?.results?.length > 0) setResults(detail.results);
-          if (detail?.resumeUrls) setResumeUrls((prev) => ({ ...prev, ...detail.resumeUrls }));
+          if (detail?.resumeUrls)
+            setResumeUrls((prev) => ({ ...prev, ...detail.resumeUrls }));
         })
         .catch(() => {});
     }, 15_000);
@@ -472,9 +503,10 @@ export default function CompanyFinderView({
     const existingResumeNamesAtStart: string[] = savedResumeNames || [];
 
     // Skip resumes already analyzed in this scan
-    const existingNames = (results && results.length > 0)
-      ? new Set(existingResumeNamesAtStart)
-      : new Set<string>();
+    const existingNames =
+      results && results.length > 0
+        ? new Set(existingResumeNamesAtStart)
+        : new Set<string>();
     const skippedResumes = resumes.filter((r) => existingNames.has(r.name));
     let newResumes = resumes.filter((r) => !existingNames.has(r.name));
 
@@ -492,28 +524,42 @@ export default function CompanyFinderView({
 
     // Check for cross-scan reuse before queuing
     try {
-      const crossScan = await CompanyFinderService.findExistingResultsForResumes(
-        scanId,
-        newResumes.map((r) => r.name)
-      );
+      const crossScan =
+        await CompanyFinderService.findExistingResultsForResumes(
+          scanId,
+          newResumes.map((r) => r.name),
+        );
       if (crossScan.processedNames.length > 0) {
         if (Object.keys(crossScan.resumeUrls).length > 0) {
           setResumeUrls((prev) => ({ ...prev, ...crossScan.resumeUrls }));
         }
-        const reusedSet = new Set(crossScan.processedNames.map((n) => n.toLowerCase().trim()));
-        newResumes = newResumes.filter((r) => !reusedSet.has(r.name.toLowerCase().trim()));
+        const reusedSet = new Set(
+          crossScan.processedNames.map((n) => n.toLowerCase().trim()),
+        );
+        newResumes = newResumes.filter(
+          (r) => !reusedSet.has(r.name.toLowerCase().trim()),
+        );
 
         if (newResumes.length === 0 && crossScan.companies.length > 0) {
           // All found in other scans — merge and finish
           const existingBase = results || [];
-          const reusedKeys = new Set(crossScan.companies.map((c) => c.companyName.trim().toLowerCase()));
+          const reusedKeys = new Set(
+            crossScan.companies.map((c) => c.companyName.trim().toLowerCase()),
+          );
           const merged = [
-            ...existingBase.filter((c) => !reusedKeys.has(c.companyName.trim().toLowerCase())),
+            ...existingBase.filter(
+              (c) => !reusedKeys.has(c.companyName.trim().toLowerCase()),
+            ),
             ...crossScan.companies,
           ];
           merged.sort((a, b) => b.frequency - a.frequency);
           setResults(merged);
-          const allNames = Array.from(new Set([...existingResumeNamesAtStart, ...crossScan.processedNames]));
+          const allNames = Array.from(
+            new Set([
+              ...existingResumeNamesAtStart,
+              ...crossScan.processedNames,
+            ]),
+          );
           setSavedResumeNames(allNames);
           await CompanyFinderService.updateResults(scanId, {
             results: merged,
@@ -521,11 +567,15 @@ export default function CompanyFinderView({
             resumeUrls: { ...resumeUrls, ...crossScan.resumeUrls },
           });
           setResumes([]);
-          toast.success(`Reused ${crossScan.companies.length} companies from existing scans`);
+          toast.success(
+            `Reused ${crossScan.companies.length} companies from existing scans`,
+          );
           return;
         }
         if (crossScan.processedNames.length > 0) {
-          toast.info(`${crossScan.processedNames.length} resume(s) already scanned — reusing existing results`);
+          toast.info(
+            `${crossScan.processedNames.length} resume(s) already scanned — reusing existing results`,
+          );
         }
       }
     } catch (err) {
@@ -534,7 +584,11 @@ export default function CompanyFinderView({
 
     analyzingCountRef.current = newResumes.length;
     setAnalyzing(true);
-    setProcessingState(scanId, { analyzing: true, itemCount: newResumes.length, progress: { current: 0, total: newResumes.length } });
+    setProcessingState(scanId, {
+      analyzing: true,
+      itemCount: newResumes.length,
+      progress: { current: 0, total: newResumes.length },
+    });
 
     try {
       // Wait for resume blob uploads so URLs are available
@@ -549,11 +603,11 @@ export default function CompanyFinderView({
 
         await CompanyFinderService.startBatchAnalysis(
           scanId,
-          chunk.map(r => ({
+          chunk.map((r) => ({
             name: r.name,
             text: r.text,
             url: resumeUrls[r.name] || undefined,
-          }))
+          })),
         );
 
         totalQueued += chunk.length;
@@ -574,10 +628,14 @@ export default function CompanyFinderView({
       // Memory cleanup: release parsed resume text from browser
       setResumes([]);
 
-      toast.success(`Queued ${newResumes.length} resumes — server-side analysis starting...`);
+      toast.success(
+        `Queued ${newResumes.length} resumes — server-side analysis starting...`,
+      );
     } catch (error: any) {
       console.error("Company finder queue error:", error);
-      toast.error("Failed to start analysis", { description: error.message || "Please try again." });
+      toast.error("Failed to start analysis", {
+        description: error.message || "Please try again.",
+      });
       setAnalyzing(false);
       setCfBatchActive(false);
       setProcessingState(scanId, { analyzing: false });
@@ -589,24 +647,28 @@ export default function CompanyFinderView({
     if (!mountedRef.current) return;
 
     // Reload results from DB (they were saved incrementally by the process route)
-    CompanyFinderService.getScanDetail(scanId).then((detail) => {
-      if (detail?.results?.length > 0) setResults(detail.results);
-      if (detail?.resumeNames?.length > 0) setSavedResumeNames(detail.resumeNames);
-      if (detail?.resumeUrls) setResumeUrls((prev) => ({ ...prev, ...detail.resumeUrls }));
+    CompanyFinderService.getScanDetail(scanId)
+      .then((detail) => {
+        if (detail?.results?.length > 0) setResults(detail.results);
+        if (detail?.resumeNames?.length > 0)
+          setSavedResumeNames(detail.resumeNames);
+        if (detail?.resumeUrls)
+          setResumeUrls((prev) => ({ ...prev, ...detail.resumeUrls }));
 
-      setCfBatchActive(false);
-      setAnalyzing(false);
-      setAnalyzeProgress({ current: 0, total: 0 });
-      setProcessingState(scanId, { analyzing: false, batchJobActive: false });
-      clearProcessingState(scanId);
+        setCfBatchActive(false);
+        setAnalyzing(false);
+        setAnalyzeProgress({ current: 0, total: 0 });
+        setProcessingState(scanId, { analyzing: false, batchJobActive: false });
+        clearProcessingState(scanId);
 
-      if (mountedRef.current) toast.success("Company analysis complete!");
-    }).catch(() => {
-      setCfBatchActive(false);
-      setAnalyzing(false);
-      setProcessingState(scanId, { analyzing: false });
-      clearProcessingState(scanId);
-    });
+        if (mountedRef.current) toast.success("Company analysis complete!");
+      })
+      .catch(() => {
+        setCfBatchActive(false);
+        setAnalyzing(false);
+        setProcessingState(scanId, { analyzing: false });
+        clearProcessingState(scanId);
+      });
   };
 
   // ---------- Upload resume files for View Resume ----------
@@ -614,7 +676,7 @@ export default function CompanyFinderView({
   const uploadResumeFiles = async (
     resumeList: CFParsedResume[],
     allResumeNames: string[],
-    currentResults: AggregatedCompany[]
+    currentResults: AggregatedCompany[],
   ) => {
     const orgId = user?.organization_id;
 
@@ -628,8 +690,10 @@ export default function CompanyFinderView({
           if (orgId) formData.append("organizationId", orgId);
           if (user?.id) formData.append("userId", user.id);
 
+          const token = localStorage.getItem("auth_token");
           const res = await fetch("/api/upload-resume", {
             method: "POST",
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
             body: formData,
           });
           if (res.ok) {
@@ -686,13 +750,24 @@ export default function CompanyFinderView({
     ];
 
     const isDynaTechRelevant = (c: AggregatedCompany) => {
-      const fields = [c.companyName, c.companyInfo || "", ...(c.technologies || []), ...(c.contexts || [])].join(" ").toLowerCase();
+      const fields = [
+        c.companyName,
+        c.companyInfo || "",
+        ...(c.technologies || []),
+        ...(c.contexts || []),
+      ]
+        .join(" ")
+        .toLowerCase();
       return /\bdynamics\b/.test(fields) || /\bsap\b/.test(fields);
     };
 
     const rows = filteredResults.map((c) => [
       `"${c.companyName.replace(/"/g, '""')}"`,
-      c.companyType === "service_provider" ? "Service Provider" : c.companyType === "service_consumer" ? "Service Consumer" : "Unknown",
+      c.companyType === "service_provider"
+        ? "Service Provider"
+        : c.companyType === "service_consumer"
+          ? "Service Consumer"
+          : "Unknown",
       `"${(c.companyInfo || "").replace(/"/g, '""')}"`,
       `"${(c.headquarters || "").replace(/"/g, '""')}"`,
       c.foundedYear || "",
@@ -730,12 +805,16 @@ export default function CompanyFinderView({
               c.companyInfo || "",
               ...(c.technologies || []),
               ...(c.contexts || []),
-            ].join(" ").toLowerCase();
-            const isDynamicsOrSAP = /\bdynamics\b/.test(searchFields) || /\bsap\b/.test(searchFields);
+            ]
+              .join(" ")
+              .toLowerCase();
+            const isDynamicsOrSAP =
+              /\bdynamics\b/.test(searchFields) || /\bsap\b/.test(searchFields);
             if (!isDynamicsOrSAP) return false;
           }
 
-          if (typeFilter !== "all" && c.companyType !== typeFilter) return false;
+          if (typeFilter !== "all" && c.companyType !== typeFilter)
+            return false;
           if (searchQuery.trim()) {
             const q = searchQuery.toLowerCase();
             return (
@@ -752,7 +831,10 @@ export default function CompanyFinderView({
     : null;
 
   const pagedResults = filteredResults
-    ? filteredResults.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    ? filteredResults.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+      )
     : null;
 
   // ---------- Delete company ----------
@@ -761,7 +843,9 @@ export default function CompanyFinderView({
     (companyName: string) => {
       if (!results) return;
       const updated = results.filter(
-        (c) => c.companyName.trim().toLowerCase() !== companyName.trim().toLowerCase()
+        (c) =>
+          c.companyName.trim().toLowerCase() !==
+          companyName.trim().toLowerCase(),
       );
       const hasResults = updated.length > 0;
       setResults(hasResults ? updated : null);
@@ -780,12 +864,14 @@ export default function CompanyFinderView({
 
       toast.success("Company removed");
     },
-    [results, scanId, savedResumeNames]
+    [results, scanId, savedResumeNames],
   );
 
   // ---------- Selection ----------
 
-  const [selectedCompanies, setSelectedCompanies] = useState<Set<string>>(new Set());
+  const [selectedCompanies, setSelectedCompanies] = useState<Set<string>>(
+    new Set(),
+  );
 
   const toggleSelect = (companyName: string) => {
     setSelectedCompanies((prev) => {
@@ -803,7 +889,7 @@ export default function CompanyFinderView({
       setSelectedCompanies(new Set());
     } else {
       setSelectedCompanies(
-        new Set(filteredResults.map((c) => c.companyName.trim().toLowerCase()))
+        new Set(filteredResults.map((c) => c.companyName.trim().toLowerCase())),
       );
     }
   };
@@ -812,7 +898,7 @@ export default function CompanyFinderView({
     if (!results || selectedCompanies.size === 0) return;
     const count = selectedCompanies.size;
     const updated = results.filter(
-      (c) => !selectedCompanies.has(c.companyName.trim().toLowerCase())
+      (c) => !selectedCompanies.has(c.companyName.trim().toLowerCase()),
     );
     const hasResults = updated.length > 0;
     setResults(hasResults ? updated : null);
@@ -985,7 +1071,12 @@ export default function CompanyFinderView({
                       <Loader2 className="h-3.5 w-3.5 text-indigo-400 animate-spin" />
                     ) : resumeUrls[resume.name] ? (
                       <button
-                        onClick={() => setViewingResume({ url: resumeUrls[resume.name], name: resume.name })}
+                        onClick={() =>
+                          setViewingResume({
+                            url: resumeUrls[resume.name],
+                            name: resume.name,
+                          })
+                        }
                         className="hover:bg-indigo-100 rounded-full p-0.5 transition-colors"
                         title="View resume"
                       >
@@ -1003,7 +1094,6 @@ export default function CompanyFinderView({
               </div>
             </div>
           )}
-
         </CardContent>
       </Card>
 
@@ -1018,7 +1108,8 @@ export default function CompanyFinderView({
           {analyzing ? (
             <>
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Finding companies in {analyzingCountRef.current.toLocaleString()} resume(s)...
+              Finding companies in {analyzingCountRef.current.toLocaleString()}{" "}
+              resume(s)...
             </>
           ) : (
             <>
@@ -1042,7 +1133,8 @@ export default function CompanyFinderView({
                     {skippedInfo.count} resume(s) skipped
                   </p>
                   <p className="text-xs text-amber-600 mt-1">
-                    Already analyzed. To re-analyze, delete the existing results first and upload again.
+                    Already analyzed. To re-analyze, delete the existing results
+                    first and upload again.
                   </p>
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {skippedInfo.names.map((name) => (
@@ -1070,7 +1162,9 @@ export default function CompanyFinderView({
         {analyzing && !cfBatchActive && analyzeProgress.total > 1 && (
           <div className="w-full max-w-md p-3 bg-indigo-50 rounded-lg border border-indigo-100">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-indigo-700">Queuing resumes...</span>
+              <span className="text-sm text-indigo-700">
+                Queuing resumes...
+              </span>
               <span className="text-sm font-medium text-indigo-700">
                 {analyzeProgress.current}/{analyzeProgress.total} queued
               </span>
@@ -1078,7 +1172,9 @@ export default function CompanyFinderView({
             <div className="w-full bg-indigo-100 rounded-full h-2">
               <div
                 className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${analyzeProgress.total > 0 ? (analyzeProgress.current / analyzeProgress.total) * 100 : 0}%` }}
+                style={{
+                  width: `${analyzeProgress.total > 0 ? (analyzeProgress.current / analyzeProgress.total) * 100 : 0}%`,
+                }}
               />
             </div>
           </div>
@@ -1093,11 +1189,15 @@ export default function CompanyFinderView({
           onComplete={handleCFBatchComplete}
           onProgress={(curr) => {
             setAnalyzeProgress({ current: curr, total: cfBatchTotal });
-            setProcessingState(scanId, { progress: { current: curr, total: cfBatchTotal } });
+            setProcessingState(scanId, {
+              progress: { current: curr, total: cfBatchTotal },
+            });
             // Reload results incrementally from DB
             if (curr > 0) {
               CompanyFinderService.getScanDetail(scanId)
-                .then((detail) => { if (detail?.results?.length > 0) setResults(detail.results); })
+                .then((detail) => {
+                  if (detail?.results?.length > 0) setResults(detail.results);
+                })
                 .catch(() => {});
             }
           }}
@@ -1145,7 +1245,9 @@ export default function CompanyFinderView({
                   : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
               }`}
             >
-              <span className={`w-2 h-2 rounded-full ${relevantOnly ? "bg-white" : "bg-slate-400"}`} />
+              <span
+                className={`w-2 h-2 rounded-full ${relevantOnly ? "bg-white" : "bg-slate-400"}`}
+              />
               Dynatech Relevant
             </button>
             <div className="relative flex-1 w-full sm:max-w-sm">
@@ -1189,7 +1291,10 @@ export default function CompanyFinderView({
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={filteredResults.length > 0 && selectedCompanies.size === filteredResults.length}
+                    checked={
+                      filteredResults.length > 0 &&
+                      selectedCompanies.size === filteredResults.length
+                    }
                     onChange={toggleSelectAll}
                     className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                   />
@@ -1228,7 +1333,11 @@ export default function CompanyFinderView({
                       <th className="py-3 px-3 w-10">
                         <input
                           type="checkbox"
-                          checked={!!filteredResults && filteredResults.length > 0 && selectedCompanies.size === filteredResults.length}
+                          checked={
+                            !!filteredResults &&
+                            filteredResults.length > 0 &&
+                            selectedCompanies.size === filteredResults.length
+                          }
                           onChange={toggleSelectAll}
                           className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                         />
@@ -1245,8 +1354,7 @@ export default function CompanyFinderView({
                       <th className="text-center py-3 px-4 font-medium text-slate-600">
                         Frequency
                       </th>
-                      <th className="text-center py-3 px-2 font-medium text-slate-600 w-10">
-                      </th>
+                      <th className="text-center py-3 px-2 font-medium text-slate-600 w-10"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1254,7 +1362,9 @@ export default function CompanyFinderView({
                       <tr
                         key={index}
                         className={`border-b last:border-0 hover:bg-slate-50 transition-colors ${
-                          selectedCompanies.has(company.companyName.trim().toLowerCase())
+                          selectedCompanies.has(
+                            company.companyName.trim().toLowerCase(),
+                          )
                             ? "bg-indigo-50/50"
                             : ""
                         }`}
@@ -1262,7 +1372,9 @@ export default function CompanyFinderView({
                         <td className="py-3 px-3">
                           <input
                             type="checkbox"
-                            checked={selectedCompanies.has(company.companyName.trim().toLowerCase())}
+                            checked={selectedCompanies.has(
+                              company.companyName.trim().toLowerCase(),
+                            )}
                             onChange={() => toggleSelect(company.companyName)}
                             className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                           />
@@ -1274,11 +1386,14 @@ export default function CompanyFinderView({
                           {company.scannedAt && (
                             <span className="flex items-center gap-1 text-[11px] text-slate-400 mt-0.5">
                               <Calendar className="h-3 w-3" />
-                              {new Date(company.scannedAt).toLocaleDateString("en-US", {
-                                month: "short",
-                                day: "numeric",
-                                year: "numeric",
-                              })}
+                              {new Date(company.scannedAt).toLocaleDateString(
+                                "en-US",
+                                {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                },
+                              )}
                             </span>
                           )}
                         </td>
@@ -1289,15 +1404,15 @@ export default function CompanyFinderView({
                                 company.companyType === "service_provider"
                                   ? "bg-blue-100 text-blue-700 hover:bg-blue-100"
                                   : company.companyType === "service_consumer"
-                                  ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
-                                  : "bg-slate-100 text-slate-500 hover:bg-slate-100"
+                                    ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
+                                    : "bg-slate-100 text-slate-500 hover:bg-slate-100"
                               }`}
                             >
                               {company.companyType === "service_provider"
                                 ? "Provider"
                                 : company.companyType === "service_consumer"
-                                ? "Consumer"
-                                : "Unknown"}
+                                  ? "Consumer"
+                                  : "Unknown"}
                             </Badge>
                           ) : (
                             <Badge className="whitespace-nowrap bg-slate-100 text-slate-500 hover:bg-slate-100">
@@ -1309,34 +1424,43 @@ export default function CompanyFinderView({
                           {/* Company Info */}
                           {company.companyInfo && (
                             <div className="mb-2">
-                              <span className="text-[10px] font-semibold text-indigo-600 uppercase tracking-wide">Company Info</span>
-                              <p className="text-xs text-slate-700 mt-0.5">{company.companyInfo}</p>
+                              <span className="text-[10px] font-semibold text-indigo-600 uppercase tracking-wide">
+                                Company Info
+                              </span>
+                              <p className="text-xs text-slate-700 mt-0.5">
+                                {company.companyInfo}
+                              </p>
                               {/* Metadata row: HQ | Founded | Countries */}
                               <div className="flex flex-wrap items-center gap-3 mt-1.5">
-                                {company.headquarters && company.headquarters !== "Unknown" && (
-                                  <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                                    <MapPin className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                                    {company.headquarters}
-                                  </span>
-                                )}
-                                {company.foundedYear && company.foundedYear !== "Unknown" && (
-                                  <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                                    <Calendar className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                                    Est. {company.foundedYear}
-                                  </span>
-                                )}
-                                {company.countriesWorkedIn && company.countriesWorkedIn.length > 0 && (
-                                  <span className="flex items-center gap-1 text-[11px] text-slate-500">
-                                    <Globe className="h-3 w-3 text-slate-400 flex-shrink-0" />
-                                    {company.countriesWorkedIn.join(", ")}
-                                  </span>
-                                )}
+                                {company.headquarters &&
+                                  company.headquarters !== "Unknown" && (
+                                    <span className="flex items-center gap-1 text-[11px] text-slate-500">
+                                      <MapPin className="h-3 w-3 text-slate-400 flex-shrink-0" />
+                                      {company.headquarters}
+                                    </span>
+                                  )}
+                                {company.foundedYear &&
+                                  company.foundedYear !== "Unknown" && (
+                                    <span className="flex items-center gap-1 text-[11px] text-slate-500">
+                                      <Calendar className="h-3 w-3 text-slate-400 flex-shrink-0" />
+                                      Est. {company.foundedYear}
+                                    </span>
+                                  )}
+                                {company.countriesWorkedIn &&
+                                  company.countriesWorkedIn.length > 0 && (
+                                    <span className="flex items-center gap-1 text-[11px] text-slate-500">
+                                      <Globe className="h-3 w-3 text-slate-400 flex-shrink-0" />
+                                      {company.countriesWorkedIn.join(", ")}
+                                    </span>
+                                  )}
                               </div>
                             </div>
                           )}
                           {/* Why Selected */}
                           <div>
-                            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Why Selected</span>
+                            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                              Why Selected
+                            </span>
                             <p className="text-xs text-slate-500 mt-0.5">
                               {company.contexts.join(" | ")}
                             </p>
@@ -1350,12 +1474,19 @@ export default function CompanyFinderView({
                                     return hasUrl ? (
                                       <button
                                         key={name}
-                                        onClick={() => setViewingResume({ url: resumeUrls[name], name })}
+                                        onClick={() =>
+                                          setViewingResume({
+                                            url: resumeUrls[name],
+                                            name,
+                                          })
+                                        }
                                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-[10px] text-indigo-600 hover:bg-indigo-100 transition-colors border border-indigo-100"
                                         title={`View ${name}`}
                                       >
                                         <Eye className="h-3 w-3" />
-                                        <span className="max-w-[150px] truncate">{name}</span>
+                                        <span className="max-w-[150px] truncate">
+                                          {name}
+                                        </span>
                                       </button>
                                     ) : (
                                       <span
@@ -1364,7 +1495,9 @@ export default function CompanyFinderView({
                                         title={name}
                                       >
                                         <FileText className="h-3 w-3" />
-                                        <span className="max-w-[150px] truncate">{name}</span>
+                                        <span className="max-w-[150px] truncate">
+                                          {name}
+                                        </span>
                                       </span>
                                     );
                                   })}
@@ -1383,7 +1516,9 @@ export default function CompanyFinderView({
                             variant="ghost"
                             size="sm"
                             className="h-7 w-7 p-0 text-slate-400 hover:text-red-500 hover:bg-red-50"
-                            onClick={() => handleDeleteCompany(company.companyName)}
+                            onClick={() =>
+                              handleDeleteCompany(company.companyName)
+                            }
                             title="Delete company"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
