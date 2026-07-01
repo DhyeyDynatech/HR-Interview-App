@@ -8,9 +8,17 @@ import {
 } from "@/lib/azure-blob";
 
 async function extractAuth(request: NextRequest) {
+  // Accept the token from EITHER the Authorization header OR the auth_token
+  // cookie — the dashboard uploads via a cookie-only fetch(), so a header-only
+  // check 401s every upload. Mirrors the middleware's cookie-or-header logic.
   const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
-  const token = authHeader.substring(7);
+  const headerToken =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.substring(7)
+      : null;
+  const cookieToken = request.cookies.get("auth_token")?.value || null;
+  const token = headerToken || cookieToken;
+  if (!token) return null;
   const { valid, userId } = verifyToken(token);
   if (!valid || !userId) return null;
   const user = await getUserById(userId);
