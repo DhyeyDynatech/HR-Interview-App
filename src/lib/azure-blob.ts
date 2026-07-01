@@ -67,6 +67,14 @@ export function getResumeContainerName(): string {
   );
 }
 
+/** Container name for user/candidate images. Overridable via env. */
+export function getImageContainerName(): string {
+  return (
+    (process.env.AZURE_STORAGE_IMAGE_CONTAINER || "").trim() ||
+    "interview-images"
+  );
+}
+
 /** Public URL for a blob at the given path in the given container. */
 export function buildBlobUrl(
   account: string,
