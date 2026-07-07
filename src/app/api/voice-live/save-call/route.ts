@@ -9,6 +9,10 @@ import { getUserById } from "@/lib/auth";
 import { logActivityFromRequest } from "@/lib/user-activity-log";
 
 export const dynamic = "force-dynamic";
+// Bound the serverless function so the inline analytics call can't run past the
+// platform limit. Must exceed OPENAI_ANALYTICS_TIMEOUT_MS so the abort in
+// generateInterviewAnalytics fires first and the transcript still gets saved.
+export const maxDuration = 300;
 
 /**
  * Voice Live equivalent of Retell's response-webhook + get-call flow.
@@ -278,6 +282,51 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "Failed to persist interview transcript" },
       { status: 500 },
+    );
+  }
+
+  // 3b. Empty-attempt short-circuit. If the candidate opened the interview but
+  // never actually spoke — the tab-close beacon fires with transcript: [] and
+  // duration 0 — there is nothing to score. Previously such rows were left
+  // is_analysed=false forever, and get-call's Voice Live branch would return
+  // in_progress on every poll (no transcript to retry from), so the dashboard
+  // loop spun indefinitely and the row jammed the "in progress" counts. Mark
+  // it terminal here so it exits the poll loop immediately and is clearly
+  // labelled as an abandoned attempt rather than a stuck one.
+  const hasTranscript =
+    transcriptObject.length > 0 && transcriptString.trim().length > 0;
+  if (!hasTranscript) {
+    logger.info(
+      `voice-live/save-call: empty attempt for ${call_id} (no transcript) — marking terminal`,
+    );
+    const emptyDetails = {
+      ...callDetails,
+      call_analysis: {
+        call_summary: "No interview conducted — candidate did not respond.",
+        user_sentiment: "Unknown",
+        call_successful: false,
+      },
+    };
+    try {
+      await ResponseService.saveResponse(
+        { is_analysed: true, details: emptyDetails },
+        call_id,
+      );
+    } catch (err) {
+      logger.error(
+        "voice-live/save-call: failed to mark empty attempt terminal",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        analytics: null,
+        duration: duration_seconds,
+        empty: true,
+      },
+      { status: 200 },
     );
   }
 

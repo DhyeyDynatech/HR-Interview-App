@@ -8,6 +8,11 @@ import { Response } from "@/types/response";
 import { NextResponse } from "next/server";
 import Retell from "retell-sdk";
 
+// Bound the serverless function so a slow analytics call can't run past the
+// platform limit and get killed mid-write. Matches the ATS/company-finder
+// routes. Must exceed OPENAI_ANALYTICS_TIMEOUT_MS so the abort fires first.
+export const maxDuration = 300;
+
 /** Resolve organization_id from interview, falling back to user lookup */
 async function resolveOrgId(interview: any): Promise<string | undefined> {
   if (interview?.organization_id) return interview.organization_id;
@@ -155,10 +160,62 @@ export async function POST(req: Request, res: Response) {
       }
     }
 
-    // Otherwise the candidate is still mid-call (no transcript saved yet) or
-    // analytics failed and we have no transcript to retry from. Return what
-    // we have — the dashboard will keep showing "in progress" without the
-    // route throwing.
+    // No transcript to score. Two sub-cases:
+    //  (a) The candidate is genuinely still mid-call — the row is fresh and the
+    //      save-call write just hasn't landed the transcript yet. Keep showing
+    //      in_progress so the dashboard poll waits for it.
+    //  (b) The attempt was abandoned (candidate opened & bailed) or an old save
+    //      path left the row transcript-less. There is nothing to score and
+    //      nothing will ever arrive, but the poll used to return in_progress on
+    //      every tick — spinning forever and jamming the "in progress" counts.
+    //      Self-heal: once the row is old enough that it can't still be live,
+    //      mark it terminal (is_analysed=true, empty call_analysis) so the poll
+    //      exits. This also recovers rows created by the pre-fix save path
+    //      without any manual SQL.
+    const TERMINAL_AGE_MS = 10 * 60 * 1000; // 10 min — well past any real call
+    const createdAtMs = callDetails?.created_at
+      ? new Date(callDetails.created_at as any).getTime()
+      : Date.now();
+    const isStaleEmpty =
+      !callDetails?.is_analysed && Date.now() - createdAtMs > TERMINAL_AGE_MS;
+
+    if (isStaleEmpty) {
+      logger.info(
+        `get-call: Voice Live row ${body.id} has no transcript and is stale — marking terminal`,
+      );
+      const emptyDetails = {
+        ...(existingDetails || { call_id: body.id, source: "azure-voicelive" }),
+        call_analysis: {
+          call_summary: "No interview conducted — candidate did not respond.",
+          user_sentiment: "Unknown",
+          call_successful: false,
+        },
+      };
+      try {
+        await ResponseService.saveResponse(
+          { is_analysed: true, details: emptyDetails },
+          body.id,
+        );
+      } catch (err) {
+        logger.error(
+          "get-call: failed to mark stale empty Voice Live row terminal",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
+      return NextResponse.json(
+        {
+          callResponse: emptyDetails,
+          analytics: null,
+          duration: callDetails?.duration || 0,
+          in_progress: false,
+          empty: true,
+        },
+        { status: 200 },
+      );
+    }
+
+    // Still fresh — genuinely mid-call. Keep the dashboard showing in_progress.
     return NextResponse.json(
       {
         callResponse: existingDetails,

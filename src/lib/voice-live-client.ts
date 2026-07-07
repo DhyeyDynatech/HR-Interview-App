@@ -114,6 +114,23 @@ export class VoiceLiveClient {
   private pendingAssistantText = "";
   private playheadTime = 0;
   private playbackNodes: AudioBufferSourceNode[] = [];
+  // Jitter buffer for agent audio playback. Each response.audio.delta chunk is
+  // scheduled back-to-back off playheadTime; if a chunk arrives later than the
+  // previous one finished playing, the queue drains to silence and the agent's
+  // voice audibly pauses mid-sentence, then resumes on the next chunk. A larger
+  // lead cushion absorbs normal WebSocket jitter and short server generation
+  // stalls so the sentence plays continuously.
+  //   - PLAYBACK_LEAD_MS: cushion in front of `now` for the FIRST chunk of a
+  //     turn (a bigger initial pre-buffer is what smooths the whole utterance).
+  //   - PLAYBACK_MIN_LEAD_MS: minimum cushion for subsequent chunks.
+  // Trade-off: larger values add a little latency before the agent starts
+  // talking; 200ms is imperceptible in conversation but hides most jitter.
+  private static readonly PLAYBACK_LEAD_MS = 200;
+  private static readonly PLAYBACK_MIN_LEAD_MS = 120;
+  // True until the first audio chunk of the current agent turn is scheduled, so
+  // that chunk gets the larger PLAYBACK_LEAD_MS pre-buffer. Reset whenever the
+  // playback queue is empty (start of a new utterance) in playAudioChunk.
+  private isFirstChunkOfTurn = true;
   private hasGreeted = false;
   private currentStatus: VoiceLiveStatus = "idle";
   // Accumulates function-call argument deltas. Voice Live streams function
@@ -968,13 +985,21 @@ export class VoiceLiveClient {
     }
 
     const now = this.audioCtx.currentTime;
-    // Keep a ~80ms lead buffer in front of `now` so micro-delays between
-    // websocket chunks don't cause audible gaps. If playheadTime is already
-    // ahead of that floor, extend from it directly.
-    const minStart = now + 0.08;
+    // If the queue has already drained (playhead is at/behind `now`), this is
+    // effectively the start of a fresh utterance — give it the larger lead so a
+    // slow-arriving next chunk doesn't underrun. Subsequent chunks that are
+    // still queued only need the smaller minimum cushion.
+    const queueDrained = this.playheadTime <= now + 0.001;
+    if (queueDrained) this.isFirstChunkOfTurn = true;
+
+    const leadMs = this.isFirstChunkOfTurn
+      ? VoiceLiveClient.PLAYBACK_LEAD_MS
+      : VoiceLiveClient.PLAYBACK_MIN_LEAD_MS;
+    const minStart = now + leadMs / 1000;
     const startAt = Math.max(this.playheadTime, minStart);
     src.start(startAt);
     this.playheadTime = startAt + buffer.duration;
+    this.isFirstChunkOfTurn = false;
     this.playbackNodes.push(src);
 
     src.onended = () => {
@@ -992,6 +1017,8 @@ export class VoiceLiveClient {
     });
     this.playbackNodes = [];
     this.playheadTime = this.audioCtx?.currentTime ?? 0;
+    // Next chunk begins a fresh utterance — give it the full pre-buffer.
+    this.isFirstChunkOfTurn = true;
   }
 
   private send(payload: object): void {

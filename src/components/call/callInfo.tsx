@@ -91,9 +91,16 @@ const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 function CountdownAudioPlayer({
   src,
   filename,
+  durationHint,
 }: {
   src: string;
   filename?: string;
+  // Known interview length in seconds, from the DB (response.duration). Used
+  // as the trusted duration when the WebM container has no usable duration in
+  // its header — which is the norm for MediaRecorder output. Prevents the
+  // player from showing a bogus short time (e.g. "1:01" for an 11-minute clip)
+  // and keeps click-to-seek mapped to the correct scale.
+  durationHint?: number;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
@@ -110,43 +117,72 @@ function CountdownAudioPlayer({
     const audio = audioRef.current;
     if (!audio) return;
 
-    // MediaRecorder webm/opus files have no duration in the container
-    // header, so audio.duration reports Infinity until the browser has
-    // scanned the whole stream. The seek-past-end trick forces it to do
-    // that: we jump way past the actual end, the browser reads through
-    // to find the real end, then reports a finite duration via the
-    // "durationchange" event. After it settles, we seek back to 0.
+    // MediaRecorder webm/opus files have no duration in the container header,
+    // so audio.duration is unreliable: it reports Infinity until the browser
+    // scans the whole stream, and on some loads it briefly reports a wrong,
+    // finite value (e.g. 61s for an 11-minute clip). The old code trusted the
+    // first finite value it saw, which is exactly how "1:01" got locked in and
+    // why click-to-seek was mapped to the wrong scale (hit-or-miss).
+    //
+    // Strategy now, in order of trust:
+    //   1. durationHint from the DB (the real interview length) — authoritative.
+    //   2. A browser-reported finite duration, but only if we have no hint OR it
+    //      roughly agrees with the hint (guards against the bogus short value).
+    //   3. The seek-past-end trick to force a full scan, validated the same way.
     let durationFixed = false;
+
+    // A browser duration is "plausible" if it's finite/positive AND, when we
+    // have a hint, within 20% of it. Without a hint we accept any finite value.
+    const isPlausible = (d: number) => {
+      if (!isFinite(d) || d <= 0) return false;
+      if (!durationHint || durationHint <= 0) return true;
+
+      return Math.abs(d - durationHint) / durationHint <= 0.2;
+    };
+
+    // Seed immediately from the trusted hint so the timer and click-to-seek
+    // work correctly even before/if the browser ever produces a good duration.
+    if (durationHint && durationHint > 0) {
+      setDuration(durationHint);
+    }
+
     const ensureFiniteDuration = () => {
       if (durationFixed) return;
-      if (audio.duration === Infinity || isNaN(audio.duration)) {
-        const onSeeked = () => {
-          if (
-            audio.duration !== Infinity &&
-            !isNaN(audio.duration) &&
-            audio.duration > 0
-          ) {
-            durationFixed = true;
-            setDuration(audio.duration);
-            audio.currentTime = 0;
-            audio.removeEventListener("seeked", onSeeked);
-          }
-        };
-        audio.addEventListener("seeked", onSeeked);
-        try {
-          audio.currentTime = 1e9; // large finite — browser clamps to real end
-        } catch {
-          /* some browsers reject this; falls back to Infinity duration */
-        }
-      } else if (audio.duration > 0) {
+      if (isPlausible(audio.duration)) {
         durationFixed = true;
         setDuration(audio.duration);
+
+        return;
+      }
+      // Not plausible yet (Infinity, NaN, or a bogus short value). Force a full
+      // scan by seeking past the end; the browser clamps to the real end and
+      // reports a finite duration via the "seeked"/"durationchange" events.
+      const onSeeked = () => {
+        if (isPlausible(audio.duration)) {
+          durationFixed = true;
+          setDuration(audio.duration);
+          audio.currentTime = 0;
+          audio.removeEventListener("seeked", onSeeked);
+        }
+      };
+      audio.addEventListener("seeked", onSeeked);
+      try {
+        audio.currentTime = 1e9; // large finite — browser clamps to real end
+      } catch {
+        /* some browsers reject this; we keep the durationHint seed instead */
       }
     };
 
     const onLoaded = () => ensureFiniteDuration();
     const onDurChange = () => ensureFiniteDuration();
-    const onTime = () => setCurrentTime(audio.currentTime || 0);
+    // While the seek-past-end trick is running (before durationFixed), the
+    // browser momentarily parks currentTime near the real end. Don't reflect
+    // that transient position in the UI or the progress bar would flash to the
+    // end before snapping back to 0.
+    const onTime = () => {
+      if (!durationFixed && audio.currentTime > 1e8) return;
+      setCurrentTime(audio.currentTime || 0);
+    };
     const onEnd = () => setIsPlaying(false);
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
@@ -165,7 +201,7 @@ function CountdownAudioPlayer({
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
     };
-  }, [src]);
+  }, [src, durationHint]);
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -186,7 +222,10 @@ function CountdownAudioPlayer({
     // value throws. Bail out silently and the click becomes a no-op.
     if (!isFinite(duration) || duration <= 0) return;
     const rect = bar.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const ratio = Math.min(
+      1,
+      Math.max(0, (e.clientX - rect.left) / rect.width),
+    );
     const target = ratio * duration;
     if (!isFinite(target)) return;
     audio.currentTime = target;
@@ -257,7 +296,11 @@ function CountdownAudioPlayer({
         className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-white hover:bg-indigo-700 transition"
         aria-label={isPlaying ? "Pause" : "Play"}
       >
-        {isPlaying ? <Pause size={14} /> : <Play size={14} className="ml-0.5" />}
+        {isPlaying ? (
+          <Pause size={14} />
+        ) : (
+          <Play size={14} className="ml-0.5" />
+        )}
       </button>
       {/* Tall transparent wrapper gives a ~20px click target while the bar stays thin */}
       <div
@@ -308,7 +351,11 @@ function CountdownAudioPlayer({
           className="flex h-7 w-7 items-center justify-center rounded text-slate-700 hover:bg-slate-100 transition"
           aria-label={muted ? "Unmute" : "Mute / volume"}
         >
-          {muted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          {muted || volume === 0 ? (
+            <VolumeX size={16} />
+          ) : (
+            <Volume2 size={16} />
+          )}
         </button>
         {showVolume && (
           <input
@@ -382,7 +429,15 @@ function CallInfo({
       setName("");
 
       try {
-        const response = await axios.post("/api/get-call", { id: call_id });
+        // Bound the request so a slow/stalled analytics call can't leave the
+        // recruiter staring at an infinite spinner. Slightly longer than the
+        // server-side analytics abort so the server's clean error usually wins
+        // first; if not, axios aborts and the catch below stops the loader.
+        const response = await axios.post(
+          "/api/get-call",
+          { id: call_id },
+          { timeout: 135_000 },
+        );
         setCall(response.data.callResponse);
         setAnalytics(response.data.analytics);
 
@@ -787,7 +842,8 @@ function CallInfo({
                   "call_transfer",
                 ];
                 const reason = call?.disconnection_reason;
-                const hasDisconnectionIssue = !!reason && !normalReasons.includes(reason);
+                const hasDisconnectionIssue =
+                  !!reason && !normalReasons.includes(reason);
                 const hasCameraIssue = cameraOffCount > 0;
                 const hasIssue = hasDisconnectionIssue || hasCameraIssue;
 
@@ -823,7 +879,8 @@ function CallInfo({
                         )}
                         {hasCameraIssue && !hasDisconnectionIssue && (
                           <p className="text-xs text-gray-500 mt-1">
-                            {cameraOffCount} of {cameraOffTotal || cameraOffCount} checks failed
+                            {cameraOffCount} of{" "}
+                            {cameraOffTotal || cameraOffCount} checks failed
                           </p>
                         )}
                       </div>
@@ -1028,6 +1085,15 @@ function CallInfo({
                           call?.recording_url ||
                           (call as any)?.details?.recording_url ||
                           responseData?.details?.recording_url
+                        }
+                        durationHint={
+                          responseData?.duration ||
+                          (call?.start_timestamp && call?.end_timestamp
+                            ? Math.round(
+                                (call.end_timestamp - call.start_timestamp) /
+                                  1000,
+                              )
+                            : undefined)
                         }
                         filename={`interview-${call_id}.webm`}
                       />
