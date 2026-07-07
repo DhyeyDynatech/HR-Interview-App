@@ -24,6 +24,12 @@ const publicRoutes = [
   // Voice Live recording upload — candidate has no JWT; the route authorizes
   // by validating the call_id against the response table itself.
   "/api/upload-call-recording",
+  // WebM→MP3 transcode — called server-to-server from save-call (no JWT) and
+  // authorizes by validating call_id against the response table. NOTE: this
+  // prefix also matches the /backfill subroute, which does its OWN Bearer-token
+  // auth check inside the handler, so the admin backfill stays protected even
+  // though middleware lets it through here.
+  "/api/transcode-recording",
 ];
 
 // Routes that require authentication

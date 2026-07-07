@@ -112,6 +112,46 @@ function CountdownAudioPlayer({
   const [muted, setMuted] = useState(false);
   const [showVolume, setShowVolume] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  // Local object-URL for the fully-downloaded recording. Interview recordings
+  // are MediaRecorder WebM/Opus files streamed in chunks — they have no Cues
+  // (seek index) and no duration in the header, so a browser streaming them
+  // over HTTP with preload="metadata" CANNOT seek: `audio.currentTime = x`
+  // silently fails or clamps (this is the real "click-to-seek doesn't work"
+  // cause; the duration-display fix alone can't solve it). Downloading the
+  // whole file into memory and playing it from a blob: URL lets the browser
+  // scan it locally and seek freely. Until this resolves we play from the
+  // remote `src` directly so playback still starts promptly.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const playbackSrc = blobUrl || src;
+
+  // Download the recording once and expose it as a blob: URL so seeking works
+  // on un-indexed MediaRecorder WebM files (see the blobUrl comment above).
+  // Best-effort: if the fetch fails (CORS, network), we keep playing from the
+  // remote src — playback still works, seeking just stays flaky, same as before.
+  useEffect(() => {
+    if (!src) return;
+    let cancelled = false;
+    let createdUrl: string | null = null;
+
+    (async () => {
+      try {
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        createdUrl = URL.createObjectURL(blob);
+        setBlobUrl(createdUrl);
+      } catch {
+        // Keep the remote src fallback — no-op.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      setBlobUrl(null);
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [src]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -201,7 +241,9 @@ function CountdownAudioPlayer({
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
     };
-  }, [src, durationHint]);
+    // Re-run when the actual media source changes (remote → blob URL) so the
+    // duration-detection listeners re-attach against the seekable blob.
+  }, [playbackSrc, durationHint]);
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -289,7 +331,7 @@ function CountdownAudioPlayer({
 
   return (
     <div className="flex items-center gap-3 w-full max-w-md rounded-md border border-slate-200 bg-white px-3 py-2">
-      <audio ref={audioRef} src={src} preload="metadata" />
+      <audio ref={audioRef} src={playbackSrc} preload="metadata" />
       <button
         type="button"
         onClick={togglePlay}

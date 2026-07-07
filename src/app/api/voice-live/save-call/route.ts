@@ -104,6 +104,27 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Kick off WebM→MP3 transcode now that the full recording URL is attached.
+    // MediaRecorder webm has no seek index, so the recruiter player can't seek
+    // it reliably; the MP3 is universally seekable and playable. Fire-and-forget
+    // — this must not block or fail the attach response. The transcode route
+    // patches details.recording_url to the mp3 when it finishes; until then the
+    // webm plays via the client's blob-download fallback. Only trigger when we
+    // actually have a recording URL (nothing to transcode otherwise).
+    if (recording_url) {
+      const origin = req.nextUrl.origin;
+      fetch(`${origin}/api/transcode-recording`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ call_id }),
+      }).catch((err) => {
+        logger.error(
+          "voice-live/save-call: failed to trigger transcode",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    }
+
     return NextResponse.json(
       { success: true, recording_url, recording_status },
       { status: 200 },
