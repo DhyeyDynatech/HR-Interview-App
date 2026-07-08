@@ -38,21 +38,6 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  // Ensure the ffmpeg-static binary is traced into the serverless function
-  // bundle on Vercel. Without this, the /api/transcode-recording route resolves
-  // a binary path that doesn't exist in the deployed function and ffmpeg fails
-  // with ENOENT. Keyed under both the URL path and the App Router file path —
-  // Next 14's outputFileTracingIncludes matching for nested app/api routes has
-  // been inconsistent between versions/patches, so covering both keys is
-  // cheap insurance against a silent no-op match.
-  outputFileTracingIncludes: {
-    "/api/transcode-recording": ["./node_modules/ffmpeg-static/**"],
-    "/api/transcode-recording/route": ["./node_modules/ffmpeg-static/**"],
-    "/api/transcode-recording/backfill": ["./node_modules/ffmpeg-static/**"],
-    "/api/transcode-recording/backfill/route": [
-      "./node_modules/ffmpeg-static/**",
-    ],
-  },
   // Disable Next.js auto-patching for Yarn 4 compatibility
   experimental: {
     swcTraceProfiling: false,
@@ -69,6 +54,18 @@ const nextConfig = {
       "adm-zip",
       "ffmpeg-static",
     ],
+    // Ensure the ffmpeg-static binary is traced into the serverless function
+    // bundle on Vercel. MUST live under `experimental` — Next reads this from
+    // config.experimental.outputFileTracingIncludes (collect-build-traces.js),
+    // and a top-level key (our first attempt) is silently ignored, which is
+    // exactly why the binary was missing in production despite this glob
+    // "being set". Keys are matched against the normalized app route (the
+    // `/route` suffix is stripped by normalizeAppPath before matching), so
+    // "/api/transcode-recording" — not ".../route" — is the correct key.
+    outputFileTracingIncludes: {
+      "/api/transcode-recording": ["./node_modules/ffmpeg-static/**"],
+      "/api/transcode-recording/backfill": ["./node_modules/ffmpeg-static/**"],
+    },
   },
   webpack: (webpackConfig, { webpack, isServer }) => {
     // Remove node: from import specifiers for compatibility
