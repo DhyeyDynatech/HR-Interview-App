@@ -41,9 +41,17 @@ const nextConfig = {
   // Ensure the ffmpeg-static binary is traced into the serverless function
   // bundle on Vercel. Without this, the /api/transcode-recording route resolves
   // a binary path that doesn't exist in the deployed function and ffmpeg fails
-  // with ENOENT. The glob pulls in the platform binary (ffmpeg / ffmpeg.exe).
+  // with ENOENT. Keyed under both the URL path and the App Router file path —
+  // Next 14's outputFileTracingIncludes matching for nested app/api routes has
+  // been inconsistent between versions/patches, so covering both keys is
+  // cheap insurance against a silent no-op match.
   outputFileTracingIncludes: {
     "/api/transcode-recording": ["./node_modules/ffmpeg-static/**"],
+    "/api/transcode-recording/route": ["./node_modules/ffmpeg-static/**"],
+    "/api/transcode-recording/backfill": ["./node_modules/ffmpeg-static/**"],
+    "/api/transcode-recording/backfill/route": [
+      "./node_modules/ffmpeg-static/**",
+    ],
   },
   // Disable Next.js auto-patching for Yarn 4 compatibility
   experimental: {

@@ -65,6 +65,21 @@ async function transcodeToMp3(input: Buffer, callId: string): Promise<Buffer> {
   if (!ffmpegPath) {
     throw new Error("ffmpeg-static binary path not resolved");
   }
+  // Diagnostic: confirm the binary Next's file tracing was supposed to bundle
+  // is actually present on disk before we spawn it. If this ever throws ENOENT
+  // again, the log will say so explicitly instead of surfacing as an opaque
+  // spawn failure — the fastest way to tell "binary missing" from "binary
+  // present but not executable" from "wrong arch".
+  try {
+    const { access } = await import("node:fs/promises");
+    await access(ffmpegPath);
+  } catch (err) {
+    throw new Error(
+      `ffmpeg binary not found on disk at resolved path "${ffmpegPath}": ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
   const stamp = callId.replace(/[^a-zA-Z0-9_-]/g, "");
   const inPath = join(tmpdir(), `rec-${stamp}-in`);
   const outPath = join(tmpdir(), `rec-${stamp}-out.mp3`);
