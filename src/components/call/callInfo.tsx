@@ -112,24 +112,22 @@ function CountdownAudioPlayer({
   const [muted, setMuted] = useState(false);
   const [showVolume, setShowVolume] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  // Local object-URL for the fully-downloaded recording. Interview recordings
-  // are MediaRecorder WebM/Opus files streamed in chunks — they have no Cues
-  // (seek index) and no duration in the header, so a browser streaming them
-  // over HTTP with preload="metadata" CANNOT seek: `audio.currentTime = x`
-  // silently fails or clamps (this is the real "click-to-seek doesn't work"
-  // cause; the duration-display fix alone can't solve it). Downloading the
-  // whole file into memory and playing it from a blob: URL lets the browser
-  // scan it locally and seek freely. Until this resolves we play from the
-  // remote `src` directly so playback still starts promptly.
+  // Recordings are transcoded server-side to MP3 (see /api/transcode-recording)
+  // right after each interview, which is properly seekable over plain HTTP —
+  // no extra handling needed. The handful of recordings that haven't been
+  // transcoded yet (or the rare failed transcode) are still raw MediaRecorder
+  // WebM: no Cues (seek index) and no duration in the header, so a browser
+  // streaming them with preload="metadata" CANNOT seek — `audio.currentTime =
+  // x` silently fails or clamps. For those ONLY, we download the whole file
+  // into memory and play it from a blob: URL so the browser can scan it
+  // locally and seek freely. Gated on the extension so MP3 playback never
+  // pays for (or risks a timing bug from) a src swap it doesn't need.
+  const needsBlobWorkaround = /\.webm(\?|$)/i.test(src);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const playbackSrc = blobUrl || src;
 
-  // Download the recording once and expose it as a blob: URL so seeking works
-  // on un-indexed MediaRecorder WebM files (see the blobUrl comment above).
-  // Best-effort: if the fetch fails (CORS, network), we keep playing from the
-  // remote src — playback still works, seeking just stays flaky, same as before.
   useEffect(() => {
-    if (!src) return;
+    if (!src || !needsBlobWorkaround) return;
     let cancelled = false;
     let createdUrl: string | null = null;
 
@@ -151,54 +149,53 @@ function CountdownAudioPlayer({
       setBlobUrl(null);
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [src]);
+  }, [src, needsBlobWorkaround]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    // MediaRecorder webm/opus files have no duration in the container header,
-    // so audio.duration is unreliable: it reports Infinity until the browser
-    // scans the whole stream, and on some loads it briefly reports a wrong,
-    // finite value (e.g. 61s for an 11-minute clip). The old code trusted the
-    // first finite value it saw, which is exactly how "1:01" got locked in and
-    // why click-to-seek was mapped to the wrong scale (hit-or-miss).
+    // Recordings are served as MP3 (transcoded server-side from the raw
+    // MediaRecorder webm), which has a normal, self-describing duration — so
+    // the browser's own audio.duration is trustworthy here and MUST win once
+    // available. Older un-transcoded webm files have no duration in the
+    // container header (audio.duration reports Infinity until the browser
+    // scans the stream), so those still need the seek-past-end trick below.
     //
-    // Strategy now, in order of trust:
-    //   1. durationHint from the DB (the real interview length) — authoritative.
-    //   2. A browser-reported finite duration, but only if we have no hint OR it
-    //      roughly agrees with the hint (guards against the bogus short value).
-    //   3. The seek-past-end trick to force a full scan, validated the same way.
+    // durationHint (the DB's recorded interview length in seconds) is ONLY a
+    // fallback/seed for the brief window before the browser reports a real
+    // duration — it must never override a real duration once we have one.
+    // Using it as an authority (comparing the browser's value against it and
+    // rejecting mismatches) was a bug: the transcoded MP3's actual length can
+    // legitimately differ from duration_seconds (a wall-clock timestamp diff,
+    // not an audio sample count — muted/dropped chunks during the call shift
+    // it), so real-but-"implausible" durations were being thrown out, and
+    // click-to-seek was scaled against the wrong (hint) duration while
+    // playing the real (different-length) file — exactly the "still not
+    // working" symptom even on a properly seekable MP3.
     let durationFixed = false;
 
-    // A browser duration is "plausible" if it's finite/positive AND, when we
-    // have a hint, within 20% of it. Without a hint we accept any finite value.
-    const isPlausible = (d: number) => {
-      if (!isFinite(d) || d <= 0) return false;
-      if (!durationHint || durationHint <= 0) return true;
+    const isUsableBrowserDuration = (d: number) => isFinite(d) && d > 0;
 
-      return Math.abs(d - durationHint) / durationHint <= 0.2;
-    };
-
-    // Seed immediately from the trusted hint so the timer and click-to-seek
-    // work correctly even before/if the browser ever produces a good duration.
+    // Seed from the hint ONLY until the browser reports something real, so
+    // the timer/seek aren't stuck at 0 during the initial load.
     if (durationHint && durationHint > 0) {
       setDuration(durationHint);
     }
 
     const ensureFiniteDuration = () => {
       if (durationFixed) return;
-      if (isPlausible(audio.duration)) {
+      if (isUsableBrowserDuration(audio.duration)) {
         durationFixed = true;
         setDuration(audio.duration);
 
         return;
       }
-      // Not plausible yet (Infinity, NaN, or a bogus short value). Force a full
-      // scan by seeking past the end; the browser clamps to the real end and
-      // reports a finite duration via the "seeked"/"durationchange" events.
+      // Infinity/NaN — an un-transcoded streaming webm with no seek index.
+      // Force a full scan by seeking past the end; the browser clamps to the
+      // real end and reports a finite duration via "seeked"/"durationchange".
       const onSeeked = () => {
-        if (isPlausible(audio.duration)) {
+        if (isUsableBrowserDuration(audio.duration)) {
           durationFixed = true;
           setDuration(audio.duration);
           audio.currentTime = 0;
