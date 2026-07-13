@@ -83,6 +83,10 @@ export async function POST(req: Request, res: Response) {
           { status: 200 },
         );
       }
+      logger.error(
+        `get-call: regeneration returned no analytics for ${body.id}`,
+        result?.error ? String(result.error) : "no error field on result",
+      );
     }
   }
 
@@ -158,6 +162,10 @@ export async function POST(req: Request, res: Response) {
           { status: 200 },
         );
       }
+      logger.error(
+        `get-call: Voice Live analytics retry returned no analytics for ${body.id}`,
+        result?.error ? String(result.error) : "no error field on result",
+      );
     }
 
     // No transcript to score. Two sub-cases:
