@@ -61,11 +61,27 @@ export async function POST(req: Request, res: Response) {
       });
 
       if (result.analytics) {
+        // Mirror analytics into details.call_analysis (Retell-shaped) so the
+        // dashboard's Call Summary / User Sentiment fields — which read from
+        // details.call_analysis, not analytics — reflect the regenerated
+        // result instead of whatever placeholder/fallback text was there
+        // before. Matches the shape used in save-call's success path.
+        const enrichedDetails = {
+          ...existingDetails,
+          call_analysis: {
+            call_summary:
+              result.analytics.softSkillSummary ||
+              result.analytics.overallFeedback ||
+              "",
+            user_sentiment: result.analytics.userSentiment || "Unknown",
+            call_successful: true,
+          },
+        };
         // saveResponse throws on DB error now; this is a best-effort cache
         // write of regenerated analytics, so log and still return the result.
         try {
           await ResponseService.saveResponse(
-            { analytics: result.analytics },
+            { analytics: result.analytics, details: enrichedDetails },
             body.id,
           );
         } catch (err) {
@@ -76,7 +92,7 @@ export async function POST(req: Request, res: Response) {
         }
         return NextResponse.json(
           {
-            callResponse: existingDetails,
+            callResponse: enrichedDetails,
             analytics: result.analytics,
             duration: callDetails.duration || 0,
           },
