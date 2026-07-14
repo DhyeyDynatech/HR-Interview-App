@@ -133,6 +133,16 @@ export class VoiceLiveClient {
   private isFirstChunkOfTurn = true;
   private hasGreeted = false;
   private currentStatus: VoiceLiveStatus = "idle";
+  // Diagnostics for distinguishing a transport-level stall (TCP/WebSocket
+  // head-of-line blocking — audio pauses then resumes with the socket still
+  // open) from a service-level failure (Azure closes/errors the socket, or
+  // throttles on rate_limits). Logged via console so a real interview session
+  // can be inspected in the browser devtools without any UI wiring. Not user
+  // facing — purely for diagnosing the "AI stops speaking then resumes" report.
+  private lastAudioDeltaAt: number | null = null;
+  // Gaps shorter than this are normal inter-chunk spacing; only log the ones
+  // large enough to be audible as a stutter.
+  private static readonly AUDIO_GAP_WARN_MS = 300;
   // Accumulates function-call argument deltas. Voice Live streams function
   // calls the same way it streams text — argument JSON arrives in chunks
   // via response.function_call_arguments.delta, terminated by .done.
@@ -310,10 +320,27 @@ export class VoiceLiveClient {
     };
 
     this.ws.onerror = () => {
+      // The WebSocket error event carries no detail (per spec) — the close
+      // event that immediately follows has the actual code/reason. Log here
+      // only to mark that onerror did fire, for diagnosing whether a cutout
+      // was a genuine socket failure vs. a transport stall (socket stays
+      // open, nothing fires here — see the gap warning in playAudioChunk).
+      // eslint-disable-next-line no-console
+      console.warn("[VoiceLive] WebSocket onerror fired");
       this.fail("WebSocket error");
     };
 
     this.ws.onclose = (event) => {
+      // Log every close, including the clean 1000 case, so a real session's
+      // devtools console shows definitively whether the socket ever closed
+      // during the call — if a reported cutout has no onclose/onerror log
+      // anywhere near it, the audio pause happened with the socket still
+      // open, which points at a transport-level stall (TCP/WebSocket head-
+      // of-line blocking) rather than Azure ending the session.
+      // eslint-disable-next-line no-console
+      console.info(
+        `[VoiceLive] WebSocket closed: code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`,
+      );
       if (event.code !== 1000) {
         this.fail(
           `WebSocket closed unexpectedly: ${event.code} ${event.reason}`,
@@ -717,6 +744,22 @@ export class VoiceLiveClient {
         this.setStatus("listening");
         break;
 
+      case "rate_limits.updated": {
+        // Previously silently dropped (fell through to default:). Voice Live
+        // enforces a tokens-per-minute quota per resource; if a reported
+        // audio cutout correlates with `remaining` being near 0 here, the
+        // stall is server-side throttling, not a transport stall.
+        const limits = Array.isArray(msg.rate_limits) ? msg.rate_limits : [];
+        const tight = limits.filter(
+          (l: any) => typeof l.remaining === "number" && l.remaining < l.limit * 0.1,
+        );
+        if (tight.length > 0) {
+          // eslint-disable-next-line no-console
+          console.warn("[VoiceLive] rate limit running low:", tight);
+        }
+        break;
+      }
+
       case "conversation.item.input_audio_transcription.completed":
         if (msg.transcript) {
           this.transcript.push({ role: "user", content: msg.transcript });
@@ -728,7 +771,7 @@ export class VoiceLiveClient {
         }
         break;
 
-      case "response.audio.delta":
+      case "response.audio.delta": {
         this.setStatus("assistant_speaking");
         // Suppress mic input the moment the agent starts speaking so
         // server_vad can't false-trigger on ambient noise and chop the
@@ -738,10 +781,30 @@ export class VoiceLiveClient {
         // so disarm the silence watchdog until response.done re-arms it.
         this.clearSilenceTimer();
         this.currentResponseHadAudio = true;
+
+        // Diagnostic: measure the wall-clock gap between consecutive deltas
+        // WITHIN the same turn. A large gap here, with no onclose/onerror
+        // logged in between, means audio was delayed in transit (WebSocket/
+        // TCP head-of-line blocking) rather than Azure failing the session —
+        // the socket stayed open and healthy the whole time, it just didn't
+        // deliver the next chunk promptly.
+        const now = performance.now();
+        if (this.lastAudioDeltaAt !== null) {
+          const gap = now - this.lastAudioDeltaAt;
+          if (gap > VoiceLiveClient.AUDIO_GAP_WARN_MS) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[VoiceLive] audio.delta gap ${Math.round(gap)}ms (socket still open) — likely transport stall, not a Voice Live service issue`,
+            );
+          }
+        }
+        this.lastAudioDeltaAt = now;
+
         if (msg.delta) {
           this.playAudioChunk(this.base64ToArrayBuffer(msg.delta));
         }
         break;
+      }
 
       case "response.audio_transcript.delta":
         if (msg.delta) {
@@ -861,6 +924,10 @@ export class VoiceLiveClient {
         const hadToolCall = this.currentResponseHadToolCall;
         this.currentResponseHadAudio = false;
         this.currentResponseHadToolCall = false;
+        // Turn boundary — don't let the next turn's first chunk be measured
+        // against this turn's last chunk (that gap is expected silence, not
+        // a mid-utterance stall).
+        this.lastAudioDeltaAt = null;
 
         // forceEnd sends response.cancel right before response.create. The
         // cancel produces its own response.done — skip it once so we don't
@@ -1019,6 +1086,8 @@ export class VoiceLiveClient {
     this.playheadTime = this.audioCtx?.currentTime ?? 0;
     // Next chunk begins a fresh utterance — give it the full pre-buffer.
     this.isFirstChunkOfTurn = true;
+    // User-interruption flush is also a turn boundary for gap measurement.
+    this.lastAudioDeltaAt = null;
   }
 
   private send(payload: object): void {
