@@ -11,7 +11,6 @@ import { MoreHorizontal, Mail, Phone, Calendar, UserCheck, UserX, Briefcase, Ext
 import { InterviewAssignee, ReviewStatus } from '@/types/user';
 import { Interview } from '@/types/interview';
 import { useAssignees } from '@/contexts/users.context';
-import { assigneeService } from '@/services/users.service';
 import { useToast } from '@/components/ui/use-toast';
 import { ResumeViewer } from './ResumeViewer';
 import Link from 'next/link';
@@ -238,17 +237,9 @@ export function AssigneeCard({ assignee, onEdit, onViewDetails, interviews = [],
           title: 'Success',
           description: `Interview link sent to ${assignee.email}`,
         });
-        // When recruiter explicitly resends the interview,
-        // allow the assignee to take the interview again
-        try {
-          // Optimistically update allow_retake for this assignee
-          const updated = await assigneeService.updateAssignee(assignee.id, {
-            allow_retake: true,
-          } as any);
-          console.log('Updated assignee allow_retake:', updated?.allow_retake);
-        } catch (err) {
-          console.error('Error updating assignee allow_retake on resend:', err);
-        }
+        // allow_retake is reset server-side in send-assignee-emails/route.ts
+        // as part of this same request, so it applies uniformly whether this
+        // is a single resend or part of a bulk send.
       } else {
         toast({
           title: 'Error',

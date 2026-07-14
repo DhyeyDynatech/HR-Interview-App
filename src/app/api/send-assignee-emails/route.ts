@@ -307,11 +307,18 @@ Interview Team
               newStatus = 'INTERVIEW_RESENT';
             }
 
+            // A resend is the recruiter's explicit signal that the candidate
+            // should be able to take the interview again — reset allow_retake
+            // here so it applies uniformly to every resend entry point
+            // (single-candidate button, bulk send), instead of living only in
+            // one button's onClick handler. lockRetake (register-call/route.ts)
+            // is what turns this back off once the candidate starts a call.
             await assigneeService.updateAssignee(assignee.id, {
               interview_status: newStatus,
-            } as any);
-            
-            logger.info(`Updated interview_status to ${newStatus} for assignee ${assignee.id}`);
+              allow_retake: true,
+            });
+
+            logger.info(`Updated interview_status to ${newStatus} and reset allow_retake for assignee ${assignee.id}`);
           } catch (updateError) {
             const errorMessage = updateError instanceof Error ? updateError.message : String(updateError);
             logger.error(`Failed to update interview_status for assignee ${assignee.id}:`, errorMessage);
