@@ -126,6 +126,16 @@ function CountdownAudioPlayer({
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const playbackSrc = blobUrl || src;
 
+  // TEMP DIAGNOSTIC — remove once the first-click seek bug is confirmed fixed.
+  // eslint-disable-next-line no-console
+  console.log("[SeekDebug] render", {
+    src,
+    needsBlobWorkaround,
+    blobUrl,
+    playbackSrc,
+    durationHint,
+  });
+
   useEffect(() => {
     if (!src || !needsBlobWorkaround) return;
     let cancelled = false;
@@ -185,9 +195,17 @@ function CountdownAudioPlayer({
 
     const ensureFiniteDuration = () => {
       if (durationFixed) return;
+      // eslint-disable-next-line no-console
+      console.log("[SeekDebug] ensureFiniteDuration check", {
+        playbackSrc,
+        audioDuration: audio.duration,
+        readyState: audio.readyState,
+      });
       if (isUsableBrowserDuration(audio.duration)) {
         durationFixed = true;
         setDuration(audio.duration);
+        // eslint-disable-next-line no-console
+        console.log("[SeekDebug] duration resolved from browser", audio.duration);
 
         return;
       }
@@ -200,6 +218,8 @@ function CountdownAudioPlayer({
           setDuration(audio.duration);
           audio.currentTime = 0;
           audio.removeEventListener("seeked", onSeeked);
+          // eslint-disable-next-line no-console
+          console.log("[SeekDebug] duration resolved via seek-past-end", audio.duration);
         }
       };
       audio.addEventListener("seeked", onSeeked);
@@ -256,6 +276,14 @@ function CountdownAudioPlayer({
     const audio = audioRef.current;
     const bar = progressRef.current;
     if (!audio || !bar) return;
+    // eslint-disable-next-line no-console
+    console.log("[SeekDebug] seekFromClick", {
+      playbackSrc,
+      duration,
+      audioDuration: audio.duration,
+      audioReadyState: audio.readyState,
+      audioSrc: audio.src,
+    });
     // Guard: until the duration-detection trick completes, `duration` may
     // be 0 (or stale Infinity), and setting currentTime to a non-finite
     // value throws. Bail out silently and the click becomes a no-op.
