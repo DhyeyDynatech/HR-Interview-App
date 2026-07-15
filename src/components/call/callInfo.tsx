@@ -340,6 +340,15 @@ function CountdownAudioPlayer({
       Math.max(0, (e.clientX - rect.left) / rect.width),
     );
     const target = ratio * duration;
+    // eslint-disable-next-line no-console
+    console.log("[SeekDebug] seek math", {
+      clientX: e.clientX,
+      rectLeft: rect.left,
+      rectWidth: rect.width,
+      ratio,
+      duration,
+      target,
+    });
     if (!isFinite(target)) return;
     audio.currentTime = target;
     // Use `target` directly — reading audio.currentTime immediately after
