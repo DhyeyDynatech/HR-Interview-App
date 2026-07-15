@@ -214,37 +214,50 @@ function CountdownAudioPlayer({
     // even once `buffered`/`duration` correctly cover the whole file — verified
     // by reproduction, including via raw `audio.currentTime = x` from the
     // console, completely independent of our click handler or the file itself
-    // (the identical file opened fresh in a new tab seeks correctly). The one
-    // thing that reliably fixed the broken element in testing was calling
-    // `audio.load()` AFTER the resource had already finished its first load —
-    // calling it pre-emptively at mount (before anything has loaded) was a
-    // no-op, which is why that first attempt didn't fix it. So: check
-    // `seekable` once metadata is available, and only if it's degenerate
-    // (covers essentially nothing despite a known duration) force exactly one
-    // reload. Guarded by `reloadedForSeek` so the reload's own loadedmetadata
-    // doesn't trigger a second reload.
+    // (the identical file opened fresh in a new tab seeks correctly). Checking
+    // this from `loadedmetadata` alone is too early — at that point the file
+    // may genuinely not have buffered yet, so `seekable` being empty there is
+    // normal, not stuck, and consuming the one-shot reload then leaves the
+    // REAL later staleness unfixed. Instead, check on every `progress` tick
+    // (fires repeatedly as bytes arrive) once `buffered` shows the file is
+    // now substantially downloaded — if `seekable` still doesn't match
+    // `buffered` at that point, it's genuinely stuck and one audio.load()
+    // reload (verified to fix it) is forced. Guarded so it fires at most once
+    // per file load, since the reload's own progress/loadedmetadata mustn't
+    // re-trigger another reload.
     let reloadedForSeek = false;
     const fixSeekableIfStuck = () => {
       if (reloadedForSeek) {
         return;
       }
-      if (!isUsableBrowserDuration(audio.duration)) {
+      const buffered = audio.buffered;
+      if (buffered.length === 0) {
+        return;
+      }
+      const bufferedEnd = buffered.end(buffered.length - 1);
+      // Wait until most of the file has actually downloaded — checking too
+      // early (a few KB in) can't yet tell "stuck" apart from "still loading".
+      if (
+        !isUsableBrowserDuration(audio.duration) ||
+        bufferedEnd < audio.duration * 0.9
+      ) {
         return;
       }
       const seekable = audio.seekable;
-      const seekableCoversFile =
-        seekable.length > 0 && seekable.end(seekable.length - 1) > 1;
-      if (seekableCoversFile) {
+      const seekableEnd =
+        seekable.length > 0 ? seekable.end(seekable.length - 1) : 0;
+      // A healthy element's seekable range should track its buffered range.
+      // If buffered covers ~the whole file but seekable covers almost
+      // nothing, the browser's seek computation is stuck — reload once to
+      // force it to recompute from scratch.
+      if (seekableEnd >= bufferedEnd * 0.9) {
         return;
       }
       reloadedForSeek = true;
       audio.load();
     };
 
-    const onLoaded = () => {
-      ensureFiniteDuration();
-      fixSeekableIfStuck();
-    };
+    const onLoaded = () => ensureFiniteDuration();
     const onDurChange = () => ensureFiniteDuration();
     // While the seek-past-end trick is running (before durationFixed), the
     // browser momentarily parks currentTime near the real end. Don't reflect
@@ -257,12 +270,16 @@ function CountdownAudioPlayer({
     const onEnd = () => setIsPlaying(false);
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
+    const onProgress = () => fixSeekableIfStuck();
+    const onCanPlayThrough = () => fixSeekableIfStuck();
     audio.addEventListener("loadedmetadata", onLoaded);
     audio.addEventListener("durationchange", onDurChange);
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("ended", onEnd);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
+    audio.addEventListener("progress", onProgress);
+    audio.addEventListener("canplaythrough", onCanPlayThrough);
 
     return () => {
       audio.removeEventListener("loadedmetadata", onLoaded);
@@ -271,6 +288,8 @@ function CountdownAudioPlayer({
       audio.removeEventListener("ended", onEnd);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("progress", onProgress);
+      audio.removeEventListener("canplaythrough", onCanPlayThrough);
     };
     // Re-run when the actual media source changes (remote → blob URL) so the
     // duration-detection listeners re-attach against the seekable blob.
