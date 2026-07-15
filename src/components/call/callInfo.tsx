@@ -243,12 +243,53 @@ function CountdownAudioPlayer({
     const onEnd = () => setIsPlaying(false);
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
+    // TEMP DIAGNOSTIC — remove once the first-click seek bug is confirmed fixed.
+    const bufferedRanges = () => {
+      const ranges: Array<[number, number]> = [];
+      for (let i = 0; i < audio.buffered.length; i++) {
+        ranges.push([audio.buffered.start(i), audio.buffered.end(i)]);
+      }
+
+      return ranges;
+    };
+    const onSeeking = () =>
+      // eslint-disable-next-line no-console
+      console.log("[SeekDebug] event:seeking", {
+        currentTime: audio.currentTime,
+        buffered: bufferedRanges(),
+      });
+    const onSeekedEvt = () =>
+      // eslint-disable-next-line no-console
+      console.log("[SeekDebug] event:seeked", {
+        currentTime: audio.currentTime,
+        buffered: bufferedRanges(),
+      });
+    const onWaiting = () =>
+      // eslint-disable-next-line no-console
+      console.log("[SeekDebug] event:waiting", {
+        currentTime: audio.currentTime,
+      });
+    const onStalled = () =>
+      // eslint-disable-next-line no-console
+      console.log("[SeekDebug] event:stalled", {
+        currentTime: audio.currentTime,
+      });
+    const onProgress = () =>
+      // eslint-disable-next-line no-console
+      console.log("[SeekDebug] event:progress", {
+        buffered: bufferedRanges(),
+      });
     audio.addEventListener("loadedmetadata", onLoaded);
     audio.addEventListener("durationchange", onDurChange);
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("ended", onEnd);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
+    audio.addEventListener("seeking", onSeeking);
+    audio.addEventListener("seeked", onSeekedEvt);
+    audio.addEventListener("waiting", onWaiting);
+    audio.addEventListener("stalled", onStalled);
+    audio.addEventListener("progress", onProgress);
 
     return () => {
       audio.removeEventListener("loadedmetadata", onLoaded);
@@ -257,6 +298,11 @@ function CountdownAudioPlayer({
       audio.removeEventListener("ended", onEnd);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("seeking", onSeeking);
+      audio.removeEventListener("seeked", onSeekedEvt);
+      audio.removeEventListener("waiting", onWaiting);
+      audio.removeEventListener("stalled", onStalled);
+      audio.removeEventListener("progress", onProgress);
     };
     // Re-run when the actual media source changes (remote → blob URL) so the
     // duration-detection listeners re-attach against the seekable blob.
