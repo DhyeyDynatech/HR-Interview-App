@@ -126,16 +126,6 @@ function CountdownAudioPlayer({
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const playbackSrc = blobUrl || src;
 
-  // TEMP DIAGNOSTIC — remove once the first-click seek bug is confirmed fixed.
-  // eslint-disable-next-line no-console
-  console.log("[SeekDebug] render", {
-    src,
-    needsBlobWorkaround,
-    blobUrl,
-    playbackSrc,
-    durationHint,
-  });
-
   useEffect(() => {
     if (!src || !needsBlobWorkaround) return;
     let cancelled = false;
@@ -164,6 +154,21 @@ function CountdownAudioPlayer({
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+
+    // Force a fresh load of the current src. Without this, `audio.seekable`
+    // can get stuck reporting only [[0,0]] even after `buffered` and
+    // `duration` correctly reflect the whole file — a Chromium quirk where
+    // `seekable` is computed once early in the element's life and doesn't
+    // always recompute later, even on a fully-buffered, well-formed MP3 with
+    // a valid Xing/duration header. Confirmed via reproduction: the exact
+    // same file opened directly in a new tab (or after calling
+    // audio.load() manually) reports a correct seekable range and seeks
+    // normally, but our element's seekable stayed [[0,0]] otherwise, making
+    // every click-to-seek — including via raw audio.currentTime = x —
+    // silently resolve back to 0 regardless of the requested time.
+    // load() re-triggers the browser's resource selection/metadata parsing
+    // from scratch, which recomputes seekable correctly.
+    audio.load();
 
     // Recordings are served as MP3 (transcoded server-side from the raw
     // MediaRecorder webm), which has a normal, self-describing duration — so
@@ -195,17 +200,9 @@ function CountdownAudioPlayer({
 
     const ensureFiniteDuration = () => {
       if (durationFixed) return;
-      // eslint-disable-next-line no-console
-      console.log("[SeekDebug] ensureFiniteDuration check", {
-        playbackSrc,
-        audioDuration: audio.duration,
-        readyState: audio.readyState,
-      });
       if (isUsableBrowserDuration(audio.duration)) {
         durationFixed = true;
         setDuration(audio.duration);
-        // eslint-disable-next-line no-console
-        console.log("[SeekDebug] duration resolved from browser", audio.duration);
 
         return;
       }
@@ -218,8 +215,6 @@ function CountdownAudioPlayer({
           setDuration(audio.duration);
           audio.currentTime = 0;
           audio.removeEventListener("seeked", onSeeked);
-          // eslint-disable-next-line no-console
-          console.log("[SeekDebug] duration resolved via seek-past-end", audio.duration);
         }
       };
       audio.addEventListener("seeked", onSeeked);
@@ -243,58 +238,12 @@ function CountdownAudioPlayer({
     const onEnd = () => setIsPlaying(false);
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
-    // TEMP DIAGNOSTIC — remove once the first-click seek bug is confirmed fixed.
-    const bufferedRanges = () => {
-      const ranges: Array<[number, number]> = [];
-      for (let i = 0; i < audio.buffered.length; i++) {
-        ranges.push([audio.buffered.start(i), audio.buffered.end(i)]);
-      }
-
-      return ranges;
-    };
-    const onSeeking = () =>
-      // eslint-disable-next-line no-console
-      console.log(
-        "[SeekDebug] event:seeking",
-        "currentTime=" + audio.currentTime,
-        "buffered=" + JSON.stringify(bufferedRanges()),
-        "networkState=" + audio.networkState,
-        "error=" + JSON.stringify(audio.error),
-      );
-    const onSeekedEvt = () =>
-      // eslint-disable-next-line no-console
-      console.log(
-        "[SeekDebug] event:seeked",
-        "currentTime=" + audio.currentTime,
-        "buffered=" + JSON.stringify(bufferedRanges()),
-        "networkState=" + audio.networkState,
-      );
-    const onWaiting = () =>
-      // eslint-disable-next-line no-console
-      console.log("[SeekDebug] event:waiting", {
-        currentTime: audio.currentTime,
-      });
-    const onStalled = () =>
-      // eslint-disable-next-line no-console
-      console.log("[SeekDebug] event:stalled", {
-        currentTime: audio.currentTime,
-      });
-    const onProgress = () =>
-      // eslint-disable-next-line no-console
-      console.log("[SeekDebug] event:progress", {
-        buffered: bufferedRanges(),
-      });
     audio.addEventListener("loadedmetadata", onLoaded);
     audio.addEventListener("durationchange", onDurChange);
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("ended", onEnd);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
-    audio.addEventListener("seeking", onSeeking);
-    audio.addEventListener("seeked", onSeekedEvt);
-    audio.addEventListener("waiting", onWaiting);
-    audio.addEventListener("stalled", onStalled);
-    audio.addEventListener("progress", onProgress);
 
     return () => {
       audio.removeEventListener("loadedmetadata", onLoaded);
@@ -303,11 +252,6 @@ function CountdownAudioPlayer({
       audio.removeEventListener("ended", onEnd);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
-      audio.removeEventListener("seeking", onSeeking);
-      audio.removeEventListener("seeked", onSeekedEvt);
-      audio.removeEventListener("waiting", onWaiting);
-      audio.removeEventListener("stalled", onStalled);
-      audio.removeEventListener("progress", onProgress);
     };
     // Re-run when the actual media source changes (remote → blob URL) so the
     // duration-detection listeners re-attach against the seekable blob.
@@ -327,14 +271,6 @@ function CountdownAudioPlayer({
     const audio = audioRef.current;
     const bar = progressRef.current;
     if (!audio || !bar) return;
-    // eslint-disable-next-line no-console
-    console.log("[SeekDebug] seekFromClick", {
-      playbackSrc,
-      duration,
-      audioDuration: audio.duration,
-      audioReadyState: audio.readyState,
-      audioSrc: audio.src,
-    });
     // Guard: until the duration-detection trick completes, `duration` may
     // be 0 (or stale Infinity), and setting currentTime to a non-finite
     // value throws. Bail out silently and the click becomes a no-op.
@@ -345,26 +281,8 @@ function CountdownAudioPlayer({
       Math.max(0, (e.clientX - rect.left) / rect.width),
     );
     const target = ratio * duration;
-    // eslint-disable-next-line no-console
-    console.log("[SeekDebug] seek math", {
-      clientX: e.clientX,
-      rectLeft: rect.left,
-      rectWidth: rect.width,
-      ratio,
-      duration,
-      target,
-    });
     if (!isFinite(target)) return;
     audio.currentTime = target;
-    // eslint-disable-next-line no-console
-    console.log(
-      "[SeekDebug] immediately after assignment",
-      "requestedTarget=" + target,
-      "audio.currentTime=" + audio.currentTime,
-      "sameElement=" + (audio === audioRef.current),
-      "audio.paused=" + audio.paused,
-      "audio.seeking=" + audio.seeking,
-    );
     // Use `target` directly — reading audio.currentTime immediately after
     // setting it returns the pre-seek position because the seek is async.
     setCurrentTime(target);
