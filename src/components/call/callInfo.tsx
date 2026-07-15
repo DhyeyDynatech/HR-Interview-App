@@ -528,6 +528,73 @@ function CallInfo({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [call_id]);
 
+  // The recording is uploaded as raw webm first, then transcoded to mp3 by a
+  // fire-and-forget server job (see /api/transcode-recording) — webm has no
+  // seek index, so a recruiter who opens the recording before the transcode
+  // finishes gets a player that can't seek reliably. Rather than show that
+  // broken state, poll details.recording_status until it flips to "uploaded"
+  // (mp3 ready) and keep the recording hidden behind a "processing" indicator
+  // until then. Stops polling once ready, once a terminal non-uploading state
+  // is reached (empty/upload_failed/failed_to_start — nothing more to wait
+  // for), or after a safe upper bound in case the transcode job crashed.
+  useEffect(() => {
+    const recordingUrl =
+      responseData?.details?.recording_url || call?.recording_url;
+    const recordingStatus = responseData?.details?.recording_status;
+    const isWebm = /\.webm(\?|$)/i.test(recordingUrl || "");
+    const isTerminal =
+      recordingStatus === "uploaded" ||
+      recordingStatus === "empty" ||
+      recordingStatus === "upload_failed" ||
+      recordingStatus === "failed_to_start";
+
+    if (!recordingUrl || !isWebm || isTerminal) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const startTime = Date.now();
+    const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
+    const POLL_INTERVAL_MS = 5000;
+
+    const tick = async () => {
+      if (cancelled) {
+        return;
+      }
+      try {
+        const response = await ResponseService.getResponseByCallId(call_id);
+        if (cancelled) {
+          return;
+        }
+        setResponseData(response);
+      } catch {
+        // Transient failure — keep polling, transcode may still be in flight.
+      }
+      if (cancelled) {
+        return;
+      }
+      if (Date.now() - startTime < MAX_POLL_DURATION_MS) {
+        pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    };
+
+    pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    call_id,
+    responseData?.details?.recording_url,
+    responseData?.details?.recording_status,
+    call?.recording_url,
+  ]);
+
   // Fetch all attempts for this assignee (by email + interview_id)
   useEffect(() => {
     const fetchUserResponses = async () => {
@@ -1116,31 +1183,63 @@ function CallInfo({
                 <div className="flex flex-col mt-3">
                   <p className="font-semibold">Interview Recording</p>
                   <div className="flex flex-row gap-3 mt-2">
-                    {call?.recording_url ||
-                    (call as any)?.details?.recording_url ||
-                    responseData?.details?.recording_url ? (
-                      <CountdownAudioPlayer
-                        src={
-                          call?.recording_url ||
-                          (call as any)?.details?.recording_url ||
-                          responseData?.details?.recording_url
-                        }
-                        durationHint={
-                          responseData?.duration ||
-                          (call?.start_timestamp && call?.end_timestamp
-                            ? Math.round(
-                                (call.end_timestamp - call.start_timestamp) /
-                                  1000,
-                              )
-                            : undefined)
-                        }
-                        filename={`interview-${call_id}.webm`}
-                      />
-                    ) : (
-                      <p className="text-sm text-gray-500 italic">
-                        Recording not available
-                      </p>
-                    )}
+                    {(() => {
+                      const recordingUrl =
+                        call?.recording_url ||
+                        (call as any)?.details?.recording_url ||
+                        responseData?.details?.recording_url;
+
+                      if (!recordingUrl) {
+                        return (
+                          <p className="text-sm text-gray-500 italic">
+                            Recording not available
+                          </p>
+                        );
+                      }
+
+                      // Hold the player back until the recording is on its
+                      // final mp3 URL — the transcode from the raw webm
+                      // upload runs as a fire-and-forget server job right
+                      // after the interview ends, and webm has no seek index
+                      // (see CountdownAudioPlayer above), so opening it too
+                      // early gives recruiters a player that can't seek
+                      // reliably. The poll effect above refreshes
+                      // responseData until recording_status flips to
+                      // "uploaded" (or a terminal failure state).
+                      const recordingStatus =
+                        responseData?.details?.recording_status;
+                      const isWebm = /\.webm(\?|$)/i.test(recordingUrl);
+                      const stillProcessing =
+                        isWebm &&
+                        recordingStatus !== "empty" &&
+                        recordingStatus !== "upload_failed" &&
+                        recordingStatus !== "failed_to_start";
+
+                      if (stillProcessing) {
+                        return (
+                          <p className="text-sm text-gray-500 italic">
+                            Recording is still processing — check back in a
+                            moment.
+                          </p>
+                        );
+                      }
+
+                      return (
+                        <CountdownAudioPlayer
+                          src={recordingUrl}
+                          durationHint={
+                            responseData?.duration ||
+                            (call?.start_timestamp && call?.end_timestamp
+                              ? Math.round(
+                                  (call.end_timestamp - call.start_timestamp) /
+                                    1000,
+                                )
+                              : undefined)
+                          }
+                          filename={`interview-${call_id}.webm`}
+                        />
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
