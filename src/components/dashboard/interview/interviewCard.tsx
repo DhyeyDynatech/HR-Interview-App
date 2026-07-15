@@ -74,6 +74,16 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug, variant = '
         // finishes. Keep the card's spinner up for that window too, not just
         // for analytics, so recruiters aren't dropped into a recording that
         // isn't ready to scrub through yet.
+        //
+        // The transcode trigger is fire-and-forget with no retry (see
+        // save-call/route.ts) — a cold start, missing env var, or transient
+        // download/upload failure leaves recording_status stuck at "pending"
+        // forever, with nothing to ever flip it to a terminal state. Without
+        // an age cutoff here, one failed transcode would pin this card's
+        // spinner on indefinitely. 15 minutes is comfortably longer than any
+        // real transcode (download + ffmpeg + re-upload), so past that we
+        // treat it as failed-but-unmarked and stop waiting on it.
+        const RECORDING_PROCESSING_MAX_AGE_MS = 15 * 60 * 1000;
         const recordingProcessing = responses.filter((r: any) => {
           const recordingUrl = r.details?.recording_url;
           if (!recordingUrl) {
@@ -86,12 +96,19 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug, variant = '
           }
 
           const status = r.details?.recording_status;
-
-          return (
+          const isNonTerminal =
             status !== "empty" &&
             status !== "upload_failed" &&
-            status !== "failed_to_start"
-          );
+            status !== "failed_to_start";
+
+          if (!isNonTerminal) {
+            return false;
+          }
+
+          const createdAt = r.created_at ? new Date(r.created_at).getTime() : 0;
+          const age = Date.now() - createdAt;
+
+          return age < RECORDING_PROCESSING_MAX_AGE_MS;
         });
 
         if (unanalysed.length === 0 && recordingProcessing.length === 0) {
