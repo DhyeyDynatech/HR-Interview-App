@@ -356,6 +356,15 @@ function CountdownAudioPlayer({
     });
     if (!isFinite(target)) return;
     audio.currentTime = target;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[SeekDebug] immediately after assignment",
+      "requestedTarget=" + target,
+      "audio.currentTime=" + audio.currentTime,
+      "sameElement=" + (audio === audioRef.current),
+      "audio.paused=" + audio.paused,
+      "audio.seeking=" + audio.seeking,
+    );
     // Use `target` directly — reading audio.currentTime immediately after
     // setting it returns the pre-seek position because the seek is async.
     setCurrentTime(target);
