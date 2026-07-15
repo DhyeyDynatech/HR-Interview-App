@@ -75,15 +75,22 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug, variant = '
         // for analytics, so recruiters aren't dropped into a recording that
         // isn't ready to scrub through yet.
         //
+        // "Still transcoding" is keyed off the URL still being .webm, not off
+        // recording_status: the client sets recording_status to "uploaded" the
+        // moment the *webm* upload succeeds (call/index.tsx), well before the
+        // server transcode swaps the URL to .mp3 — so status can't distinguish
+        // "transcode pending" from "transcode done/failed". The .mp3 URL is the
+        // only reliable "done" signal. An explicit terminal *failure* status
+        // (empty/upload_failed/failed_to_start) does let us stop early.
+        //
         // The transcode trigger is fire-and-forget with no retry (see
         // save-call/route.ts) — a cold start, missing env var, or transient
-        // download/upload failure leaves recording_status stuck at "pending"
-        // forever, with nothing to ever flip it to a terminal state. Without
-        // an age cutoff here, one failed transcode would pin this card's
-        // spinner on indefinitely. 15 minutes is comfortably longer than any
-        // real transcode (download + ffmpeg + re-upload), so past that we
-        // treat it as failed-but-unmarked and stop waiting on it.
-        const RECORDING_PROCESSING_MAX_AGE_MS = 15 * 60 * 1000;
+        // failure leaves the row on its .webm URL forever, with nothing to ever
+        // advance it. Without an age cutoff, one failed transcode would pin
+        // this card's spinner on indefinitely, so past the window we treat it
+        // as failed-but-unmarked and stop waiting. Kept aligned with the
+        // per-response player gate in callInfo.tsx.
+        const RECORDING_PROCESSING_MAX_AGE_MS = 10 * 60 * 1000;
         const recordingProcessing = responses.filter((r: any) => {
           const recordingUrl = r.details?.recording_url;
           if (!recordingUrl) {
@@ -96,12 +103,11 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug, variant = '
           }
 
           const status = r.details?.recording_status;
-          const isNonTerminal =
-            status !== "empty" &&
-            status !== "upload_failed" &&
-            status !== "failed_to_start";
-
-          if (!isNonTerminal) {
+          if (
+            status === "empty" ||
+            status === "upload_failed" ||
+            status === "failed_to_start"
+          ) {
             return false;
           }
 

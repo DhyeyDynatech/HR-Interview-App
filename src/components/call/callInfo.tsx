@@ -593,22 +593,29 @@ function CallInfo({
   useEffect(() => {
     const recordingUrl =
       responseData?.details?.recording_url || call?.recording_url;
-    const recordingStatus = responseData?.details?.recording_status;
     const isWebm = /\.webm(\?|$)/i.test(recordingUrl || "");
-    const isTerminal =
-      recordingStatus === "uploaded" ||
-      recordingStatus === "empty" ||
-      recordingStatus === "upload_failed" ||
-      recordingStatus === "failed_to_start";
 
-    if (!recordingUrl || !isWebm || isTerminal) {
+    // Only poll while the recording is still on its interim .webm URL — once
+    // the server transcode swaps it to .mp3 there's nothing left to wait for.
+    // NOTE: we deliberately do NOT treat recording_status === "uploaded" as
+    // terminal here: the client sets that status the moment the *webm* upload
+    // succeeds, long before the .mp3 transcode finishes, so keying off status
+    // would stop polling before the mp3 ever appears. The .mp3 URL is the only
+    // reliable "done" signal.
+    if (!recordingUrl || !isWebm) {
       return;
     }
 
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     const startTime = Date.now();
-    const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
+    // Keep this aligned with the render's RECORDING_PROCESSING_MAX_AGE_MS: once
+    // the response is old enough that the render stops waiting and falls back
+    // to the webm player, there's no point continuing to poll for an mp3 that
+    // is never coming. Measured from mount rather than created_at is fine — the
+    // render's created_at-based cutoff is the authoritative one; this just
+    // bounds how long we keep hitting the API.
+    const MAX_POLL_DURATION_MS = 10 * 60 * 1000;
     const POLL_INTERVAL_MS = 5000;
 
     const tick = async () => {
@@ -1256,22 +1263,39 @@ function CallInfo({
                       }
 
                       // Hold the player back until the recording is on its
-                      // final mp3 URL — the transcode from the raw webm
-                      // upload runs as a fire-and-forget server job right
-                      // after the interview ends, and webm has no seek index
-                      // (see CountdownAudioPlayer above), so opening it too
-                      // early gives recruiters a player that can't seek
-                      // reliably. The poll effect above refreshes
-                      // responseData until recording_status flips to
-                      // "uploaded" (or a terminal failure state).
-                      const recordingStatus =
-                        responseData?.details?.recording_status;
+                      // final mp3 URL — the transcode from the raw webm upload
+                      // runs as a fire-and-forget server job right after the
+                      // interview ends, and webm has no seek index (see
+                      // CountdownAudioPlayer above), so opening it too early
+                      // gives recruiters a player that can't seek reliably.
+                      //
+                      // We key "still processing" off the URL still being
+                      // .webm, NOT off recording_status: the client pre-sets
+                      // recording_status to "uploaded" as soon as the *webm*
+                      // chunk upload succeeds (see call/index.tsx), well before
+                      // the server transcode swaps the URL to .mp3 — so status
+                      // alone can't tell "transcode pending" from "transcode
+                      // done". The only reliable "mp3 ready" signal is the URL
+                      // ending in .mp3.
+                      //
+                      // The transcode trigger is fire-and-forget with no retry
+                      // (save-call/route.ts): a cold start / missing env var /
+                      // transient failure leaves the row on its .webm URL
+                      // forever, with nothing to ever advance it. So bound the
+                      // wait by the response's age — past this, the transcode
+                      // is never coming, and we fall back to the webm player
+                      // (which still seeks via CountdownAudioPlayer's
+                      // blob-download workaround, just less efficiently) rather
+                      // than showing "still processing" indefinitely.
+                      const RECORDING_PROCESSING_MAX_AGE_MS = 10 * 60 * 1000;
                       const isWebm = /\.webm(\?|$)/i.test(recordingUrl);
-                      const stillProcessing =
-                        isWebm &&
-                        recordingStatus !== "empty" &&
-                        recordingStatus !== "upload_failed" &&
-                        recordingStatus !== "failed_to_start";
+                      const createdAtMs = responseData?.created_at
+                        ? new Date(responseData.created_at).getTime()
+                        : 0;
+                      const withinProcessingWindow =
+                        createdAtMs > 0 &&
+                        Date.now() - createdAtMs < RECORDING_PROCESSING_MAX_AGE_MS;
+                      const stillProcessing = isWebm && withinProcessingWindow;
 
                       if (stillProcessing) {
                         return (
