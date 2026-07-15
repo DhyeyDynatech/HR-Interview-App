@@ -1184,10 +1184,15 @@ function CallInfo({
                   <p className="font-semibold">Interview Recording</p>
                   <div className="flex flex-row gap-3 mt-2">
                     {(() => {
+                      // responseData is refreshed by the poll effect below;
+                      // call is fetched once on mount and never updated, so
+                      // it can still hold the pre-transcode webm URL even
+                      // after the poll has picked up the finished mp3 —
+                      // responseData must win whenever it has a value.
                       const recordingUrl =
+                        responseData?.details?.recording_url ||
                         call?.recording_url ||
-                        (call as any)?.details?.recording_url ||
-                        responseData?.details?.recording_url;
+                        (call as any)?.details?.recording_url;
 
                       if (!recordingUrl) {
                         return (

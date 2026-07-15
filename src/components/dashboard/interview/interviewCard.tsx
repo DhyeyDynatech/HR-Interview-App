@@ -66,7 +66,35 @@ function InterviewCard({ name, interviewerId, id, url, readableSlug, variant = '
         setResponseCount(uniqueEmails.size);
 
         const unanalysed = responses.filter((r: any) => !r.is_analysed);
-        if (unanalysed.length === 0) {
+
+        // A response's recording is uploaded as raw webm first, then
+        // transcoded to mp3 by a fire-and-forget server job (see
+        // /api/transcode-recording) — webm has no seek index, so the
+        // recruiter-facing player can't seek reliably until that transcode
+        // finishes. Keep the card's spinner up for that window too, not just
+        // for analytics, so recruiters aren't dropped into a recording that
+        // isn't ready to scrub through yet.
+        const recordingProcessing = responses.filter((r: any) => {
+          const recordingUrl = r.details?.recording_url;
+          if (!recordingUrl) {
+            return false;
+          }
+
+          const isWebm = /\.webm(\?|$)/i.test(recordingUrl);
+          if (!isWebm) {
+            return false;
+          }
+
+          const status = r.details?.recording_status;
+
+          return (
+            status !== "empty" &&
+            status !== "upload_failed" &&
+            status !== "failed_to_start"
+          );
+        });
+
+        if (unanalysed.length === 0 && recordingProcessing.length === 0) {
           setIsFetching(false);
 
           return;
