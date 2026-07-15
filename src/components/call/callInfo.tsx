@@ -254,16 +254,21 @@ function CountdownAudioPlayer({
     };
     const onSeeking = () =>
       // eslint-disable-next-line no-console
-      console.log("[SeekDebug] event:seeking", {
-        currentTime: audio.currentTime,
-        buffered: bufferedRanges(),
-      });
+      console.log(
+        "[SeekDebug] event:seeking",
+        "currentTime=" + audio.currentTime,
+        "buffered=" + JSON.stringify(bufferedRanges()),
+        "networkState=" + audio.networkState,
+        "error=" + JSON.stringify(audio.error),
+      );
     const onSeekedEvt = () =>
       // eslint-disable-next-line no-console
-      console.log("[SeekDebug] event:seeked", {
-        currentTime: audio.currentTime,
-        buffered: bufferedRanges(),
-      });
+      console.log(
+        "[SeekDebug] event:seeked",
+        "currentTime=" + audio.currentTime,
+        "buffered=" + JSON.stringify(bufferedRanges()),
+        "networkState=" + audio.networkState,
+      );
     const onWaiting = () =>
       // eslint-disable-next-line no-console
       console.log("[SeekDebug] event:waiting", {
