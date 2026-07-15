@@ -190,7 +190,9 @@ export async function POST(req: NextRequest) {
     const mp3Url = `https://${account}.blob.core.windows.net/${container}/${mp3Path}`;
 
     // 4. Point the row at the MP3. Keep the original webm URL under
-    //    recording_url_webm so nothing is lost and we can re-run if needed.
+    //    recording_url_webm for reference/audit even after deletion below —
+    //    the mp3 is the only copy that's actually served from here on, so
+    //    the URL string itself is what's retained, not the blob.
     const mergedDetails = {
       ...(row.details || {}),
       recording_url: mp3Url,
@@ -204,6 +206,38 @@ export async function POST(req: NextRequest) {
       mp3_bytes: mp3.length,
       path: mp3Path,
     });
+
+    // 5. Delete the source webm now that the row is durably pointed at the
+    // mp3 — nothing reads recording_url_webm's blob after this point (the
+    // player and every dashboard view use recording_url), so keeping it
+    // around is pure storage cost. Only delete a blob that's actually inside
+    // OUR configured container/account (guards against sourceUrl pointing
+    // somewhere else, e.g. a pre-migration Vercel Blob URL). Best-effort —
+    // a failed delete must never undo the successful transcode above.
+    const expectedPrefix = `https://${account}.blob.core.windows.net/${container}/`;
+    if (sourceUrl.startsWith(expectedPrefix)) {
+      const webmBlobPath = sourceUrl.slice(expectedPrefix.length);
+      try {
+        await containerClient
+          .getBlockBlobClient(webmBlobPath)
+          .deleteIfExists();
+        logger.info("Deleted source webm after transcode", {
+          call_id: callId,
+          path: webmBlobPath,
+        });
+      } catch (err) {
+        logger.error(
+          `Failed to delete source webm for ${callId} at ${webmBlobPath}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    } else {
+      logger.info(
+        "Skipped webm delete — recording_url_webm is not in the configured container",
+        { call_id: callId, sourceUrl },
+      );
+    }
 
     return NextResponse.json(
       { success: true, recording_url: mp3Url },

@@ -155,21 +155,6 @@ function CountdownAudioPlayer({
     const audio = audioRef.current;
     if (!audio) return;
 
-    // Force a fresh load of the current src. Without this, `audio.seekable`
-    // can get stuck reporting only [[0,0]] even after `buffered` and
-    // `duration` correctly reflect the whole file — a Chromium quirk where
-    // `seekable` is computed once early in the element's life and doesn't
-    // always recompute later, even on a fully-buffered, well-formed MP3 with
-    // a valid Xing/duration header. Confirmed via reproduction: the exact
-    // same file opened directly in a new tab (or after calling
-    // audio.load() manually) reports a correct seekable range and seeks
-    // normally, but our element's seekable stayed [[0,0]] otherwise, making
-    // every click-to-seek — including via raw audio.currentTime = x —
-    // silently resolve back to 0 regardless of the requested time.
-    // load() re-triggers the browser's resource selection/metadata parsing
-    // from scratch, which recomputes seekable correctly.
-    audio.load();
-
     // Recordings are served as MP3 (transcoded server-side from the raw
     // MediaRecorder webm), which has a normal, self-describing duration — so
     // the browser's own audio.duration is trustworthy here and MUST win once
@@ -225,7 +210,41 @@ function CountdownAudioPlayer({
       }
     };
 
-    const onLoaded = () => ensureFiniteDuration();
+    // Chromium quirk: `audio.seekable` can get stuck reporting only [[0,0]]
+    // even once `buffered`/`duration` correctly cover the whole file — verified
+    // by reproduction, including via raw `audio.currentTime = x` from the
+    // console, completely independent of our click handler or the file itself
+    // (the identical file opened fresh in a new tab seeks correctly). The one
+    // thing that reliably fixed the broken element in testing was calling
+    // `audio.load()` AFTER the resource had already finished its first load —
+    // calling it pre-emptively at mount (before anything has loaded) was a
+    // no-op, which is why that first attempt didn't fix it. So: check
+    // `seekable` once metadata is available, and only if it's degenerate
+    // (covers essentially nothing despite a known duration) force exactly one
+    // reload. Guarded by `reloadedForSeek` so the reload's own loadedmetadata
+    // doesn't trigger a second reload.
+    let reloadedForSeek = false;
+    const fixSeekableIfStuck = () => {
+      if (reloadedForSeek) {
+        return;
+      }
+      if (!isUsableBrowserDuration(audio.duration)) {
+        return;
+      }
+      const seekable = audio.seekable;
+      const seekableCoversFile =
+        seekable.length > 0 && seekable.end(seekable.length - 1) > 1;
+      if (seekableCoversFile) {
+        return;
+      }
+      reloadedForSeek = true;
+      audio.load();
+    };
+
+    const onLoaded = () => {
+      ensureFiniteDuration();
+      fixSeekableIfStuck();
+    };
     const onDurChange = () => ensureFiniteDuration();
     // While the seek-past-end trick is running (before durationFixed), the
     // browser momentarily parks currentTime near the real end. Don't reflect
