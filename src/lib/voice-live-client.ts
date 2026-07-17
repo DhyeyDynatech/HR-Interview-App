@@ -123,10 +123,12 @@ export class VoiceLiveClient {
   //   - PLAYBACK_LEAD_MS: cushion in front of `now` for the FIRST chunk of a
   //     turn (a bigger initial pre-buffer is what smooths the whole utterance).
   //   - PLAYBACK_MIN_LEAD_MS: minimum cushion for subsequent chunks.
-  // Trade-off: larger values add a little latency before the agent starts
-  // talking; 200ms is imperceptible in conversation but hides most jitter.
-  private static readonly PLAYBACK_LEAD_MS = 200;
-  private static readonly PLAYBACK_MIN_LEAD_MS = 120;
+  // Trade-off: larger values add latency before the agent starts talking, paid
+  // once per turn. 500ms sits inside the 200-500ms gap range of natural
+  // conversational turn-taking, so it reads as normal, and it absorbs delays
+  // that a smaller cushion turns into an audible mid-sentence cut.
+  private static readonly PLAYBACK_LEAD_MS = 500;
+  private static readonly PLAYBACK_MIN_LEAD_MS = 300;
   // True until the first audio chunk of the current agent turn is scheduled, so
   // that chunk gets the larger PLAYBACK_LEAD_MS pre-buffer. Reset whenever the
   // playback queue is empty (start of a new utterance) in playAudioChunk.
