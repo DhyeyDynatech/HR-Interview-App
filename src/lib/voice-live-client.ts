@@ -170,6 +170,17 @@ export class VoiceLiveClient {
   // candidate cannot interrupt the agent while muted; they can speak as
   // soon as the agent finishes (response.done re-enables the mic).
   private micEnabled = true;
+  // Pending tryUnmute poll (see response.done). Tracked so a new turn can
+  // cancel a stale in-flight unmute instead of letting several race each
+  // other — overlapping pollers from earlier turns were able to flip the mic
+  // at the wrong moment, desyncing micEnabled from the track's real state and
+  // leaving the candidate permanently unheard mid-interview.
+  private unmuteTimer: ReturnType<typeof setTimeout> | null = null;
+  // Hard cap on how long tryUnmute will wait for the playback queue to drain
+  // before unmuting anyway. Without it, a playhead that keeps being pushed
+  // forward (agent speaks again, or a stalled/never-draining queue) means the
+  // poll never resolves and the mic is never re-enabled at all.
+  private static readonly UNMUTE_MAX_WAIT_MS = 3000;
   // Mono recording graph — both the candidate mic and the agent PCM are
   // summed into a single channel. This way someone reviewing the recording
   // hears BOTH voices in BOTH ears (vs. stereo separation which only puts
@@ -232,6 +243,8 @@ export class VoiceLiveClient {
     this.emitTranscript();
     this.silenceCheckInsRemaining = VoiceLiveClient.SILENCE_MAX_CHECKINS;
     this.clearSilenceTimer();
+    this.clearUnmuteTimer();
+    this.micEnabled = true;
 
     // 1. Get session config — must be passed in by the caller. The real app
     // flow gets this from /api/register-call. A `sessionUrl` override is
@@ -378,12 +391,32 @@ export class VoiceLiveClient {
     }
   }
 
+  /**
+   * Mute/unmute the candidate mic. Deliberately has NO "already in this state,
+   * skip" early-return: `micEnabled` (which gates forwarding to the WebSocket)
+   * and `track.enabled` (the actual capture) are two separate pieces of state,
+   * and a guard that trusts the flag can never repair them once they drift
+   * apart. That drift was a real, unrecoverable bug — the track stayed live (so
+   * the candidate was still audible in the saved recording) while micEnabled
+   * was stuck false, so every frame was dropped before reaching Voice Live. The
+   * agent heard pure silence, asked "are you still there?" twice, and ended the
+   * interview on the unresponsive-candidate path while the candidate was
+   * talking the whole time. Always writing both keeps them convergent: any
+   * desync self-corrects on the next mute/unmute instead of persisting.
+   */
   private setMicEnabled(enabled: boolean): void {
-    if (this.micEnabled === enabled) return;
     this.micEnabled = enabled;
     this.mediaStream?.getAudioTracks().forEach((track) => {
       track.enabled = enabled;
     });
+  }
+
+  /** Cancel any in-flight tryUnmute poll (see response.done). */
+  private clearUnmuteTimer(): void {
+    if (this.unmuteTimer) {
+      clearTimeout(this.unmuteTimer);
+      this.unmuteTimer = null;
+    }
   }
 
   private startSilenceTimer(): void {
@@ -546,6 +579,7 @@ export class VoiceLiveClient {
     this.currentResponseHadToolCall = false;
     this.micEnabled = true;
     this.clearSilenceTimer();
+    this.clearUnmuteTimer();
     this.silenceCheckInsRemaining = VoiceLiveClient.SILENCE_MAX_CHECKINS;
     if (this.maxDurationTimer) {
       clearTimeout(this.maxDurationTimer);
@@ -664,6 +698,9 @@ export class VoiceLiveClient {
     // Already ending — don't double-trigger.
     if (this.pendingEndReason) return;
     this.clearSilenceTimer();
+    // Drop any pending unmute — we're ending, and the closing message is about
+    // to play; a late unmute would only let it hear itself.
+    this.clearUnmuteTimer();
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.callbacks.onEndCall?.(reason);
 
@@ -773,6 +810,11 @@ export class VoiceLiveClient {
 
       case "response.audio.delta": {
         this.setStatus("assistant_speaking");
+        // A tryUnmute poll from the previous turn may still be pending. Kill it
+        // before muting — otherwise it can resolve mid-utterance and unmute
+        // against this turn's intent, which is exactly how micEnabled and the
+        // track's real state used to drift apart.
+        this.clearUnmuteTimer();
         // Suppress mic input the moment the agent starts speaking so
         // server_vad can't false-trigger on ambient noise and chop the
         // agent's audio mid-sentence.
@@ -978,10 +1020,25 @@ export class VoiceLiveClient {
         // Skipped when we're ending, OR when we just sent our own
         // response.create above (the next response.done will run this
         // block again with hadAudio=true and arm the timer then).
+        //
+        // The poll is single-instance (any stale one from a previous turn is
+        // cancelled first) and hard-bounded by UNMUTE_MAX_WAIT_MS. Previously
+        // it was an uncancellable recursive setTimeout with no deadline: each
+        // turn spawned another, they raced, and one that resolved late could
+        // flip the mic against the current turn's intent. If the playhead kept
+        // being pushed forward (agent speaks again, or a stalled queue never
+        // drains) the poll could also spin forever and never unmute at all.
+        // Failing open — unmuting after the deadline even if audio seems to
+        // still be playing — is strictly better than never unmuting: the worst
+        // case is the agent briefly hearing itself, versus a candidate who is
+        // silently unheard for the rest of the interview.
         if (!willEnd && !awaitingFollowupResponse) {
+          this.clearUnmuteTimer();
+          const unmuteDeadline = Date.now() + VoiceLiveClient.UNMUTE_MAX_WAIT_MS;
           const tryUnmute = () => {
-            if (this.isPlayingAudio()) {
-              setTimeout(tryUnmute, 100);
+            this.unmuteTimer = null;
+            if (this.isPlayingAudio() && Date.now() < unmuteDeadline) {
+              this.unmuteTimer = setTimeout(tryUnmute, 100);
 
               return;
             }
