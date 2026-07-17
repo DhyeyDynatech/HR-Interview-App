@@ -37,7 +37,7 @@ export default function AssigneesPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [interviewFilter, setInterviewFilter] = useState<string>('all');
   const [tagFilter, setTagFilter] = useState<string>('all');
-  const [reviewFilter, setReviewFilter] = useState<string>('NO_STATUS');
+  const [reviewFilter, setReviewFilter] = useState<string>('all');
   const [interviewStatusFilter, setInterviewStatusFilter] = useState<string>('all');
 
   // Read URL parameters and set filters
