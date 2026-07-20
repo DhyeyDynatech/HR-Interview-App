@@ -166,10 +166,15 @@ export async function POST(req: NextRequest, _res: Response) {
           // the interviewer for noise.
           threshold: 0.7,
           prefix_padding_ms: 300,
-          // 1200 ms gives the candidate enough pause time between clauses
-          // without the agent jumping in. 800 ms was too short and caused
-          // the agent to interrupt mid-sentence on natural speech pauses.
-          silence_duration_ms: 1200,
+          // How long the candidate must be silent before the agent treats the
+          // answer as finished. History: 800 ms caused the agent to interrupt
+          // mid-sentence on natural speech pauses; 1200 ms fixed that but still
+          // cut off candidates who paused mid-thought on harder questions.
+          // 3000 ms prioritises never interrupting over conversational pace —
+          // it pushes the total gap before the agent replies to roughly 4-4.5s
+          // (3s here + model generation + the client's playback lead), which is
+          // long enough that some candidates may think the call has frozen.
+          silence_duration_ms: 3000,
         },
         // Force English transcription so non-English speech doesn't drift
         // the agent into another language (Whisper otherwise auto-detects).
