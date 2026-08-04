@@ -35,8 +35,14 @@ export async function POST(req: NextRequest) {
 
     let readableSlug = null;
     if (payload.name) {
-      const interviewNameSlug = payload.name?.toLowerCase().replace(/\s/g, "-");
-      readableSlug = interviewNameSlug;
+      // Strip everything that isn't alphanumeric — parentheses, commas and
+      // other punctuation break the PostgREST or= filter used to resolve the
+      // slug in InterviewService.getInterviewById, and are URL-unfriendly.
+      const interviewNameSlug = payload.name
+        ?.toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      readableSlug = interviewNameSlug || null;
     }
 
     const newInterview = await InterviewService.createInterview({

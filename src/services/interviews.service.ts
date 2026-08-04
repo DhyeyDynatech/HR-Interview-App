@@ -53,10 +53,15 @@ const getAllInterviews = async (userId: string, userRole?: string, organizationI
 
 const getInterviewById = async (id: string) => {
   try {
+    // Double-quote the value: PostgREST's or= grammar treats commas as term
+    // separators and parentheses as logic-group delimiters, so an unquoted slug
+    // like "power-platform-developer-(power-apps)" fails to parse (PGRST100).
+    const safeId = `"${id.replace(/"/g, '\\"')}"`;
+
     const { data, error } = await supabase
       .from("interview")
       .select(`*`)
-      .or(`id.eq.${id},readable_slug.eq.${id}`);
+      .or(`id.eq.${safeId},readable_slug.eq.${safeId}`);
 
 
     return data ? data[0] : null;
