@@ -12,6 +12,7 @@ import {
   UserIcon,
   MailIcon,
   VideoIcon,
+  EyeIcon,
 } from "lucide-react";
 import React, { useState, useEffect, useRef } from "react";
 import { Card, CardHeader, CardTitle } from "../ui/card";
@@ -74,6 +75,11 @@ const webClient = new RetellWebClient() as RetellWebClient & {
 
 type InterviewProps = {
   interview: Interview;
+  /** Recruiter preview (?preview=true). Runs the interview live so the recruiter
+   * can hear it, but persists NOTHING: no response row, no recording upload, no
+   * assignee/retake changes, no analytics, and no emails. The email/name form is
+   * skipped too — there is no candidate to identify. */
+  isPreview?: boolean;
 };
 
 type registerCallResponseType = {
@@ -90,7 +96,27 @@ type transcriptType = {
   content: string;
 };
 
-function Call({ interview }: InterviewProps) {
+// How long the candidate gets, after the interview's nominal time limit, to
+// finish the answer they are already giving. During this window the agent is
+// forbidden from asking anything new (see VoiceLiveClient.beginWrapUp) and the
+// candidate sees a countdown telling them to wrap up. The interview ends as
+// soon as the agent closes out — the full buffer is a ceiling, not a wait.
+const WRAP_UP_BUFFER_SECONDS = 4 * 60;
+
+// How long we wait, after the buffer expires and we ask the agent for a final
+// goodbye, before tearing the session down regardless. Covers the case where
+// that goodbye response never completes and onEndCall therefore never fires.
+const WRAP_UP_FORCE_END_TIMEOUT_MS = 15_000;
+
+// Hard ceiling for that fallback once it starts waiting on audio playback, so a
+// playback queue that never drains can't defer teardown indefinitely.
+const WRAP_UP_FORCE_END_TIMEOUT_MS_MAX = 30_000;
+
+// Stable id for the wrap-up toast so it can be dismissed explicitly when the
+// interview ends (see the isEnded effect).
+const WRAP_UP_TOAST_ID = "wrap-up-buffer";
+
+function Call({ interview, isPreview = false }: InterviewProps) {
   const { createResponse } = useResponses();
   const [lastInterviewerResponse, setLastInterviewerResponse] =
     useState<string>("");
@@ -166,12 +192,27 @@ function Call({ interview }: InterviewProps) {
   const prevMultiplePersonCountRef = useRef(0);
   const prevTabSwitchCountRef = useRef(0);
 
-  // Time-limit warning state
-  const [timeWarningShown, setTimeWarningShown] = useState(false);
-  const [showTimeWarning, setShowTimeWarning] = useState(false);
-  const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<
-    number | null
-  >(null);
+  // ── Wrap-up buffer ───────────────────────────────────────────────────────
+  // When the interview's nominal time limit is reached we no longer end the
+  // call outright. Instead the agent is told to stop asking new questions, and
+  // the candidate gets WRAP_UP_BUFFER_SECONDS to finish the answer they're
+  // already giving. Previously a question asked at 9m30s of a 10m interview got
+  // cut off mid-answer at 10m00s with no goodbye — the answer was lost and the
+  // ending felt abrupt. `isWrappingUp` drives the on-screen buffer clock;
+  // `wrapUpRemaining` is the countdown shown in it.
+  const [isWrappingUp, setIsWrappingUp] = useState(false);
+  const [wrapUpRemaining, setWrapUpRemaining] = useState<number | null>(null);
+  // Wall-clock start of the buffer. Used so the countdown is computed from real
+  // elapsed time rather than tick count — a backgrounded tab throttles the
+  // interval, and a tick-counted clock would drift and under-report.
+  const wrapUpStartedAtRef = useRef<number | null>(null);
+  // Guards the one-shot transition into wrap-up so the timer effect (which runs
+  // on every tick) can't re-enter it.
+  const wrapUpTriggeredRef = useRef(false);
+  // Bounded fallback armed after the buffer expires — see the countdown effect.
+  const forceEndFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   // Camera preview state - show video before interview starts
   const [showCameraPreview, setShowCameraPreview] = useState(true);
@@ -498,6 +539,8 @@ function Call({ interview }: InterviewProps) {
   // This prevents video stuttering when face verification initializes
   useEffect(() => {
     const fetchAssigneePhoto = async () => {
+      // Skip in recruiter preview — there's no assignee to match a face against.
+      if (isPreview) return;
       // Fetch as soon as we have email and interview.id (during preview phase)
       if (email && interview.id && !assigneePhotoUrl) {
         try {
@@ -516,7 +559,7 @@ function Call({ interview }: InterviewProps) {
       }
     };
     fetchAssigneePhoto();
-  }, [email, interview.id, assigneePhotoUrl]);
+  }, [email, interview.id, assigneePhotoUrl, isPreview]);
 
   const handleFeedbackSubmit = async (
     formData: Omit<FeedbackData, "interview_id">,
@@ -568,35 +611,131 @@ function Call({ interview }: InterviewProps) {
     setCurrentTimeDuration(String(elapsedSeconds));
 
     const limitSeconds = Number(interviewTimeDuration) * 60;
-    const remaining = limitSeconds - elapsedSeconds;
 
-    // Show 1-minute warning once
-    if (remaining <= 60 && remaining > 0 && !timeWarningShown && isCalling) {
-      setTimeWarningShown(true);
-      setShowTimeWarning(true);
-      setTimeRemainingSeconds(remaining);
-      toast.warning(
-        `Interview ending in ${remaining} seconds. Please wrap up your answer.`,
-        {
-          duration: 8000,
-        },
-      );
-    }
+    // Note: there is deliberately no "interview ending in 60 seconds" warning
+    // here. It existed when the interview died at the limit, but the wrap-up
+    // buffer below now gives the candidate time to finish their answer — so a
+    // "please wrap up" prompt at T-60s told them to rush at exactly the moment
+    // they no longer needed to, reintroducing the truncated-answer problem the
+    // buffer exists to solve.
 
-    // Update live countdown while warning is showing
-    if (showTimeWarning && remaining > 0) {
-      setTimeRemainingSeconds(remaining);
-    }
+    // ── Time limit reached → enter the wrap-up buffer (not a hard stop) ────
+    // The agent stops asking new questions here, but the candidate keeps
+    // speaking until they've finished the answer already in flight. The call
+    // ends when the agent closes out (end_interview → onEndCall → drainAndEnd)
+    // or when the buffer below expires — whichever comes first.
+    if (
+      elapsedSeconds >= limitSeconds &&
+      isCalling &&
+      !wrapUpTriggeredRef.current
+    ) {
+      wrapUpTriggeredRef.current = true;
 
-    if (elapsedSeconds >= limitSeconds && isCalling) {
-      setShowTimeWarning(false);
-      stopActiveCall();
-      setIsEnded(true);
+      if (isVoiceLiveActiveRef.current && voiceLiveClientRef.current) {
+        // Voice Live: hand the agent the no-more-questions constraint and let
+        // the candidate finish. beginWrapUp is idempotent — the client's own
+        // tab-throttle-proof timer may have already fired it.
+        wrapUpStartedAtRef.current = Date.now();
+        setIsWrappingUp(true);
+        setWrapUpRemaining(WRAP_UP_BUFFER_SECONDS);
+        voiceLiveClientRef.current.beginWrapUp();
+        // Given a stable id so it can be dismissed the moment the interview
+        // ends. Sonner renders outside the React tree, so unmounting the
+        // interview panel does NOT remove an in-flight toast — without this the
+        // candidate sees "please finish your current answer" sitting on top of
+        // the "Interview Complete" screen.
+        toast.info(
+          "Time's up — no more questions. Please finish your current answer.",
+          { id: WRAP_UP_TOAST_ID, duration: 10000 },
+        );
+      } else {
+        // Retell path has no equivalent mid-session instruction channel, so it
+        // keeps the original hard-stop behaviour.
+        stopActiveCall();
+        setIsEnded(true);
+      }
     }
 
     return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCalling, time, currentTimeDuration]);
+
+  // Wrap-up buffer countdown. Ticks once a second off a wall-clock start time
+  // (not a tick counter) so a throttled background tab can't stretch the buffer
+  // past its real duration. When it hits zero we force-end: the agent speaks a
+  // short goodbye and the normal save path runs, so the candidate still gets a
+  // clean close rather than a silent disconnect.
+  useEffect(() => {
+    if (!isWrappingUp || isEnded) return;
+
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    // Fires at most once even if a tick lands while the force-end is already
+    // in flight.
+    let expired = false;
+
+    const tick = () => {
+      const startedAt = wrapUpStartedAtRef.current;
+      if (startedAt === null) return;
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const left = Math.max(0, WRAP_UP_BUFFER_SECONDS - elapsed);
+      setWrapUpRemaining(left);
+
+      if (left === 0 && !expired) {
+        expired = true;
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+        if (isVoiceLiveActiveRef.current && voiceLiveClientRef.current) {
+          // forceEnd speaks a closing message and fires onEndCall, which drains
+          // the audio queue before tearing down. If the client is already
+          // ending (agent closed out at the same moment) this is a no-op.
+          voiceLiveClientRef.current.forceEnd("time_expired");
+          // Absolute backstop: forceEnd defers onEndCall until the goodbye
+          // response completes, so a stalled or never-delivered response would
+          // otherwise leave the session open forever with the buffer already at
+          // zero. Give the goodbye a bounded window, then tear down regardless.
+          // setIsEnded is idempotent and the save path is guarded by
+          // voiceLiveSaveSubmittedRef, so a late onEndCall can't double-save.
+          //
+          // Don't tear down while the goodbye is still audibly playing — that
+          // cuts the agent off mid-sentence AND unmounts the interview panel
+          // (End Interview button included), leaving the candidate staring at a
+          // blank screen. Re-check on a short poll, bounded by the same overall
+          // deadline so a never-draining queue can't defer teardown forever.
+          const fallbackDeadline =
+            Date.now() + WRAP_UP_FORCE_END_TIMEOUT_MS_MAX;
+          const teardown = () => {
+            forceEndFallbackRef.current = null;
+            const stillPlaying =
+              voiceLiveClientRef.current?.isPlayingAudio() ?? false;
+            if (stillPlaying && Date.now() < fallbackDeadline) {
+              forceEndFallbackRef.current = setTimeout(teardown, 250);
+
+              return;
+            }
+            stopActiveCall();
+            setIsEnded(true);
+          };
+          forceEndFallbackRef.current = setTimeout(
+            teardown,
+            WRAP_UP_FORCE_END_TIMEOUT_MS,
+          );
+        } else {
+          stopActiveCall();
+          setIsEnded(true);
+        }
+      }
+    };
+
+    intervalId = setInterval(tick, 1000);
+    tick();
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWrappingUp, isEnded]);
 
   useEffect(() => {
     if (testEmail(email)) {
@@ -704,6 +843,7 @@ function Call({ interview }: InterviewProps) {
   // the interview is no longer lost and the row becomes visible to recruiters.
   // Guarded by the same ref so it never double-saves alongside the async path.
   const beaconVoiceLiveSave = (callIdForSave: string) => {
+    if (isPreview) return; // dry run — nothing is persisted
     if (voiceLiveSaveSubmittedRef.current) return;
     if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
     try {
@@ -721,6 +861,10 @@ function Call({ interview }: InterviewProps) {
   };
 
   const submitVoiceLiveSave = async (callIdForSave: string) => {
+    // Preview is a dry run: no response row, no transcript, no analytics, no
+    // recording upload, no recruiter email. save-call owns all of that, so
+    // simply never calling it is the complete opt-out.
+    if (isPreview) return;
     if (voiceLiveSaveSubmittedRef.current) return;
 
     // ── STEP 1: Save the transcript FIRST ────────────────────────────────
@@ -973,8 +1117,9 @@ function Call({ interview }: InterviewProps) {
   const startConversation = async () => {
     setLoading(true);
 
-    // 0. Basic validation for email & name
-    if (!testEmail(email)) {
+    // 0. Basic validation for email & name. Skipped in preview — there is no
+    // candidate to identify, and nothing is written anywhere.
+    if (!isPreview && !testEmail(email)) {
       toast.error(
         "Please enter a valid email address before starting the interview.",
       );
@@ -983,7 +1128,7 @@ function Call({ interview }: InterviewProps) {
       return;
     }
 
-    if (!name.trim()) {
+    if (!isPreview && !name.trim()) {
       toast.error("Please enter your name before starting the interview.");
       setLoading(false);
 
@@ -994,7 +1139,8 @@ function Call({ interview }: InterviewProps) {
     // already disabled in this case, but guard here too so the interview can
     // never begin without recording capability (e.g. if start is triggered
     // some other way).
-    if (!isRecordingSupported()) {
+    // Nothing is recorded in preview, so an unsupported browser is fine there.
+    if (!isPreview && !isRecordingSupported()) {
       toast.error(
         "Your browser can't record this interview. Please use Google Chrome or Microsoft Edge on a desktop.",
       );
@@ -1003,24 +1149,27 @@ function Call({ interview }: InterviewProps) {
       return;
     }
 
-    // 1. Check if this assignee is allowed to take / retake the interview
-    try {
-      // We only enforce the flag when we can match the assignee record
-      const assignee = await assigneeService.getAssigneeByEmailAndInterview(
-        email.toLowerCase(),
-        interview.id,
-      );
-
-      if (assignee && assignee.allow_retake === false) {
-        setLoading(false);
-        toast.error(
-          "You have already completed this interview. Please contact your recruiter if you need another attempt.",
+    // 1. Check if this assignee is allowed to take / retake the interview.
+    // Preview has no assignee and must never consume a candidate's attempt.
+    if (!isPreview) {
+      try {
+        // We only enforce the flag when we can match the assignee record
+        const assignee = await assigneeService.getAssigneeByEmailAndInterview(
+          email.toLowerCase(),
+          interview.id,
         );
 
-        return;
+        if (assignee && assignee.allow_retake === false) {
+          setLoading(false);
+          toast.error(
+            "You have already completed this interview. Please contact your recruiter if you need another attempt.",
+          );
+
+          return;
+        }
+      } catch {
+        // If this check fails, don't block the interview
       }
-    } catch {
-      // If this check fails, don't block the interview
     }
 
     // Check if camera is available (video stream should be ready from preview)
@@ -1032,36 +1181,54 @@ function Call({ interview }: InterviewProps) {
       return;
     }
 
-    // Validate email with backend
-    try {
-      const validateRes = await axios.post("/api/validate-user", {
-        email,
-        interview_id: interview.id,
-      });
-      if (!validateRes.data.success) {
-        toast.error(validateRes.data.error || "You are not authorized person");
+    // Validate email with backend. Skipped in preview — the recruiter isn't an
+    // assignee on this interview and would always fail this check.
+    if (!isPreview) {
+      try {
+        const validateRes = await axios.post("/api/validate-user", {
+          email,
+          interview_id: interview.id,
+        });
+        if (!validateRes.data.success) {
+          toast.error(
+            validateRes.data.error || "You are not authorized person",
+          );
+          setLoading(false);
+
+          return;
+        }
+      } catch (err: any) {
+        const message =
+          err?.response?.data?.error ||
+          err?.message ||
+          "You are not authorized person";
+        toast.error(message);
         setLoading(false);
 
         return;
       }
-    } catch (err: any) {
-      const message =
-        err?.response?.data?.error ||
-        err?.message ||
-        "You are not authorized person";
-      toast.error(message);
-      setLoading(false);
-
-      return;
     }
     const data = {
       mins: interview?.time_duration,
       objective: interview?.objective,
       questions: interview?.questions.map((q) => q.question).join(", "),
-      name: name || "not provided",
+      // Preview collects no name, and the prompt tells the agent to greet the
+      // candidate by name — "not provided" would be spoken aloud. Give it a
+      // neutral placeholder so the greeting still sounds natural.
+      name: name || (isPreview ? "there" : "not provided"),
       email: email || null,
       interview_id: interview?.id || null,
     };
+
+    // Reset wrap-up buffer state for this attempt
+    wrapUpTriggeredRef.current = false;
+    wrapUpStartedAtRef.current = null;
+    if (forceEndFallbackRef.current) {
+      clearTimeout(forceEndFallbackRef.current);
+      forceEndFallbackRef.current = null;
+    }
+    setIsWrappingUp(false);
+    setWrapUpRemaining(null);
 
     // Reset real-time violation event accumulator for this attempt
     violationEventsRef.current = [];
@@ -1081,6 +1248,8 @@ function Call({ interview }: InterviewProps) {
       const registerCallResponse: any = await axios.post("/api/register-call", {
         dynamic_data: data,
         interviewer_id: interview?.interviewer_id,
+        // Tells the server to skip the retake lock and activity log.
+        preview: isPreview,
       });
 
       // ── Voice Live path ────────────────────────────────────────────────
@@ -1203,6 +1372,8 @@ function Call({ interview }: InterviewProps) {
             voiceLiveUsageRef.current = usage;
           },
           onRecordingChunk: (chunk, seq) => {
+            // Preview never uploads audio — no blob is written for a dry run.
+            if (isPreview) return;
             // Incrementally append each recorded chunk to Azure while the call
             // runs. Best-effort: a failed chunk is skipped (leaves a small gap)
             // and never interrupts the interview. Serialized via the chain ref
@@ -1270,33 +1441,44 @@ function Call({ interview }: InterviewProps) {
         // interview start — save-call will re-create the row defensively from
         // the fallback fields (interview_id/email/name) we send in
         // submitVoiceLiveSave / the beacon payload.
-        try {
-          await createResponse({
-            interview_id: interview.id,
-            call_id: newCallId,
-            email: email,
-            name: name,
-          });
-        } catch (err) {
-          console.error(
-            "createResponse failed at Voice Live call start (will rely on save-call re-create):",
-            err,
-          );
+        // Preview writes no response row — that's the whole point of a dry run.
+        if (!isPreview) {
+          try {
+            await createResponse({
+              interview_id: interview.id,
+              call_id: newCallId,
+              email: email,
+              name: name,
+            });
+          } catch (err) {
+            console.error(
+              "createResponse failed at Voice Live call start (will rely on save-call re-create):",
+              err,
+            );
+          }
         }
 
-        // Hard wall-clock cap for the whole interview. The React countdown
-        // below relies on a repeating setInterval that browsers throttle or
-        // freeze in a backgrounded tab, so it can miss the limit entirely (a
-        // candidate who tabs away has effectively no cap). We pass the limit
-        // to the VoiceLiveClient, which arms a single tab-throttle-proof
-        // setTimeout that force-ends the interview. A small grace buffer lets
-        // the agent's own end_interview tool and the visible countdown end
-        // things cleanly first; this only bites if both of those fail.
+        // Tab-throttle-proof time backstops. The React countdowns above run on
+        // a repeating setInterval that browsers throttle or freeze in a
+        // backgrounded tab, so they can miss their moment entirely (a candidate
+        // who tabs away would otherwise have effectively no cap). The
+        // VoiceLiveClient arms two single setTimeouts instead:
+        //   - wrapUpAfterMs: at the nominal limit, enter wrap-up (agent stops
+        //     asking new questions). Idempotent with the countdown above.
+        //   - maxDurationMs: at the END of the wrap-up buffer, force-end. This
+        //     must clear the buffer window, otherwise it would kill the call
+        //     mid-answer during the very grace period the buffer exists to give.
+        // The grace lets the agent's own end_interview and the visible buffer
+        // countdown close things cleanly first; the cap only bites if both fail.
         const limitMinutes = Number(interview?.time_duration) || 0;
-        const HARD_CAP_GRACE_MS = 30_000; // 30s past the nominal limit
+        const HARD_CAP_GRACE_MS = 30_000; // 30s past the end of the buffer
+        const wrapUpAfterMs =
+          limitMinutes > 0 ? limitMinutes * 60_000 : undefined;
         const maxDurationMs =
           limitMinutes > 0
-            ? limitMinutes * 60_000 + HARD_CAP_GRACE_MS
+            ? limitMinutes * 60_000 +
+              WRAP_UP_BUFFER_SECONDS * 1000 +
+              HARD_CAP_GRACE_MS
             : undefined;
 
         try {
@@ -1304,6 +1486,11 @@ function Call({ interview }: InterviewProps) {
             wsUrl: cfg.wsUrl,
             sessionConfig: cfg.sessionConfig,
             maxDurationMs,
+            wrapUpAfterMs,
+            // Optional playback-cushion overrides from server env vars. Absent
+            // unless configured, in which case the client uses its defaults.
+            playbackLeadMs: cfg.playbackLeadMs,
+            playbackMinLeadMs: cfg.playbackMinLeadMs,
           });
         } catch (err) {
           console.error("Voice Live start failed:", err);
@@ -1317,19 +1504,22 @@ function Call({ interview }: InterviewProps) {
         setIsStarted(true);
         setCallId(newCallId);
 
-        try {
-          const startedAssignee =
-            await assigneeService.getAssigneeByEmailAndInterview(
-              email.toLowerCase(),
-              interview.id,
-            );
-          if (startedAssignee?.id) {
-            await assigneeService.updateAssignee(startedAssignee.id, {
-              allow_retake: false,
-            });
+        // Preview must never lock a candidate out of their real attempt.
+        if (!isPreview) {
+          try {
+            const startedAssignee =
+              await assigneeService.getAssigneeByEmailAndInterview(
+                email.toLowerCase(),
+                interview.id,
+              );
+            if (startedAssignee?.id) {
+              await assigneeService.updateAssignee(startedAssignee.id, {
+                allow_retake: false,
+              });
+            }
+          } catch {
+            // Non-critical
           }
-        } catch {
-          // Non-critical
         }
 
         return; // ← Skip the Retell branch below
@@ -1350,34 +1540,37 @@ function Call({ interview }: InterviewProps) {
           registerCallResponse?.data?.registerCallResponse?.call_id;
         setCallId(newCallId);
 
-        // Lock the link immediately — prevent retake as soon as interview starts
-        try {
-          const startedAssignee =
-            await assigneeService.getAssigneeByEmailAndInterview(
-              email.toLowerCase(),
-              interview.id,
-            );
-          if (startedAssignee?.id) {
-            await assigneeService.updateAssignee(startedAssignee.id, {
-              allow_retake: false,
-            });
+        // Lock the link immediately — prevent retake as soon as interview
+        // starts. Skipped in preview so a dry run can't consume a real attempt.
+        if (!isPreview) {
+          try {
+            const startedAssignee =
+              await assigneeService.getAssigneeByEmailAndInterview(
+                email.toLowerCase(),
+                interview.id,
+              );
+            if (startedAssignee?.id) {
+              await assigneeService.updateAssignee(startedAssignee.id, {
+                allow_retake: false,
+              });
+            }
+          } catch {
+            // Non-critical — retake lock will still be set when interview ends
           }
-        } catch {
-          // Non-critical — retake lock will still be set when interview ends
-        }
 
-        // createResponse now throws on DB failure. Keep the Retell start
-        // non-fatal on insert failure (prior behavior) — the webhook/get-call
-        // flow tolerates a late/missing row.
-        try {
-          await createResponse({
-            interview_id: interview.id,
-            call_id: newCallId,
-            email: email,
-            name: name,
-          });
-        } catch (err) {
-          console.error("createResponse failed at Retell call start:", err);
+          // createResponse now throws on DB failure. Keep the Retell start
+          // non-fatal on insert failure (prior behavior) — the webhook/get-call
+          // flow tolerates a late/missing row.
+          try {
+            await createResponse({
+              interview_id: interview.id,
+              call_id: newCallId,
+              email: email,
+              name: name,
+            });
+          } catch (err) {
+            console.error("createResponse failed at Retell call start:", err);
+          }
         }
       } else {
         toast.error(
@@ -1415,6 +1608,15 @@ function Call({ interview }: InterviewProps) {
   // flow. The Retell branch is unaffected.
   useEffect(() => {
     if (!isEnded) return;
+    // The interview is over — cancel the post-buffer teardown fallback so it
+    // can't fire against an already-stopped session.
+    if (forceEndFallbackRef.current) {
+      clearTimeout(forceEndFallbackRef.current);
+      forceEndFallbackRef.current = null;
+    }
+    // Clear the wrap-up prompt. It asks the candidate to finish their answer,
+    // which is actively wrong once the "Interview Complete" screen is showing.
+    toast.dismiss(WRAP_UP_TOAST_ID);
     if (
       isVoiceLiveActiveRef.current &&
       callId &&
@@ -1461,6 +1663,9 @@ function Call({ interview }: InterviewProps) {
   }, [callId, isEnded]);
 
   useEffect(() => {
+    // Preview is a dry run — no response write, no assignee update, no email.
+    if (isPreview) return;
+
     // Voice Live runs the entire end-of-call sequence (response write,
     // violation merge, assignee update, recruiter email) inside the
     // /api/voice-live/save-call route. Running it here too would race that
@@ -1602,19 +1807,24 @@ function Call({ interview }: InterviewProps) {
           />
         )}
         {/* Camera-off countdown is shown inline in the left panel — no floating overlay needed */}
-        {isStarted &&
-          !isEnded &&
-          showTimeWarning &&
-          timeRemainingSeconds !== null && (
-            <div
-              style={{ zIndex: 9999 }}
-              className="fixed top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 font-semibold text-sm"
-            >
-              <AlarmClockIcon className="h-5 w-5 shrink-0" />
-              Interview ending in {timeRemainingSeconds}s — please wrap up your
-              answer.
-            </div>
-          )}
+        {/* Wrap-up buffer banner — shown once the nominal time is up. Tells the
+            candidate the AI has stopped asking questions and they have this
+            long to finish answering. */}
+        {isStarted && !isEnded && isWrappingUp && wrapUpRemaining !== null && (
+          <div
+            style={{ zIndex: 9999 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 font-semibold text-sm"
+          >
+            <AlarmClockIcon className="h-5 w-5 shrink-0" />
+            <span>
+              Time&apos;s up — no more questions. Please complete your answer.
+            </span>
+            <span className="tabular-nums font-black text-base">
+              {Math.floor(wrapUpRemaining / 60)}:
+              {String(wrapUpRemaining % 60).padStart(2, "0")}
+            </span>
+          </div>
+        )}
       </AnimatePresence>
 
       {/* Violation Tracker - Hidden per user request */}
@@ -1627,14 +1837,16 @@ function Call({ interview }: InterviewProps) {
         />
       )} */}
 
-      {/* Persistent VideoRecorder - rendered once and never unmounts until interview ends */}
+      {/* Persistent VideoRecorder - rendered once and never unmounts until
+          interview ends. In preview it still mounts (the camera feed and face
+          detection need the stream) but never records, so no video is uploaded. */}
       {!isEnded && (
         <div className="hidden">
           <VideoRecorder
             ref={videoRecorderRef}
             interviewId={interview.id}
             username={name || "Anonymous"}
-            isRecording={isStarted}
+            isRecording={isStarted && !isPreview}
           />
         </div>
       )}
@@ -1648,13 +1860,17 @@ function Call({ interview }: InterviewProps) {
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-indigo-600 to-purple-600 transition-all duration-500 ease-out"
                   style={{
+                    // Clamped at 100% — during the wrap-up buffer the elapsed
+                    // time runs past the nominal limit, which would otherwise
+                    // overflow the bar past its track.
                     width: isEnded
                       ? "100%"
-                      : `${
+                      : `${Math.min(
+                          100,
                           (Number(currentTimeDuration) /
                             (Number(interviewTimeDuration) * 60)) *
-                          100
-                        }%`,
+                            100,
+                        )}%`,
                   }}
                 />
               </div>
@@ -1868,7 +2084,7 @@ function Call({ interview }: InterviewProps) {
                             MediaRecorder, which older Safari/iOS and many
                             in-app browsers lack. We block Start so a candidate
                             is never interviewed without a recording. */}
-                        {!recordingSupported && (
+                        {!recordingSupported && !isPreview && (
                           <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
                             <div className="mt-0.5 p-1 rounded-full bg-red-100">
                               <AlertTriangleIcon className="h-4 w-4 text-red-600" />
@@ -1894,34 +2110,53 @@ function Call({ interview }: InterviewProps) {
                           </div>
                         )}
 
-                        {/* Form Fields */}
-                        <div className="space-y-4 mb-6">
-                          <div>
-                            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-                              <MailIcon className="h-4 w-4 text-slate-400" />
-                              Email Address
-                            </label>
-                            <input
-                              value={email}
-                              type="email"
-                              className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none"
-                              placeholder="you@example.com"
-                              onChange={(e) => setEmail(e.target.value)}
-                            />
+                        {/* Preview notice — replaces the candidate form. Makes
+                            it unmistakable that nothing is being saved. */}
+                        {isPreview ? (
+                          <div className="mb-6 flex items-start gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                            <div className="mt-0.5 p-1 rounded-full bg-indigo-100">
+                              <EyeIcon className="h-4 w-4 text-indigo-600" />
+                            </div>
+                            <div className="text-sm text-indigo-900">
+                              <p className="font-semibold">Preview mode</p>
+                              <p className="mt-1 text-indigo-700">
+                                You&apos;re testing this interview. Nothing is
+                                saved — no response, no recording, and no
+                                notification email. Just start and talk to the
+                                interviewer.
+                              </p>
+                            </div>
                           </div>
-                          <div>
-                            <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-                              <UserIcon className="h-4 w-4 text-slate-400" />
-                              Your Name
-                            </label>
-                            <input
-                              value={name}
-                              className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none"
-                              placeholder="Enter your full name"
-                              onChange={(e) => setName(e.target.value)}
-                            />
+                        ) : (
+                          /* Form Fields */
+                          <div className="space-y-4 mb-6">
+                            <div>
+                              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
+                                <MailIcon className="h-4 w-4 text-slate-400" />
+                                Email Address
+                              </label>
+                              <input
+                                value={email}
+                                type="email"
+                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none"
+                                placeholder="you@example.com"
+                                onChange={(e) => setEmail(e.target.value)}
+                              />
+                            </div>
+                            <div>
+                              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
+                                <UserIcon className="h-4 w-4 text-slate-400" />
+                                Your Name
+                              </label>
+                              <input
+                                value={name}
+                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none"
+                                placeholder="Enter your full name"
+                                onChange={(e) => setName(e.target.value)}
+                              />
+                            </div>
                           </div>
-                        </div>
+                        )}
 
                         {/* Action Buttons */}
                         <div className="flex flex-col sm:flex-row gap-3 mt-auto">
@@ -1938,10 +2173,13 @@ function Call({ interview }: InterviewProps) {
                             }}
                             disabled={
                               Loading ||
-                              !isValidEmail ||
-                              !name ||
-                              !videoStream ||
-                              !recordingSupported
+                              // Preview needs no candidate identity and records
+                              // nothing, so only the camera gate applies.
+                              (!isPreview &&
+                                (!isValidEmail ||
+                                  !name ||
+                                  !recordingSupported)) ||
+                              !videoStream
                             }
                             onClick={startConversation}
                           >
@@ -2003,6 +2241,52 @@ function Call({ interview }: InterviewProps) {
                   <div className="h-full grid grid-cols-1 lg:grid-cols-2">
                     {/* Left Panel - Interviewer */}
                     <div className="relative flex flex-col bg-gradient-to-br from-indigo-50/30 via-white to-slate-50/50 p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-slate-100">
+                      {/* Wrap-up buffer clock — shown once the interview's time
+                          limit is reached. The AI has stopped asking questions;
+                          this is the candidate's window to finish answering. */}
+                      {isWrappingUp && wrapUpRemaining !== null && (
+                        <div
+                          className={`mb-4 rounded-xl border-2 overflow-hidden ${wrapUpRemaining <= 60 ? "border-red-400 bg-red-50" : "border-indigo-400 bg-indigo-50"}`}
+                        >
+                          <div className="h-1 bg-gray-200">
+                            <div
+                              className={`h-full transition-all duration-1000 ease-linear ${wrapUpRemaining <= 60 ? "bg-red-500" : "bg-indigo-500"}`}
+                              style={{
+                                width: `${(wrapUpRemaining / WRAP_UP_BUFFER_SECONDS) * 100}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="flex items-center gap-3 px-4 py-3">
+                            <div
+                              className={`p-1.5 rounded-full flex-shrink-0 ${wrapUpRemaining <= 60 ? "bg-red-100" : "bg-indigo-100"}`}
+                            >
+                              <AlarmClockIcon
+                                className={`h-4 w-4 ${wrapUpRemaining <= 60 ? "text-red-600" : "text-indigo-600"}`}
+                              />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p
+                                className={`text-xs font-semibold ${wrapUpRemaining <= 60 ? "text-red-700" : "text-indigo-700"}`}
+                              >
+                                Time&apos;s up — no more questions will be
+                                asked.
+                              </p>
+                              <p
+                                className={`text-xs ${wrapUpRemaining <= 60 ? "text-red-600" : "text-indigo-600"}`}
+                              >
+                                Please complete your answer. The interview ends
+                                when you finish.
+                              </p>
+                            </div>
+                            <span
+                              className={`text-2xl font-black tabular-nums tracking-tight flex-shrink-0 ${wrapUpRemaining <= 60 ? "text-red-600" : "text-indigo-600"}`}
+                            >
+                              {Math.floor(wrapUpRemaining / 60)}:
+                              {String(wrapUpRemaining % 60).padStart(2, "0")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                       {/* Camera-off countdown — lives in the empty space at the top of the left panel */}
                       {showCameraOffAlert && cameraOffCountdown !== null && (
                         <div

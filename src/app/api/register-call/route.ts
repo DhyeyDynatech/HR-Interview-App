@@ -75,6 +75,11 @@ export async function POST(req: NextRequest, _res: Response) {
 
   const body = await req.json();
   const useVoiceLive = process.env.USE_VOICE_LIVE === "true";
+  // Recruiter preview (?preview=true on the call page). The session is created
+  // normally so the recruiter hears a real interview, but no persistent side
+  // effect runs: no retake lock, no activity log, and — client-side — no
+  // response row, recording upload, analytics, or notification email.
+  const isPreviewCall = body.preview === true;
 
   // ──────────────────────────────────────────────────────────────────────
   // Voice Live path
@@ -87,6 +92,53 @@ export async function POST(req: NextRequest, _res: Response) {
     const voice =
       process.env.AZURE_VOICELIVE_VOICE || "en-IN-Diya:DragonHDLatestNeural";
     const apiVersion = process.env.AZURE_VOICELIVE_API_VERSION || "2025-10-01";
+    // How much the model "thinks" before responding. Only reasoning-capable
+    // models (gpt-realtime 2.x, gpt-5.x) accept this — others REJECT the whole
+    // session.update with a misleading "the `type` field of
+    // SessionUpdatedMessage should be 'session.update'" error, which kills the
+    // interview before it starts. So it is opt-in: unset means we omit the
+    // field entirely and behave exactly as before.
+    // Allowed: none | minimal | low | medium | high | xhigh.
+    const reasoningEffort = process.env.AZURE_VOICELIVE_REASONING_EFFORT;
+
+    // Bring Your Own Model (BYOM). Without this, `model` names one of
+    // Microsoft's FULLY MANAGED Voice Live models and the request runs on their
+    // shared multi-tenant capacity — which is invisible in your Foundry metrics
+    // and gives you no control over throughput. Setting `profile` flips the
+    // meaning of `model` to "a deployment name in MY Foundry resource", so
+    // traffic runs on your own deployment (and can use its PTU/provisioned
+    // capacity and content-filter settings).
+    //
+    // Modes: byom-azure-openai-realtime (gpt-realtime, gpt-realtime-mini)
+    //        byom-azure-openai-chat-completion (gpt-5.x, grok, etc.)
+    //        byom-foundry-anthropic-messages (Claude, preview)
+    //
+    // Opt-in: unset means the URL is built exactly as before.
+    // Pick the transcription model to match the chat model's family. Only the
+    // multimodal gpt-realtime* models accept OpenAI transcribers (whisper-1,
+    // gpt-4o-transcribe); everything else must use Azure speech to text.
+    // Getting this wrong makes Azure reject session.update outright, which
+    // surfaces as "WebSocket closed unexpectedly" before the agent ever speaks.
+    const isMultimodalRealtimeModel = /^gpt-realtime/i.test(model);
+    const transcriptionModel =
+      process.env.AZURE_VOICELIVE_TRANSCRIPTION_MODEL ||
+      (isMultimodalRealtimeModel ? "whisper-1" : "azure-speech");
+
+    // Playback jitter-buffer tuning, passed through to the browser client
+    // (which can't read env vars itself). Raise these if the agent's voice cuts
+    // out mid-sentence on small network/generation gaps; the cost is that much
+    // added delay before the agent starts speaking, once per turn.
+    const playbackLeadMs = Number(process.env.AZURE_VOICELIVE_PLAYBACK_LEAD_MS);
+    const playbackMinLeadMs = Number(
+      process.env.AZURE_VOICELIVE_PLAYBACK_MIN_LEAD_MS,
+    );
+
+    const byomProfile = process.env.AZURE_VOICELIVE_BYOM_PROFILE;
+    // Only needed when the model deployment lives in a DIFFERENT Foundry
+    // resource than the one serving Voice Live. Value is the bare resource
+    // name, no domain suffix.
+    const foundryResourceOverride =
+      process.env.AZURE_VOICELIVE_FOUNDRY_RESOURCE_OVERRIDE;
 
     if (!endpoint || !apiKey) {
       logger.error("Voice Live env vars missing");
@@ -128,29 +180,62 @@ export async function POST(req: NextRequest, _res: Response) {
 
     const callId = `vl-${randomUUID()}`;
 
-    await lockRetake(data.email, data.interview_id);
+    // Recruiter preview: register the call (we still need a live Voice Live
+    // session) but skip every persistent side effect — no retake lock, no
+    // activity log. The client skips the response row, recording, and emails.
+    if (isPreviewCall) {
+      logger.info("Voice Live PREVIEW call registered (nothing persisted)", {
+        call_id: callId,
+        model,
+        transcription: transcriptionModel,
+      });
+    } else {
+      await lockRetake(data.email, data.interview_id);
 
-    await logAttemptStarted(req, {
-      callId,
-      interviewerId: body.interviewer_id,
-      interviewId: data.interview_id,
-      candidateEmail: data.email,
-      candidateName: data.name,
-    });
+      await logAttemptStarted(req, {
+        callId,
+        interviewerId: body.interviewer_id,
+        interviewId: data.interview_id,
+        candidateEmail: data.email,
+        candidateName: data.name,
+      });
+    }
 
     const host = endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
     const wsUrl =
       `wss://${host}/voice-live/realtime` +
       `?api-version=${encodeURIComponent(apiVersion)}` +
+      // `profile` must precede nothing in particular, but when present it
+      // reinterprets `model` as one of YOUR Foundry deployment names.
+      (byomProfile ? `&profile=${encodeURIComponent(byomProfile)}` : "") +
       `&model=${encodeURIComponent(model)}` +
+      (foundryResourceOverride
+        ? `&foundry-resource-override=${encodeURIComponent(foundryResourceOverride)}`
+        : "") +
       `&api-key=${encodeURIComponent(apiKey)}`;
 
-    logger.info("Voice Live call registered", { call_id: callId });
+    // Log which path we took so a latency investigation can tell at a glance
+    // whether a given call ran on managed capacity or your own deployment.
+    logger.info("Voice Live call registered", {
+      call_id: callId,
+      model,
+      transcription: transcriptionModel,
+      mode: byomProfile ? `byom (${byomProfile})` : "managed",
+    });
 
     return NextResponse.json({
       provider: "voicelive",
       call_id: callId,
       wsUrl,
+      // Only sent when explicitly configured; the client keeps its own defaults
+      // (500 / 600 ms) otherwise. NaN from an unset/garbage env var is filtered
+      // out here so it never reaches the client.
+      ...(Number.isFinite(playbackLeadMs) && playbackLeadMs > 0
+        ? { playbackLeadMs }
+        : {}),
+      ...(Number.isFinite(playbackMinLeadMs) && playbackMinLeadMs > 0
+        ? { playbackMinLeadMs }
+        : {}),
       sessionConfig: {
         modalities: ["audio", "text"],
         instructions,
@@ -158,6 +243,16 @@ export async function POST(req: NextRequest, _res: Response) {
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
         input_audio_sampling_rate: 24000,
+        // Reasoning models (gpt-realtime 2.x, gpt-5.x) can spend time
+        // "thinking" before emitting any audio — a long pause BEFORE the agent
+        // speaks, then normal streaming. Azure's docs are explicit that higher
+        // effort increases latency and lower effort gives faster responses, so
+        // on a realtime voice call this is worth tuning down.
+        //
+        // Spread conditionally: models that don't support reasoning reject the
+        // entire session.update when this field is present, so we only include
+        // it when explicitly opted in via AZURE_VOICELIVE_REASONING_EFFORT.
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         turn_detection: {
           type: "server_vad",
           // Higher threshold = less sensitive to background noise (mic fan,
@@ -176,15 +271,25 @@ export async function POST(req: NextRequest, _res: Response) {
           // long enough that some candidates may think the call has frozen.
           silence_duration_ms: 3000,
         },
-        // Force English transcription so non-English speech doesn't drift
-        // the agent into another language (Whisper otherwise auto-detects).
-        input_audio_transcription: { model: "whisper-1", language: "en" },
+        // Force English transcription so non-English speech doesn't drift the
+        // agent into another language (auto-detect otherwise).
+        //
+        // The transcription model MUST match the chat model's family, or Azure
+        // rejects the whole session.update and the WebSocket closes before the
+        // interview starts. `whisper-1` (and the gpt-4o-transcribe variants) are
+        // only valid with the multimodal gpt-realtime* models; every other model
+        // — gpt-5*, gpt-4.1*, gpt-4o* — routes audio through Azure speech to
+        // text and needs `azure-speech`.
+        input_audio_transcription: {
+          model: transcriptionModel,
+          language: "en",
+        },
         tools: [
           {
             type: "function",
             name: "end_interview",
             description:
-              "ENDS the interview session immediately. STRICT REQUIREMENT: you must SPEAK a warm closing message thanking the candidate by name BEFORE calling this tool. Never call this in the same response as the closing message — first speak the goodbye, wait for the candidate's response (or silence), then in your NEXT response call this tool. If you call this without a spoken goodbye first, the candidate will hear nothing and the experience will feel abrupt. Use when all questions are covered, the candidate refused 3 separate questions, the candidate explicitly asked to end, or the time limit is reached.",
+              "ENDS the interview session immediately. STRICT REQUIREMENT: you must SPEAK a warm closing message thanking the candidate by name BEFORE calling this tool. Never call this in the same response as the closing message — first speak the goodbye, wait for the candidate's response (or silence), then in your NEXT response call this tool. If you call this without a spoken goodbye first, the candidate will hear nothing and the experience will feel abrupt. Use when all questions are covered, the candidate refused 3 separate questions, the candidate explicitly asked to end, or the WRAP-UP PHASE is active and the candidate has finished their final answer. Do NOT call this based on your own guess about elapsed time — wait for the explicit WRAP-UP PHASE instruction.",
             parameters: {
               type: "object",
               properties: {
@@ -268,7 +373,10 @@ export async function POST(req: NextRequest, _res: Response) {
     opt_out_sensitive_data_storage: false, // Enable recording
   };
 
-  await lockRetake(body.dynamic_data?.email, body.dynamic_data?.interview_id);
+  // Preview must not consume the candidate's attempt.
+  if (!isPreviewCall) {
+    await lockRetake(body.dynamic_data?.email, body.dynamic_data?.interview_id);
+  }
 
   const registerCallResponse =
     await retellClient.call.createWebCall(callParams);
@@ -300,13 +408,15 @@ export async function POST(req: NextRequest, _res: Response) {
     }
   }
 
-  await logAttemptStarted(req, {
-    callId: registerCallResponse.call_id,
-    interviewerId,
-    interviewId: body.dynamic_data?.interview_id,
-    candidateEmail: body.dynamic_data?.email,
-    candidateName: body.dynamic_data?.name,
-  });
+  if (!isPreviewCall) {
+    await logAttemptStarted(req, {
+      callId: registerCallResponse.call_id,
+      interviewerId,
+      interviewId: body.dynamic_data?.interview_id,
+      candidateEmail: body.dynamic_data?.email,
+      candidateName: body.dynamic_data?.name,
+    });
+  }
 
   return NextResponse.json(
     {

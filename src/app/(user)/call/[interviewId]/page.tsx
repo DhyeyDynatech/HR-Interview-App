@@ -12,6 +12,9 @@ type Props = {
   params: {
     interviewId: string;
   };
+  searchParams?: {
+    preview?: string;
+  };
 };
 
 type PopupProps = {
@@ -21,7 +24,6 @@ type PopupProps = {
 };
 
 function PopupLoader() {
-
   return (
     <div className="bg-white rounded-md absolute -translate-x-1/2 -translate-y-1/2 top-1/2 left-1/2 md:w-[80%] w-[90%]">
       <div className="h-[88vh] justify-center items-center rounded-lg border-2 border-b-4 border-r-4 border-black font-bold transition-all md:block dark:border-white">
@@ -36,8 +38,7 @@ function PopupLoader() {
         rel="noopener noreferrer"
       >
         <div className="text-center text-md font-semibold mr-2">
-          Powered by{" "}
-          <span className="text-indigo-600">DynaTech Systems</span>
+          Powered by <span className="text-indigo-600">DynaTech Systems</span>
         </div>
         <ArrowUpRightSquareIcon className="h-[1.5rem] w-[1.5rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0 text-indigo-500" />
       </a>
@@ -46,7 +47,6 @@ function PopupLoader() {
 }
 
 function PopUpMessage({ title, description, image }: PopupProps) {
-
   return (
     <div className="bg-white rounded-md absolute -translate-x-1/2 -translate-y-1/2 top-1/2 left-1/2 md:w-[80%] w-[90%]">
       <div className="h-[88vh] content-center rounded-lg border-2 border-b-4 border-r-4 border-black font-bold transition-all  md:block dark:border-white ">
@@ -69,8 +69,7 @@ function PopUpMessage({ title, description, image }: PopupProps) {
         rel="noopener noreferrer"
       >
         <div className="text-center text-md font-semibold mr-2">
-          Powered by{" "}
-          <span className="text-indigo-600">DynaTech Systems</span>
+          Powered by <span className="text-indigo-600">DynaTech Systems</span>
         </div>
         <ArrowUpRightSquareIcon className="h-[1.5rem] w-[1.5rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0 text-indigo-500" />
       </a>
@@ -78,11 +77,15 @@ function PopUpMessage({ title, description, image }: PopupProps) {
   );
 }
 
-function InterviewInterface({ params }: Props) {
+function InterviewInterface({ params, searchParams }: Props) {
   const [interview, setInterview] = useState<Interview>();
   const [isActive, setIsActive] = useState(true);
   const { getInterviewById } = useInterviews();
   const [interviewNotFound, setInterviewNotFound] = useState(false);
+  // Recruiter preview (?preview=true, opened from the interview detail page).
+  // Runs the interview live but persists nothing — see the isPreview handling
+  // in the Call component.
+  const isPreview = searchParams?.preview === "true";
   useEffect(() => {
     if (interview) {
       setIsActive(interview?.is_active === true);
@@ -109,7 +112,6 @@ function InterviewInterface({ params }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-
   return (
     <div>
       <div className="hidden md:block p-8 mx-auto form-container">
@@ -130,7 +132,7 @@ function InterviewInterface({ params }: Props) {
             image="/closed.png"
           />
         ) : (
-          <Call interview={interview} />
+          <Call interview={interview} isPreview={isPreview} />
         )}
       </div>
       <div className=" md:hidden flex flex-col items-center md:h-[0px] justify-center  my-auto">
@@ -150,9 +152,7 @@ function InterviewInterface({ params }: Props) {
             href="https://dynatechconsultancy.com/"
             target="_blank"
           >
-           <span className="text-indigo-600">DynaTech Systems</span>
-
-            
+            <span className="text-indigo-600">DynaTech Systems</span>
           </a>
         </div>
       </div>
